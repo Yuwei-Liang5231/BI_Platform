@@ -1,0 +1,176 @@
+// =============================================================================
+// PwC Core Library (Feb 2026) — Design Tokens
+//
+// 暴露两套并行令牌：
+//   1. SCSS 变量 ($pwc-*) — 用于组件内 @use 引用 (编译期静态值)
+//   2. CSS 自定义属性 (--pwc-*) — 用于组件内 var() (运行时, 支持主题切换)
+//
+// 浅/深主题：[data-theme="dark"] 块自动覆盖语义令牌，组件代码无需改一行
+// 覆盖约定：业务方组件用 var(--pwc-*)，SCSS 用 @use 'tokens' as pwc;
+// =============================================================================
+
+// ---------- 色彩 (50–1000) ----------
+$pwc-orange-50:    #FFF5ED;
+$pwc-orange-100:   #FFE8D4;
+$pwc-orange-200:   #FFCDA8;
+$pwc-orange-300:   #FFAA72;
+$pwc-orange-400:   #FE7C39;
+$pwc-orange-500:   #FD5108;  // core
+$pwc-orange-600:   #EE3D08;
+$pwc-orange-700:   #C52B09;
+$pwc-orange-800:   #9C2310;
+$pwc-orange-900:   #691203;
+$pwc-orange-950:   #440C06;
+$pwc-orange-1000:  #1F0606;
+
+$pwc-grey-50:      #F5F7F8;
+$pwc-grey-100:     #EEEFF1;
+$pwc-grey-200:     #DFE3E6;
+$pwc-grey-300:     #CBD1D6;
+$pwc-grey-400:     #B5BCC4;
+$pwc-grey-500:     #A1A8B3;
+$pwc-grey-600:     #8E95A2;
+$pwc-grey-700:     #787E8A;
+$pwc-grey-800:     #626771;
+$pwc-grey-900:     #4C5056;
+$pwc-grey-950:     #303236;
+$pwc-grey-975:     #202124;
+$pwc-grey-1000:    #111113;
+
+$pwc-black:        #000000;
+$pwc-white:        #FFFFFF;
+
+$pwc-info-500:     #2563EB;
+$pwc-success-500:  #059669;
+$pwc-warning-500:  #B37714;
+$pwc-error-500:    #D62222;
+// 状态色 300 档（Tonal Filled 静止/按下态，见 component-states.md）
+$pwc-info-300:     #6797FF;
+$pwc-success-300:  #4FD3A0;
+$pwc-warning-300:  #E9B01F;
+$pwc-error-300:    #F66F6F;
+
+$pwc-tangerine-500: #FF9F00;
+
+// ---------- 语义令牌 (CSS 变量，可被 [data-theme="dark"] 覆盖) ----------
+:root {
+  // 语义
+  --pwc-bg-base:               #{$pwc-white};
+  --pwc-bg-layer-1:            #{$pwc-grey-50};
+  --pwc-bg-layer-2:            #{$pwc-grey-100};
+  --pwc-bg-brand:              #{$pwc-orange-500};
+  --pwc-bg-brand-variant:      #{$pwc-orange-300};
+  --pwc-bg-brand-layer-1:      #{$pwc-orange-50};
+  --pwc-bg-brand-layer-2:      #{$pwc-orange-100};
+  --pwc-bg-inverse:            #{$pwc-black};
+  --pwc-bg-disabled:           #{$pwc-grey-200};
+
+  --pwc-text-primary:          #{$pwc-black};
+  --pwc-text-secondary:        #{$pwc-grey-800};
+  --pwc-text-on-brand:         #{$pwc-black};
+  --pwc-text-on-brand-variant: #{$pwc-black};
+  --pwc-text-inverse:          #{$pwc-white};
+  --pwc-text-disabled:         #{$pwc-grey-600};
+
+  --pwc-border-subtle:         #{$pwc-grey-200};
+  --pwc-border-strong:         #{$pwc-grey-500};
+  --pwc-border-focus:          #{$pwc-grey-1000};
+  --pwc-border-brand:          #{$pwc-orange-500};
+
+  --pwc-state-hover:           #{$pwc-orange-500};
+  --pwc-state-brand-hover:     #{$pwc-orange-700};
+  --pwc-state-pressed:         #{$pwc-black};
+  --pwc-state-container-hover: rgba(0, 0, 0, 0.06);
+  --pwc-state-container-pressed: rgba(0, 0, 0, 0.10);
+
+  // 字号 (Desktop)
+  --pwc-font-display-l: 48px;  // ITC Charter
+  --pwc-font-display-m: 36px;
+  --pwc-font-display-s: 28px;
+  --pwc-font-heading-l: 24px;
+  --pwc-font-heading-m: 20px;
+  --pwc-font-heading-s: 18px;
+  --pwc-font-body-l: 18px;     // Helvetica Neue
+  --pwc-font-body-m: 16px;
+  --pwc-font-body-s: 14px;
+  --pwc-font-label-m: 14px;
+  --pwc-font-label-s: 12px;
+  --pwc-font-caption:  12px;
+  --pwc-font-data-xl:  48px;
+  --pwc-font-data-l:   32px;
+  --pwc-font-data-m:   24px;
+
+  // 字体族
+  --pwc-font-serif: 'ITC Charter', 'Georgia', 'Times New Roman', serif;
+  --pwc-font-sans:  'Helvetica Neue', 'Helvetica', 'Arial', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  // 字重
+  --pwc-fw-regular: 400;
+  --pwc-fw-medium:  500;
+  --pwc-fw-bold:    700;
+
+  // 行高
+  --pwc-lh-tight:   1.2;
+  --pwc-lh-normal:  1.5;
+  --pwc-lh-loose:   1.7;
+
+  // 间距 (8px base — 刻度与 spacing-tokens.md 对齐: 2/4/8/12/16/20/24/32/40/48/72)
+  --pwc-space-0:  0;
+  --pwc-space-1:  2px;
+  --pwc-space-2:  4px;
+  --pwc-space-3:  8px;
+  --pwc-space-4:  12px;
+  --pwc-space-5:  16px;
+  --pwc-space-6:  20px;
+  --pwc-space-7:  24px;
+  --pwc-space-8:  32px;
+  --pwc-space-9:  40px;
+  --pwc-space-10: 48px;
+  --pwc-space-11: 72px;
+
+  // 圆角 (sharp 0px 为默认)
+  --pwc-radius-none:   0;
+  --pwc-radius-focus:  4px;
+  --pwc-radius-round:  100%;
+
+  // 阴影 (克制)
+  --pwc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --pwc-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --pwc-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"] {
+  --pwc-bg-base:               #{$pwc-grey-1000};
+  --pwc-bg-layer-1:            #{$pwc-grey-975};
+  --pwc-bg-layer-2:            #{$pwc-grey-950};
+  --pwc-bg-brand:              #{$pwc-orange-500};
+  --pwc-bg-brand-variant:      #{$pwc-orange-300};
+  --pwc-bg-brand-layer-1:      #{$pwc-orange-950};
+  --pwc-bg-brand-layer-2:      #{$pwc-orange-900};
+  --pwc-bg-inverse:            #{$pwc-white};
+  --pwc-bg-disabled:           #{$pwc-grey-800};
+
+  --pwc-text-primary:          #{$pwc-grey-50};
+  --pwc-text-secondary:        #{$pwc-grey-300};
+  --pwc-text-on-brand:         #{$pwc-white};
+  --pwc-text-on-brand-variant: #{$pwc-black};
+  --pwc-text-inverse:          #{$pwc-black};
+  --pwc-text-disabled:         #{$pwc-grey-600};
+
+  --pwc-border-subtle:         #{$pwc-grey-950};
+  --pwc-border-strong:         #{$pwc-grey-800};
+  --pwc-border-focus:          #{$pwc-grey-50};
+
+  --pwc-state-hover:           #{$pwc-orange-500};
+  --pwc-state-brand-hover:     #{$pwc-orange-300};
+  --pwc-state-pressed:         #{$pwc-white};
+  --pwc-state-container-hover: rgba(255, 255, 255, 0.08);
+  --pwc-state-container-pressed: rgba(255, 255, 255, 0.12);
+}
+
+// ---------- SCSS 变量（用于组件内 @use 引用） ----------
+$pwc-radius:           0;            // sharp default
+$pwc-radius-focus:     4px;
+$pwc-radius-round:     9999px;
+$pwc-base-font:        'Helvetica Neue', 'Helvetica', 'Arial', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+$pwc-display-font:     'ITC Charter', 'Georgia', 'Times New Roman', serif;

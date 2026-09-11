@@ -1,0 +1,437 @@
+# 行业指标模板包：连锁餐饮
+# 数据假设（导入时若无对应数据集，指标进入"待绑定数据集"状态，数据上传后重导入激活）：
+#   dine_orders 门店订单事实表：order_id / order_date / store_id / member_id /
+#     channel_type(堂食|外卖) / table_no / diner_count / pay_amount /
+#     discount_amount / status(已结账|已退单)
+#   stores 门店维度表：store_id / store_name / city / open_date
+#   order_items 订单明细表：order_id / order_date / item_id / quantity / amount /
+#     status(正常|已退)
+#   members 会员维度表：member_id / member_name / join_date / level
+industry: restaurant
+name: 连锁餐饮
+description: >
+  面向连锁餐饮/门店经营型业务的指标模板。所有计算仅依赖单表聚合与同表
+  子聚合运算（v1 算子），无需跨表关系；对应数据集上传并完成模板重导入后即可计算。
+metrics:
+  # ---------------- 营业规模 ----------------
+  - code: rst_revenue
+    name: 营业额
+    aliases: [实收营业额]
+    definition: 统计周期内已结账订单 pay_amount 合计。
+    topic: sales
+    dimensions: [订单日期, 门店, 渠道类型]
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: dine_orders
+        column: pay_amount
+        filter: "status = '已结账'"
+      time_field: order_date
+
+  - code: rst_order_count
+    name: 订单数
+    aliases: [单量]
+    definition: 统计周期内订单行数（含未结账）。
+    topic: sales
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: dine_orders
+        column: order_id
+      time_field: order_date
+
+  - code: rst_diner_count
+    name: 就餐人数
+    aliases: [客流(人数)]
+    definition: 已结账订单 diner_count 合计。
+    topic: traffic
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: dine_orders
+        column: diner_count
+        filter: "status = '已结账'"
+      time_field: order_date
+
+  - code: rst_avg_check
+    name: 客单价
+    aliases: [单均消费]
+    definition: 营业额 / 已结账订单数。
+    topic: sales
+    parent: rst_revenue
+    calc_rule:
+      expression: "REV / ORD"
+      operands:
+        REV:
+          table: dine_orders
+          column: pay_amount
+          aggregation: sum
+          filter: "status = '已结账'"
+        ORD:
+          table: dine_orders
+          column: order_id
+          aggregation: count
+          filter: "status = '已结账'"
+      time_field: order_date
+
+  - code: rst_per_capita_spend
+    name: 人均消费
+    aliases: [人均]
+    definition: 营业额 / 就餐人数。
+    topic: sales
+    parent: rst_revenue
+    calc_rule:
+      expression: "REV / DIN"
+      operands:
+        REV:
+          table: dine_orders
+          column: pay_amount
+          aggregation: sum
+          filter: "status = '已结账'"
+        DIN:
+          table: dine_orders
+          column: diner_count
+          aggregation: sum
+          filter: "status = '已结账'"
+      time_field: order_date
+
+  # ---------------- 堂食 / 外卖 ----------------
+  - code: rst_dinein_revenue
+    name: 堂食营业额
+    aliases: [堂食收入]
+    definition: 渠道类型=堂食 的已结账营业额。
+    topic: sales
+    parent: rst_revenue
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: dine_orders
+        column: pay_amount
+        filter: "status = '已结账' AND channel_type = '堂食'"
+      time_field: order_date
+
+  - code: rst_takeout_revenue
+    name: 外卖营业额
+    aliases: [外卖收入]
+    definition: 渠道类型=外卖 的已结账营业额。
+    topic: sales
+    parent: rst_revenue
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: dine_orders
+        column: pay_amount
+        filter: "status = '已结账' AND channel_type = '外卖'"
+      time_field: order_date
+
+  - code: rst_takeout_ratio
+    name: 外卖占比
+    aliases: [外卖收入占比]
+    definition: 外卖营业额 / 营业额。
+    topic: sales
+    parent: rst_takeout_revenue
+    calc_rule:
+      expression: "TK / REV"
+      operands:
+        TK:
+          table: dine_orders
+          column: pay_amount
+          aggregation: sum
+          filter: "status = '已结账' AND channel_type = '外卖'"
+        REV:
+          table: dine_orders
+          column: pay_amount
+          aggregation: sum
+          filter: "status = '已结账'"
+      time_field: order_date
+
+  # ---------------- 门店效能 ----------------
+  - code: rst_table_turnover
+    name: 翻台率
+    aliases: [台均订单数]
+    definition: 已结账订单数 / 去重桌数（周期内平均翻台；按时段拆分需分组，见口径分歧）。
+    topic: traffic
+    disambiguation:
+      question: 翻台率观察窗口？
+      options:
+        - {name: 全日, description: 周期内订单数/去重桌数（默认）}
+        - {name: 分餐段, description: 午市/晚市分别计算，需按餐段分组（阶段 4a）}
+      default: 全日
+    calc_rule:
+      expression: "ORD / TBL"
+      operands:
+        ORD:
+          table: dine_orders
+          column: order_id
+          aggregation: count
+          filter: "status = '已结账'"
+        TBL:
+          table: dine_orders
+          column: table_no
+          aggregation: count_distinct
+          filter: "status = '已结账'"
+      time_field: order_date
+
+  - code: rst_avg_diners_per_table
+    name: 每桌平均人数
+    aliases: [桌均人数]
+    definition: 就餐人数 / 去重桌数。
+    topic: traffic
+    calc_rule:
+      expression: "DIN / TBL"
+      operands:
+        DIN:
+          table: dine_orders
+          column: diner_count
+          aggregation: sum
+          filter: "status = '已结账'"
+        TBL:
+          table: dine_orders
+          column: table_no
+          aggregation: count_distinct
+          filter: "status = '已结账'"
+      time_field: order_date
+
+  - code: rst_store_count
+    name: 营业门店数
+    aliases: [有单门店数]
+    definition: 统计周期内有订单的去重门店数。
+    topic: traffic
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: dine_orders
+        column: store_id
+      time_field: order_date
+
+  - code: rst_revenue_per_store
+    name: 单店平均营业额
+    aliases: [店均收入]
+    definition: 营业额 / 营业门店数。
+    topic: sales
+    parent: rst_revenue
+    calc_rule:
+      expression: "REV / STORES"
+      operands:
+        REV:
+          table: dine_orders
+          column: pay_amount
+          aggregation: sum
+          filter: "status = '已结账'"
+        STORES:
+          table: dine_orders
+          column: store_id
+          aggregation: count_distinct
+      time_field: order_date
+
+  # ---------------- 优惠与会员 ----------------
+  - code: rst_discount_amount
+    name: 优惠金额
+    aliases: [折扣金额]
+    definition: 订单 discount_amount 合计。
+    topic: sales
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: dine_orders
+        column: discount_amount
+      time_field: order_date
+
+  - code: rst_discount_ratio
+    name: 优惠占比
+    aliases: [折扣率]
+    definition: 优惠金额 / 营业额。
+    topic: sales
+    parent: rst_discount_amount
+    calc_rule:
+      expression: "DISC / REV"
+      operands:
+        DISC:
+          table: dine_orders
+          column: discount_amount
+          aggregation: sum
+        REV:
+          table: dine_orders
+          column: pay_amount
+          aggregation: sum
+          filter: "status = '已结账'"
+      time_field: order_date
+
+  - code: rst_member_order_count
+    name: 会员订单数
+    aliases: [会员单量]
+    definition: member_id 非空的订单数。
+    topic: member
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: dine_orders
+        column: order_id
+        filter: "member_id IS NOT NULL"
+      time_field: order_date
+
+  - code: rst_member_order_ratio
+    name: 会员订单占比
+    aliases: [会员单量占比]
+    definition: 会员订单数 / 订单总数。
+    topic: member
+    parent: rst_member_order_count
+    calc_rule:
+      expression: "MEM_ORD / ALL"
+      operands:
+        MEM_ORD:
+          table: dine_orders
+          column: order_id
+          aggregation: count
+          filter: "member_id IS NOT NULL"
+        ALL:
+          table: dine_orders
+          column: order_id
+          aggregation: count
+      time_field: order_date
+
+  - code: rst_member_arpu
+    name: 会员客单
+    aliases: [会员人均]
+    definition: 会员订单营业额 / 有消费的去重会员数。
+    topic: member
+    calc_rule:
+      expression: "REV / MEM"
+      operands:
+        REV:
+          table: dine_orders
+          column: pay_amount
+          aggregation: sum
+          filter: "member_id IS NOT NULL"
+        MEM:
+          table: dine_orders
+          column: member_id
+          aggregation: count_distinct
+          filter: "member_id IS NOT NULL"
+      time_field: order_date
+
+  - code: rst_member_count
+    name: 会员总数
+    aliases: [新增会员数]
+    definition: 统计周期内新入会（join_date 落在周期内）的会员数。
+    topic: member
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: members
+        column: member_id
+      time_field: join_date
+
+  # ---------------- 菜品 ----------------
+  - code: rst_item_sales
+    name: 菜品销量
+    aliases: [出菜品数]
+    definition: 订单明细 quantity 合计（order_items 自带 order_date 归期）。
+    topic: menu
+    dimensions: [订单日期, 菜品]
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: order_items
+        column: quantity
+      time_field: order_date
+
+  - code: rst_item_revenue
+    name: 菜品销售额
+    aliases: [明细销售额]
+    definition: 订单明细 amount 合计（含已退明细，退菜率单列）。
+    topic: menu
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: order_items
+        column: amount
+      time_field: order_date
+
+  - code: rst_item_avg_price
+    name: 菜品均价
+    aliases: [明细均价]
+    definition: 菜品销售额 / 菜品销量。
+    topic: menu
+    parent: rst_item_revenue
+    calc_rule:
+      expression: "AMT / QTY"
+      operands:
+        AMT:
+          table: order_items
+          column: amount
+          aggregation: sum
+        QTY:
+          table: order_items
+          column: quantity
+          aggregation: sum
+      time_field: order_date
+
+  - code: rst_avg_items_per_order
+    name: 单均菜品件数
+    aliases: [连带率]
+    definition: 菜品销量 / 去重订单数（明细表口径）。
+    topic: menu
+    parent: rst_item_sales
+    calc_rule:
+      expression: "QTY / ORD"
+      operands:
+        QTY:
+          table: order_items
+          column: quantity
+          aggregation: sum
+        ORD:
+          table: order_items
+          column: order_id
+          aggregation: count_distinct
+      time_field: order_date
+
+  - code: rst_item_cancel_rate
+    name: 退菜率
+    aliases: [退菜金额占比]
+    definition: 已退明细金额 / 菜品销售额（金额口径）。
+    topic: quality
+    parent: rst_item_revenue
+    calc_rule:
+      expression: "CXL / AMT"
+      operands:
+        CXL:
+          table: order_items
+          column: amount
+          aggregation: sum
+          filter: "status = '已退'"
+        AMT:
+          table: order_items
+          column: amount
+          aggregation: sum
+      time_field: order_date
+
+  # ---------------- 阶段 4a 扩展算子（登记口径，暂不可计算） ----------------
+  - code: rst_member_repurchase_rate
+    name: 会员复购率
+    aliases: [回头客比例]
+    definition: >
+      周期内到店≥2次的会员占地消费会员比例，需按会员分组计数后二次聚合，
+      依赖阶段 4a 扩展算子。
+    topic: member
+    requires: extended-operator
+    calc_rule: {}
+
+  - code: rst_member_ltv
+    name: 会员生命周期价值
+    aliases: [会员LTV]
+    definition: >
+      单会员全周期累计消费，需按入会 cohort 追踪，依赖阶段 4a 扩展算子。
+    topic: member
+    requires: extended-operator
+    calc_rule: {}
+
+  - code: rst_peak_hour_ratio
+    name: 高峰时段占比
+    aliases: [高峰集中度]
+    definition: >
+      高峰时段（如午市）营业额 / 全日营业额，需按小时/餐段分组，
+      依赖阶段 4a 扩展算子。
+    topic: traffic
+    requires: extended-operator
+    calc_rule: {}

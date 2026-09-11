@@ -1,0 +1,476 @@
+# 行业指标模板包：电商零售（绑定合成数据集 A 的表结构）
+# 依赖数据集：orders / users / channels（orders.channel_id -> channels.channel_id 关系注册后，
+# 跨渠道指标方可编译；未注册时相关指标导入为 pending）
+industry: ecommerce
+name: 电商零售
+description: >
+  面向零售/电商交易型业务的指标模板。数据假设：orders 为订单事实表
+  （order_date / user_id / product_id / channel_id / quantity / unit_price /
+  discount / pay_amount / refund_amount / order_status），users 为用户维度表
+  （register_date），channels 为渠道维度表（channel_type）。
+  order_status 枚举：已支付 / 部分退款 / 已退款。
+metrics:
+  # ---------------- 交易规模 ----------------
+  - code: ecom_gmv_paid
+    name: 已支付GMV
+    aliases: [GMV, 成交金额, 支付金额]
+    definition: 统计周期内 order_status=已支付 订单的 pay_amount 合计。
+    topic: sales
+    dimensions: [订单日期, 渠道, 品类, 区域]
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: orders
+        column: pay_amount
+        filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_gmv_all
+    name: 订单总额
+    aliases: [下单金额, 全状态GMV]
+    definition: 统计周期内全部状态订单的 pay_amount 合计（含未支付完成/退款单）。
+    topic: sales
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: orders
+        column: pay_amount
+      time_field: order_date
+
+  - code: ecom_order_count
+    name: 订单总数
+    aliases: [订单量]
+    definition: 统计周期内订单行数（每行一笔订单）。
+    topic: sales
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: orders
+        column: order_id
+      time_field: order_date
+
+  - code: ecom_paid_order_count
+    name: 已支付订单数
+    aliases: [支付订单量]
+    definition: 统计周期内 order_status=已支付 的订单数。
+    topic: sales
+    parent: ecom_order_count
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: orders
+        column: order_id
+        filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_quantity_sold
+    name: 销售件数
+    aliases: [销量, 出货件数]
+    definition: 统计周期内订单 quantity 合计（含异常 0 件订单，质检口径见数据集）。
+    topic: sales
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: orders
+        column: quantity
+      time_field: order_date
+
+  - code: ecom_quantity_per_order
+    name: 单均件数
+    aliases: [笔均件数, 件均]
+    definition: 已支付订单的件数均值 = 销售件数 / 已支付订单数。
+    topic: sales
+    parent: ecom_quantity_sold
+    calc_rule:
+      expression: "QTY / ORD"
+      operands:
+        QTY:
+          table: orders
+          column: quantity
+          aggregation: sum
+          filter: "order_status = '已支付'"
+        ORD:
+          table: orders
+          column: order_id
+          aggregation: count
+          filter: "order_status = '已支付'"
+      time_field: order_date
+
+  # ---------------- 退款与折扣 ----------------
+  - code: ecom_refund_amount
+    name: 退款金额
+    aliases: [退款额]
+    definition: refund_amount 合计（含部分退款金额与全额退款，不做状态过滤）。
+    topic: quality
+    disambiguation:
+      question: 退款金额是否包含部分退款？
+      options:
+        - {name: 全口径, description: refund_amount 列直接求和，含部分退款（默认）}
+        - {name: 仅全额退款, description: 仅统计 order_status=已退款 订单}
+      default: 全口径
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: orders
+        column: refund_amount
+      time_field: order_date
+
+  - code: ecom_refund_rate
+    name: 退款率
+    aliases: [退货率]
+    definition: 退款金额 / 订单总额。金额口径而非单量口径；单量口径见口径分歧。
+    topic: quality
+    parent: ecom_refund_amount
+    disambiguation:
+      question: 退款率按金额还是按单量？
+      options:
+        - {name: 金额口径, description: 退款金额/订单总额，反映资金影响（默认）}
+        - {name: 单量口径, description: 退款订单数/订单总数，反映单量影响}
+      default: 金额口径
+    calc_rule:
+      expression: "RFND / AMT"
+      operands:
+        RFND:
+          table: orders
+          column: refund_amount
+          aggregation: sum
+        AMT:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+      time_field: order_date
+
+  - code: ecom_discount_amount
+    name: 折扣金额
+    aliases: [优惠金额]
+    definition: 订单 discount 列合计。
+    topic: sales
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: orders
+        column: discount
+      time_field: order_date
+
+  - code: ecom_discount_rate
+    name: 折扣率
+    aliases: [优惠率]
+    definition: 折扣金额 / 订单总额（简化口径；严格口径分母应为 pay_amount+discount，v1 列运算不支持，故登记简化式）。
+    topic: sales
+    parent: ecom_discount_amount
+    disambiguation:
+      question: 折扣率分母用折后还是折前金额？
+      options:
+        - {name: 折后(默认), description: 折扣/订单总额，可由现有列直接计算}
+        - {name: 折前, description: 折扣/(订单总额+折扣)，需列间加法，阶段 4a 扩展}
+      default: 折后(默认)
+    calc_rule:
+      expression: "DISC / AMT"
+      operands:
+        DISC:
+          table: orders
+          column: discount
+          aggregation: sum
+        AMT:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+      time_field: order_date
+
+  # ---------------- 用户 ----------------
+  - code: ecom_buyer_count
+    name: 购买人数
+    aliases: [支付买家数, 成交用户数]
+    definition: 统计周期内已支付订单的去重用户数。
+    topic: user
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: orders
+        column: user_id
+        filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_active_buyer_count
+    name: 下单人数
+    aliases: [活跃购买人数]
+    definition: 统计周期内有下单行为（不限支付状态）的去重用户数。
+    topic: user
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: orders
+        column: user_id
+      time_field: order_date
+
+  - code: ecom_new_user_count
+    name: 新增用户数
+    aliases: [新客数, 注册用户数]
+    definition: 统计周期内注册（users.register_date 落在周期内）的用户数。
+    topic: user
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: users
+        column: user_id
+      time_field: register_date
+
+  - code: ecom_avg_ticket
+    name: 客单价
+    aliases: [每用户平均支付]
+    definition: 已支付GMV / 购买人数（人口径）。
+    topic: sales
+    parent: ecom_gmv_paid
+    disambiguation:
+      question: 客单价按人还是按单？
+      options:
+        - {name: 人口径, description: GMV/去重购买人数（默认）}
+        - {name: 单口径, description: GMV/订单数，即笔单价}
+      default: 人口径
+    calc_rule:
+      expression: "GMV / BUYERS"
+      operands:
+        GMV:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+          filter: "order_status = '已支付'"
+        BUYERS:
+          table: orders
+          column: user_id
+          aggregation: count_distinct
+          filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_aov
+    name: 笔单价
+    aliases: [订单均价]
+    definition: 已支付GMV / 已支付订单数（单口径）。
+    topic: sales
+    parent: ecom_gmv_paid
+    calc_rule:
+      expression: "GMV / PAID_ORD"
+      operands:
+        GMV:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+          filter: "order_status = '已支付'"
+        PAID_ORD:
+          table: orders
+          column: order_id
+          aggregation: count
+          filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_item_avg_price
+    name: 件单价
+    aliases: [商品均价]
+    definition: 已支付GMV / 销售件数（已支付部分）。
+    topic: sales
+    parent: ecom_gmv_paid
+    calc_rule:
+      expression: "GMV / QTY"
+      operands:
+        GMV:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+          filter: "order_status = '已支付'"
+        QTY:
+          table: orders
+          column: quantity
+          aggregation: sum
+          filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_arpu
+    name: 用户平均收入
+    aliases: [ARPU]
+    definition: 已支付GMV / 下单人数（分母不限支付状态，与客单价的口径差异见两者定义）。
+    topic: user
+    parent: ecom_gmv_paid
+    calc_rule:
+      expression: "GMV / BUYERS_ALL"
+      operands:
+        GMV:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+          filter: "order_status = '已支付'"
+        BUYERS_ALL:
+          table: orders
+          column: user_id
+          aggregation: count_distinct
+      time_field: order_date
+
+  - code: ecom_repurchase_rate
+    name: 复购率
+    aliases: [重复购买率]
+    definition: >
+      周期内下单≥2次的用户占下单用户比例。需按用户分组计数再二次聚合
+      （cohort 语义），依赖阶段 4a 扩展算子，导入后登记为暂不可计算。
+    topic: user
+    requires: extended-operator
+    disambiguation:
+      question: 复购的观察口径？
+      options:
+        - {name: 周期内复购, description: 统计周期内下单≥2次的用户占比}
+        - {name: 跨周期复购, description: 首单后 N 天内再次下单的用户占比}
+      default: 周期内复购
+    calc_rule: {}
+
+  # ---------------- 结构与渠道 ----------------
+  - code: ecom_high_value_order_count
+    name: 大额订单数
+    aliases: [高价值订单数]
+    definition: 已支付订单中 pay_amount ≥ 10000 的订单数（阈值可按业务调整）。
+    topic: sales
+    parent: ecom_paid_order_count
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: orders
+        column: order_id
+        filter: "order_status = '已支付' AND pay_amount >= 10000"
+      time_field: order_date
+
+  - code: ecom_high_value_order_ratio
+    name: 大额订单占比
+    aliases: [高价值订单占比]
+    definition: 大额订单数 / 已支付订单数。
+    topic: sales
+    parent: ecom_high_value_order_count
+    calc_rule:
+      expression: "HV / PAID_ORD"
+      operands:
+        HV:
+          table: orders
+          column: order_id
+          aggregation: count
+          filter: "order_status = '已支付' AND pay_amount >= 10000"
+        PAID_ORD:
+          table: orders
+          column: order_id
+          aggregation: count
+          filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_coupon_order_count
+    name: 用券订单数
+    aliases: [有券订单数]
+    definition: 已支付订单中 coupon_code 非空的订单数。
+    topic: sales
+    parent: ecom_paid_order_count
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: orders
+        column: order_id
+        filter: "order_status = '已支付' AND coupon_code IS NOT NULL"
+      time_field: order_date
+
+  - code: ecom_coupon_order_ratio
+    name: 用券订单占比
+    aliases: [用券率]
+    definition: 用券订单数 / 已支付订单数。
+    topic: sales
+    parent: ecom_coupon_order_count
+    calc_rule:
+      expression: "COUPON / PAID_ORD"
+      operands:
+        COUPON:
+          table: orders
+          column: order_id
+          aggregation: count
+          filter: "order_status = '已支付' AND coupon_code IS NOT NULL"
+        PAID_ORD:
+          table: orders
+          column: order_id
+          aggregation: count
+          filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_online_gmv
+    name: 线上渠道GMV
+    aliases: [线上成交额]
+    definition: >
+      渠道类型为线上的已支付GMV。channel_type 来自 channels 维度表，
+      需注册关系 orders.channel_id -> channels.channel_id 后方可编译。
+    topic: sales
+    parent: ecom_gmv_paid
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: orders
+        column: pay_amount
+        filter: "order_status = '已支付' AND channel_type = '线上'"
+      time_field: order_date
+
+  - code: ecom_online_gmv_ratio
+    name: 线上GMV占比
+    aliases: [线上渠道占比]
+    definition: 线上渠道GMV / 已支付GMV。依赖 orders->channels 关系。
+    topic: sales
+    parent: ecom_online_gmv
+    calc_rule:
+      expression: "ONL / GMV"
+      operands:
+        ONL:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+          filter: "order_status = '已支付' AND channel_type = '线上'"
+        GMV:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+          filter: "order_status = '已支付'"
+      time_field: order_date
+
+  - code: ecom_paid_gmv_ratio
+    name: 支付完成率
+    aliases: [支付金额占比]
+    definition: 已支付GMV / 订单总额，反映下单到支付的资金转化。
+    topic: quality
+    parent: ecom_gmv_paid
+    calc_rule:
+      expression: "GMV / AMT"
+      operands:
+        GMV:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+          filter: "order_status = '已支付'"
+        AMT:
+          table: orders
+          column: pay_amount
+          aggregation: sum
+      time_field: order_date
+
+  # ---------------- 阶段 4a 扩展算子（登记口径，暂不可计算） ----------------
+  - code: ecom_ltv
+    name: 用户生命周期价值
+    aliases: [LTV]
+    definition: >
+      单用户全生命周期贡献的已支付GMV。需按注册 cohort 分组并追踪多周期
+      累计，依赖阶段 4a 扩展算子。
+    topic: user
+    requires: extended-operator
+    disambiguation:
+      question: LTV 的观测窗口？
+      options:
+        - {name: 90天LTV, description: 注册后 90 天内累计支付}
+        - {name: 全周期LTV, description: 不限窗口（默认定义，长周期）}
+      default: 全周期LTV
+    calc_rule: {}
+
+  - code: ecom_gross_margin_rate
+    name: 毛利率
+    aliases: [毛利率(行级成本)]
+    definition: >
+      (GMV - 按行分摊商品成本) / GMV。成本来自 products.cost，需与订单行
+      按 quantity 相乘后跨表汇总，属行级 join 运算，依赖阶段 4a 扩展算子。
+    topic: sales
+    requires: extended-operator
+    calc_rule: {}

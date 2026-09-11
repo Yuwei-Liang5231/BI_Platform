@@ -1,0 +1,366 @@
+# 行业指标模板包：通用经营
+# 数据假设（导入时若无对应数据集，指标进入"待绑定数据集"状态）：
+#   transactions 收支流水事实表：tx_id / tx_date / amount / type(收入|支出|退款) /
+#     category / customer_id
+#   customers 客户维度表：customer_id / customer_name / register_date / region
+#   跨表指标（客户渗透率）需注册关系 transactions.customer_id -> customers.customer_id
+industry: general
+name: 通用经营
+description: >
+  行业无关的经营收支指标模板，适合作为任何业务的起点。以收支流水表
+  （transactions）与客户表（customers）为最小数据假设；未上传数据前导入为
+  待绑定状态，表名对齐后重导入即可激活。
+metrics:
+  # ---------------- 收支 ----------------
+  - code: gen_revenue
+    name: 收入
+    aliases: [总收入, 营业收入]
+    definition: 统计周期内 type=收入 流水的 amount 合计。
+    topic: finance
+    dimensions: [交易日期, 类目, 区域]
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: transactions
+        column: amount
+        filter: "type = '收入'"
+      time_field: tx_date
+
+  - code: gen_expense
+    name: 支出
+    aliases: [总支出, 费用]
+    definition: 统计周期内 type=支出 流水的 amount 合计。
+    topic: finance
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: transactions
+        column: amount
+        filter: "type = '支出'"
+      time_field: tx_date
+
+  - code: gen_refund_amount
+    name: 退款金额
+    aliases: [退款]
+    definition: 统计周期内 type=退款 流水的 amount 合计。
+    topic: finance
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: transactions
+        column: amount
+        filter: "type = '退款'"
+      time_field: tx_date
+
+  - code: gen_net_amount
+    name: 净额
+    aliases: [净收入, 收支结余]
+    definition: 收入 - 支出（不含退款；含退款的净额口径见口径分歧）。
+    topic: finance
+    parent: gen_revenue
+    disambiguation:
+      question: 净额是否扣除退款？
+      options:
+        - {name: 收入-支出, description: 不含退款（默认，结构最简）}
+        - {name: 含退款, description: 收入-支出-退款，需三元运算，可人工新增口径}
+      default: 收入-支出
+    calc_rule:
+      expression: "REV - EXP"
+      operands:
+        REV:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '收入'"
+        EXP:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '支出'"
+      time_field: tx_date
+
+  - code: gen_net_margin
+    name: 净利率
+    aliases: [净额率]
+    definition: (收入 - 支出) / 收入。
+    topic: finance
+    parent: gen_net_amount
+    calc_rule:
+      expression: "(REV - EXP) / REV"
+      operands:
+        REV:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '收入'"
+        EXP:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '支出'"
+      time_field: tx_date
+
+  - code: gen_expense_ratio
+    name: 支出收入比
+    aliases: [费用率]
+    definition: 支出 / 收入（越低越好，涨跌语义按"恶化"解释）。
+    topic: finance
+    parent: gen_expense
+    calc_rule:
+      expression: "EXP / REV"
+      operands:
+        EXP:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '支出'"
+        REV:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '收入'"
+      time_field: tx_date
+
+  - code: gen_refund_ratio
+    name: 退款率
+    aliases: [退款占比]
+    definition: 退款金额 / 收入。
+    topic: quality
+    parent: gen_refund_amount
+    calc_rule:
+      expression: "REF / REV"
+      operands:
+        REF:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '退款'"
+        REV:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '收入'"
+      time_field: tx_date
+
+  - code: gen_main_category_revenue
+    name: 主营业务收入
+    aliases: [主营收入]
+    definition: category=主营业务 的收入合计（类目枚举按实际数据对齐）。
+    topic: finance
+    parent: gen_revenue
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: transactions
+        column: amount
+        filter: "type = '收入' AND category = '主营业务'"
+      time_field: tx_date
+
+  - code: gen_main_category_ratio
+    name: 主营占比
+    aliases: [主营收入占比]
+    definition: 主营业务收入 / 收入。
+    topic: finance
+    parent: gen_main_category_revenue
+    calc_rule:
+      expression: "MAIN / REV"
+      operands:
+        MAIN:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '收入' AND category = '主营业务'"
+        REV:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '收入'"
+      time_field: tx_date
+
+  # ---------------- 交易与客户 ----------------
+  - code: gen_tx_count
+    name: 交易笔数
+    aliases: [流水笔数]
+    definition: 统计周期内流水行数。
+    topic: transaction
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: transactions
+        column: tx_id
+      time_field: tx_date
+
+  - code: gen_tx_amount
+    name: 交易总额
+    aliases: [流水总额]
+    definition: 统计周期内全部流水 amount 合计（含收入/支出/退款，绝对值口径）。
+    topic: transaction
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: transactions
+        column: amount
+      time_field: tx_date
+
+  - code: gen_avg_tx_amount
+    name: 笔均金额
+    aliases: [平均单笔金额]
+    definition: 交易总额 / 交易笔数。
+    topic: transaction
+    parent: gen_tx_amount
+    calc_rule:
+      expression: "AMT / CNT"
+      operands:
+        AMT:
+          table: transactions
+          column: amount
+          aggregation: sum
+        CNT:
+          table: transactions
+          column: tx_id
+          aggregation: count
+      time_field: tx_date
+
+  - code: gen_large_tx_count
+    name: 大额交易笔数
+    aliases: [大额流水数]
+    definition: amount ≥ 100000 的流水笔数（阈值可按业务调整）。
+    topic: transaction
+    parent: gen_tx_count
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: transactions
+        column: tx_id
+        filter: "amount >= 100000"
+      time_field: tx_date
+
+  - code: gen_large_tx_ratio
+    name: 大额交易占比
+    aliases: [大额占比]
+    definition: 大额交易笔数 / 交易笔数。
+    topic: transaction
+    parent: gen_large_tx_count
+    calc_rule:
+      expression: "LARGE / CNT"
+      operands:
+        LARGE:
+          table: transactions
+          column: tx_id
+          aggregation: count
+          filter: "amount >= 100000"
+        CNT:
+          table: transactions
+          column: tx_id
+          aggregation: count
+      time_field: tx_date
+
+  - code: gen_customer_count
+    name: 交易客户数
+    aliases: [活跃客户数]
+    definition: 统计周期内有流水的去重客户数。
+    topic: customer
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: transactions
+        column: customer_id
+      time_field: tx_date
+
+  - code: gen_new_customer_count
+    name: 新增客户数
+    aliases: [新客数]
+    definition: 统计周期内注册（customers.register_date 落在周期内）的客户数。
+    topic: customer
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: customers
+        column: customer_id
+      time_field: register_date
+
+  - code: gen_tx_per_customer
+    name: 户均交易次数
+    aliases: [客户交易频次]
+    definition: 交易笔数 / 交易客户数。
+    topic: customer
+    parent: gen_tx_count
+    calc_rule:
+      expression: "CNT / CUST"
+      operands:
+        CNT:
+          table: transactions
+          column: tx_id
+          aggregation: count
+        CUST:
+          table: transactions
+          column: customer_id
+          aggregation: count_distinct
+      time_field: tx_date
+
+  - code: gen_revenue_per_customer
+    name: 户均收入
+    aliases: [客户平均收入]
+    definition: 收入 / 交易客户数。
+    topic: customer
+    parent: gen_revenue
+    calc_rule:
+      expression: "REV / CUST"
+      operands:
+        REV:
+          table: transactions
+          column: amount
+          aggregation: sum
+          filter: "type = '收入'"
+        CUST:
+          table: transactions
+          column: customer_id
+          aggregation: count_distinct
+      time_field: tx_date
+
+  - code: gen_customer_penetration
+    name: 客户渗透率
+    aliases: [交易客户覆盖率]
+    definition: >
+      交易客户数 / 客户总数。分母来自 customers 表（按 register_date 归期），
+      需注册关系 transactions.customer_id -> customers.customer_id 后方可编译。
+    topic: customer
+    parent: gen_customer_count
+    calc_rule:
+      expression: "ACTIVE / ALL"
+      operands:
+        ACTIVE:
+          table: transactions
+          column: customer_id
+          aggregation: count_distinct
+        ALL:
+          table: customers
+          column: customer_id
+          aggregation: count
+      time_field: tx_date
+
+  # ---------------- 阶段 4a 扩展算子（登记口径，暂不可计算） ----------------
+  - code: gen_customer_retention_rate
+    name: 客户留存率
+    aliases: [留存率]
+    definition: >
+      期初客户在期末仍有交易的占比，需按注册 cohort 对齐两期，
+      依赖阶段 4a 扩展算子。
+    topic: customer
+    requires: extended-operator
+    disambiguation:
+      question: 留存观察窗口？
+      options:
+        - {name: 次月留存, description: 注册次月仍有交易}
+        - {name: 90天留存, description: 注册 90 天内仍有交易（默认定义）}
+      default: 90天留存
+    calc_rule: {}
+
+  - code: gen_customer_ltv
+    name: 客户生命周期价值
+    aliases: [客户LTV]
+    definition: >
+      单客户全周期累计收入贡献，需按注册 cohort 追踪，依赖阶段 4a 扩展算子。
+    topic: customer
+    requires: extended-operator
+    calc_rule: {}

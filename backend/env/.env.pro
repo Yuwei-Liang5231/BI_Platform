@@ -1,0 +1,8 @@
+# 生产环境
+APP_ENV=pro
+LOG_LEVEL=WARNING
+DATA_DIR=../data-pro
+API_PREFIX=/api
+LLM_BASE_URL=
+LLM_API_KEY=
+LLM_MODEL=

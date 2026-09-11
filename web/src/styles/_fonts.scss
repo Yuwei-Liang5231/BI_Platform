@@ -1,0 +1,56 @@
+// 品牌字体 @font-face（PwC Core Library — 字体为授权资产，勿子集化改动）
+// 5 个 TTF 位于 public/fonts/，Vite 以站点根路径直接提供 /fonts/...
+
+/* ITC Charter — 展示与标题（衬线） */
+@font-face {
+  font-family: 'ITC Charter';
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src:
+    local('ITC Charter Com Regular'),
+    local('ITCCharterCom-Regular'),
+    url('/fonts/ITCCharterCom-Regular.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'ITC Charter';
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src:
+    local('ITC Charter Com Bold'),
+    local('ITCCharterCom-Bold'),
+    url('/fonts/ITCCharterCom-Bold.ttf') format('truetype');
+}
+
+/* Helvetica Neue — 正文 / UI / 数据（无衬线） */
+@font-face {
+  font-family: 'Helvetica Neue';
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+  src:
+    local('Helvetica Neue Light'),
+    local('HelveticaNeueLTPro-Lt'),
+    url('/fonts/HelveticaNeueLTPro-Lt.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Helvetica Neue';
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src:
+    local('Helvetica Neue Roman'),
+    local('HelveticaNeueLTPro-Roman'),
+    url('/fonts/HelveticaNeueLTPro-Roman.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Helvetica Neue';
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src:
+    local('Helvetica Neue Bold'),
+    local('HelveticaNeueLTPro-Bd'),
+    url('/fonts/HelveticaNeueLTPro-Bd.ttf') format('truetype');
+}

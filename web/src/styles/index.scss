@@ -1,0 +1,14 @@
+// 全局样式入口：品牌字体 → PwC token 与 Element Plus 重映射 → 全局微调
+@use './fonts';
+@use './pwc/index.scss';
+
+// 全局页面留白与最小宽度（触控目标 ≥44px 由组件库与布局类保证）
+#app {
+  min-width: 320px;
+}
+
+// 留空语义："敢说算不了"——不完整周期显示横线
+.metric-empty {
+  color: var(--pwc-text-disabled);
+  font-family: var(--pwc-font-sans);
+}

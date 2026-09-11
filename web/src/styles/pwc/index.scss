@@ -1,0 +1,281 @@
+// =============================================================================
+// PwC Core Library (Feb 2026) — Global stylesheet entry
+//
+// Usage:
+//   In your Vue/React project entry (e.g. main.js / main.ts):
+//     import '@/styles/index.scss';
+//
+// This file is the single import surface. It does three things:
+//   1. Loads design tokens (CSS custom properties + SCSS vars)
+//   2. Loads Element Plus theme overrides (oranges, sharp corners, custom buttons)
+//   3. Applies PwC base reset + utility classes + page/card/grid/badge helpers
+//
+// See README.md in this folder for the full integration guide.
+// =============================================================================
+@use './tokens.scss';
+@use './element-overrides.scss';
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--pwc-font-sans);
+  font-size: var(--pwc-font-body-m);
+  line-height: var(--pwc-lh-normal);
+  color: var(--pwc-text-primary);
+  background-color: var(--pwc-bg-base);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--pwc-font-serif);
+  font-weight: var(--pwc-fw-regular);
+  line-height: var(--pwc-lh-tight);
+  color: var(--pwc-text-primary);
+  margin: 0;
+}
+
+h1 { font-size: var(--pwc-font-display-m); }
+h2 { font-size: var(--pwc-font-display-s); }
+h3 { font-size: var(--pwc-font-heading-l); }
+h4 { font-size: var(--pwc-font-heading-m); }
+h5 { font-size: var(--pwc-font-heading-s); }
+h6 { font-size: var(--pwc-font-body-l); font-family: var(--pwc-font-sans); }
+
+p { margin: 0; }
+
+a {
+  color: inherit;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  color: var(--pwc-bg-brand);
+}
+
+// ---------- 实用类 ----------
+.pwc-text-display  { font-family: var(--pwc-font-serif); font-size: var(--pwc-font-display-m); line-height: var(--pwc-lh-tight); }
+.pwc-text-heading  { font-family: var(--pwc-font-sans); font-size: var(--pwc-font-heading-l); font-weight: var(--pwc-fw-medium); }
+.pwc-text-body     { font-family: var(--pwc-font-sans); font-size: var(--pwc-font-body-m); }
+.pwc-text-secondary { color: var(--pwc-text-secondary); }
+.pwc-text-disabled { color: var(--pwc-text-disabled); }
+.pwc-text-brand    { color: var(--pwc-bg-brand); }
+
+.pwc-bg-base    { background-color: var(--pwc-bg-base); }
+.pwc-bg-layer-1 { background-color: var(--pwc-bg-layer-1); }
+.pwc-bg-layer-2 { background-color: var(--pwc-bg-layer-2); }
+.pwc-bg-brand-1 { background-color: var(--pwc-bg-brand-layer-1); }
+.pwc-bg-brand-2 { background-color: var(--pwc-bg-brand-layer-2); }
+.pwc-bg-inverse { background-color: var(--pwc-bg-inverse); color: var(--pwc-text-inverse); }
+
+.pwc-divider {
+  height: 1px;
+  background: var(--pwc-border-subtle);
+  width: 100%;
+}
+
+// ---------- 页面容器 ----------
+.page-container {
+  padding: var(--pwc-space-7) var(--pwc-space-8);
+  min-height: 100%;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-bottom: var(--pwc-space-6);
+  margin-bottom: var(--pwc-space-6);
+  border-bottom: 1px solid var(--pwc-border-subtle);
+  flex-wrap: wrap;
+  gap: var(--pwc-space-4);
+}
+
+.page-header__title {
+  font-family: var(--pwc-font-serif);
+  font-size: var(--pwc-font-display-s);
+  line-height: var(--pwc-lh-tight);
+  margin: 0;
+}
+
+.page-header__subtitle {
+  color: var(--pwc-text-secondary);
+  font-size: var(--pwc-font-body-m);
+  margin-top: var(--pwc-space-2);
+}
+
+.page-header__actions {
+  display: flex;
+  gap: var(--pwc-space-3);
+  align-items: center;
+}
+
+// ---------- 卡片 ----------
+.pwc-card {
+  background: var(--pwc-bg-base);
+  border: 1px solid var(--pwc-border-subtle);
+  border-radius: 0;
+  padding: var(--pwc-space-6);
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: var(--pwc-space-4);
+    border-bottom: 1px solid var(--pwc-border-subtle);
+    margin-bottom: var(--pwc-space-5);
+
+    h3, h4 {
+      font-family: var(--pwc-font-sans);
+      font-weight: 600;
+      font-size: var(--pwc-font-heading-s);
+      margin: 0;
+    }
+  }
+}
+
+// ---------- 渐变 hero 区域 ----------
+.pwc-hero {
+  background: linear-gradient(135deg, #FE8303 0%, #FD5108 75%, #EE3D08 100%);
+  color: var(--pwc-text-on-brand);
+  padding: var(--pwc-space-8) var(--pwc-space-9);
+  position: relative;
+  overflow: hidden;
+
+  h1, h2, h3 { color: var(--pwc-text-on-brand); }
+  p, span { color: var(--pwc-text-on-brand); }
+}
+
+// ---------- 数据卡片 ----------
+.stat-card {
+  background: var(--pwc-bg-base);
+  border: 1px solid var(--pwc-border-subtle);
+  padding: var(--pwc-space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pwc-space-3);
+  transition: border-color 0.2s, transform 0.2s;
+  min-height: 140px;
+
+  &:hover {
+    border-color: #FD5108;
+    transform: translateY(-2px);
+  }
+
+  &__label {
+    color: var(--pwc-text-secondary);
+    font-size: var(--pwc-font-body-s);
+  }
+
+  &__value {
+    font-family: 'Helvetica Neue', sans-serif;
+    font-weight: 700;
+    font-size: var(--pwc-font-data-l);
+    line-height: 1.1;
+    color: var(--pwc-text-primary);
+  }
+
+  &__delta {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--pwc-font-body-s);
+    font-weight: 500;
+
+    &--up   { color: #059669; }
+    &--down { color: #D62222; }
+  }
+
+  &__icon {
+    width: 48px;
+    height: 48px;
+    background: var(--pwc-bg-brand-layer-1);
+    color: #FD5108;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0;
+  }
+}
+
+// ---------- 12-列网格 ----------
+.grid-12 {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: var(--pwc-space-5);
+}
+
+.col-span-12 { grid-column: span 12; }
+.col-span-9  { grid-column: span 9; }
+.col-span-8  { grid-column: span 8; }
+.col-span-6  { grid-column: span 6; }
+.col-span-4  { grid-column: span 4; }
+.col-span-3  { grid-column: span 3; }
+
+@media (max-width: 1023px) {
+  .col-span-9, .col-span-8, .col-span-6 { grid-column: span 12; }
+  .col-span-4, .col-span-3 { grid-column: span 6; }
+}
+@media (max-width: 599px) {
+  .col-span-4, .col-span-3 { grid-column: span 12; }
+}
+
+// ---------- 徽章 ----------
+.pwc-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  font-size: var(--pwc-font-label-s);
+  font-weight: 500;
+  border-radius: 100px;
+  background: var(--pwc-bg-brand-layer-1);
+  color: #C52B09;
+
+  &--success { background: #ECFDF5; color: #064E3B; }
+  &--warning { background: #FCFAEA; color: #7C450A; }
+  &--error   { background: #FEF2F2; color: #7F1D1D; }
+  &--info    { background: #EFF6FF; color: #1E3A8A; }
+  &--grey    { background: var(--pwc-bg-layer-2); color: var(--pwc-text-secondary); }
+}
+
+// ---------- 标签条 ----------
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--pwc-bg-base);
+  border: 1px solid var(--pwc-border-subtle);
+  color: var(--pwc-text-primary);
+  border-radius: 100px;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover, &.is-active {
+    border-color: var(--pwc-bg-brand);
+    color: var(--pwc-bg-brand);
+  }
+}
+
+// ---------- 动画 ----------
+@keyframes pwc-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in {
+  animation: pwc-fade-in 0.3s ease;
+}

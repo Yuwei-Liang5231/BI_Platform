@@ -1,0 +1,37 @@
+import request from "@/config/request";
+
+// 上传需服务端流式解析入库（数十万行可超 30s），单独放宽超时至 10 分钟；
+// 其余接口沿用全局 30s。
+export const uploadDataset = (formData, onProgress) =>
+  request.post("/datasets/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 600000,
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
+    },
+  });
+
+export const listDatasets = () => request.get("/datasets");
+
+export const getDataset = (datasetId) => request.get(`/datasets/${datasetId}`);
+
+export const renameDataset = (datasetId, name) =>
+  request.patch(`/datasets/${datasetId}/name`, { name });
+
+export const getPreview = (datasetId) =>
+  request.get(`/datasets/${datasetId}/preview`);
+
+export const getColumnAnomalies = (datasetId, columnName) =>
+  request.get(`/datasets/${datasetId}/columns/${columnName}/anomalies`);
+
+export const deleteDataset = (datasetId) =>
+  request.delete(`/datasets/${datasetId}`);
+
+export const addRelation = (datasetId, data) =>
+  request.post(`/datasets/${datasetId}/relations`, data);
+
+export const listRelations = (datasetId) =>
+  request.get(`/datasets/${datasetId}/relations`);
+
+export const deleteRelation = (datasetId, relationId) =>
+  request.delete(`/datasets/${datasetId}/relations/${relationId}`);

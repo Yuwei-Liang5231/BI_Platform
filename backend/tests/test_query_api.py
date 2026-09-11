@@ -1,0 +1,267 @@
+"""B3 统一计算服务 API 集成测试。
+
+验收主线（执行方案 B3）：
+- 口径一致性：同一指标同一范围，metric-value 结果与手工 SQL 一致
+- 周期完整性：不完整返回 null 且不入缓存（补录数据后不固化 null）
+- 缓存失效：改口径（ver+1）/ 数据集版本变化（dataset_ver+1）后旧缓存失效
+- 环比/同比：查询层基于同一编译产物计算
+- 导出：CSV（UTF-8 BOM）、按日行数、Content-Disposition
+"""
+
+from __future__ import annotations
+
+import io
+from datetime import date
+
+import pytest
+from sqlalchemy.orm import sessionmaker
+
+from app.infra.cache import metric_cache
+from app.infra.database import get_engine
+from app.infra.models import Dataset
+
+DATASET_NAME = "q_sales_2026"
+METRIC_CODE = "q_gmv_sum"
+
+SALES_ROWS = [
+    # 覆盖区间 2025-01-01 ~ 2026-02-05；paid GMV：2025-01=150，2026-01=370
+    ["2025-01-01", "100", "paid"],
+    ["2025-01-15", "50", "paid"],
+    ["2025-02-10", "200", "paid"],
+    ["2026-01-10", "300", "paid"],
+    ["2026-01-20", "70", "paid"],
+    ["2026-02-05", "80", "paid"],
+]
+
+GMV_RULE = {
+    "base_aggregation": "sum",
+    "source": {"table": DATASET_NAME, "column": "amount", "filter": "status = 'paid'"},
+}
+
+
+def _csv_bytes(header: list[str], rows: list[list[str]]) -> bytes:
+    lines = [",".join(header)] + [",".join(r) for r in rows]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+@pytest.fixture(scope="session")
+def query_env(client):
+    """上传销售数据集并创建 GMV 指标（session 级：client 共享一个测试库，
+    函数级 fixture 会在第二个测试因 code 冲突失败）。"""
+    metric_cache.clear()  # 缓存是进程级单例，避免跨测试状态污染 miss/hit 断言
+    resp = client.post(
+        "/api/datasets/upload",
+        files={"file": ("q_sales.csv", io.BytesIO(_csv_bytes(
+            ["sale_date", "amount", "status"], SALES_ROWS
+        )), "text/csv")},
+        data={"name": DATASET_NAME},
+    )
+    assert resp.status_code == 200, resp.text
+    resp = client.post("/api/metrics", json={
+        "code": METRIC_CODE,
+        "name": "查询测试GMV",
+        "calc_rule": GMV_RULE,
+    })
+    assert resp.status_code == 200, resp.text
+    return METRIC_CODE
+
+
+def _query(client, metric, start, end, compare="none"):
+    return client.post("/api/query/metric-value", json={
+        "metric": metric, "start": start, "end": end, "compare": compare,
+    })
+
+
+class TestMetricValue:
+    def test_value_matches_expectation(self, client, query_env):
+        """口径一致性：2026-01 paid GMV = 300 + 70 = 370。"""
+        resp = _query(client, query_env, "2026-01-01", "2026-01-31")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert data["value"] == pytest.approx(370.0)
+        assert data["period_complete"] is True
+        assert data["cache"] == "miss"
+        assert data["coverage"] == {"start": "2025-01-01", "end": "2026-02-05"}
+        assert data["metric_code"] == METRIC_CODE
+
+    def test_cache_hit_on_repeat(self, client, query_env):
+        metric_cache.clear()  # 前序测试可能已用相同键填充缓存
+        assert _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]["cache"] == "miss"
+        data = _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]
+        assert data["cache"] == "hit"
+        assert data["value"] == pytest.approx(370.0)
+
+    def test_period_incomplete_returns_null_and_bypasses_cache(self, client, query_env):
+        """end 超出覆盖区间 → null；且不缓存（连续两次都 bypass）。"""
+        for _ in range(2):
+            resp = _query(client, query_env, "2026-01-01", "2026-02-28")
+            data = resp.json()["data"]
+            assert data["value"] is None
+            assert data["period_complete"] is False
+            assert data["cache"] == "bypass"
+
+    def test_complete_but_empty_period_returns_null(self, client, query_env):
+        """范围内无数据：完整周期但值为 null（与不完整区分）。"""
+        resp = _query(client, query_env, "2025-12-01", "2025-12-31")
+        data = resp.json()["data"]
+        assert data["value"] is None
+        assert data["period_complete"] is True
+
+    def test_query_by_metric_id(self, client, query_env):
+        listing = client.get("/api/metrics", params={"search": METRIC_CODE}).json()["data"]
+        metric_id = listing[0]["id"]
+        resp = _query(client, metric_id, "2026-01-01", "2026-01-31")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["value"] == pytest.approx(370.0)
+
+    def test_disabled_metric_rejected(self, client, query_env):
+        listing = client.get("/api/metrics", params={"search": METRIC_CODE}).json()["data"]
+        metric_id = listing[0]["id"]
+        resp = client.patch(f"/api/metrics/{metric_id}", json={"status": "disabled", "reason": "停用"})
+        assert resp.status_code == 200
+        resp = _query(client, metric_id, "2026-01-01", "2026-01-31")
+        assert resp.status_code == 400
+        assert resp.json()["code"] == 40000
+        # 恢复（session 级共享状态，后续测试仍要计算）
+        resp = client.patch(f"/api/metrics/{metric_id}", json={"status": "active", "reason": "恢复"})
+        assert resp.status_code == 200, resp.text
+
+
+class TestCacheInvalidation:
+    def test_calc_rule_change_invalidates(self, client, query_env):
+        """改口径 → ver+1 → 缓存键变化 → 重新计算，值随新口径。"""
+        assert _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]["value"] == pytest.approx(370.0)
+        listing = client.get("/api/metrics", params={"search": METRIC_CODE}).json()["data"]
+        metric_id = listing[0]["id"]
+        resp = client.patch(f"/api/metrics/{metric_id}", json={
+            "calc_rule": {"base_aggregation": "max",
+                           "source": {"table": DATASET_NAME, "column": "amount",
+                                       "filter": "status = 'paid'"}},
+            "reason": "口径变更验证缓存失效",
+        })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["ver"] == 2
+
+        data = _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]
+        assert data["cache"] == "miss"          # 旧缓存未命中
+        assert data["ver"] == 2
+        assert data["value"] == pytest.approx(300.0)  # max(300, 70)
+
+        # 恢复 sum 口径（fixture 是 session 级，后续测试仍依赖 370/150 断言）
+        resp = client.patch(f"/api/metrics/{metric_id}", json={
+            "calc_rule": GMV_RULE, "reason": "恢复原口径",
+        })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["ver"] == 3
+        assert _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]["value"] == pytest.approx(370.0)
+
+    def test_dataset_ver_change_invalidates(self, client, query_env):
+        """dataset_ver 递增（模拟 B8 数据重导入）→ 缓存失效。"""
+        metric_cache.clear()
+        assert _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]["cache"] == "miss"
+        assert _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]["cache"] == "hit"
+
+        Session = sessionmaker(bind=get_engine(), expire_on_commit=False)
+        s = Session()
+        row = s.query(Dataset).filter(Dataset.name == DATASET_NAME).one()
+        row.dataset_ver += 1
+        s.commit()
+        s.close()
+
+        data = _query(client, query_env, "2026-01-01", "2026-01-31").json()["data"]
+        assert data["cache"] == "miss"
+        assert data["value"] == pytest.approx(370.0)
+
+
+class TestCompare:
+    def test_yoy_values_and_change_pct(self, client, query_env):
+        """同比：2026-01=370 vs 2025-01=150 → +146.6667%。"""
+        resp = _query(client, query_env, "2026-01-01", "2026-01-31", compare="yoy")
+        data = resp.json()["data"]
+        assert data["value"] == pytest.approx(370.0)
+        assert data["compare"]["value"] == pytest.approx(150.0)
+        assert data["compare"]["period_complete"] is True
+        assert data["compare"]["change_pct"] == pytest.approx(146.6667)
+        assert data["compare"]["start"] == "2025-01-01"
+        assert data["compare"]["end"] == "2025-01-31"
+
+    def test_mom_previous_empty_period(self, client, query_env):
+        """环比上期为完整周期但无数据 → change_pct 为 None 而非报错。"""
+        resp = _query(client, query_env, "2026-01-01", "2026-01-31", compare="mom")
+        data = resp.json()["data"]
+        assert data["value"] == pytest.approx(370.0)
+        assert data["compare"]["start"] == "2025-12-01"
+        assert data["compare"]["end"] == "2025-12-31"
+        assert data["compare"]["value"] is None
+        assert data["compare"]["change_pct"] is None
+
+    def test_compare_incomplete_current_complete_previous(self, client, query_env):
+        """本期超覆盖（02-28 > 02-05）不完整；同比上期 2025-02 在覆盖内且
+        有数据 200 → 完整。两个周期完整性相互独立。"""
+        resp = _query(client, query_env, "2026-02-01", "2026-02-28", compare="yoy")
+        data = resp.json()["data"]
+        assert data["value"] is None
+        assert data["period_complete"] is False
+        assert data["compare"]["period_complete"] is True
+        assert data["compare"]["value"] == pytest.approx(200.0)
+
+
+class TestErrors:
+    def test_unknown_metric_404(self, client, query_env):
+        resp = _query(client, "no_such_metric", "2026-01-01", "2026-01-31")
+        assert resp.status_code == 404
+        assert resp.json()["code"] == 40400
+
+    def test_bad_date_format_400(self, client, query_env):
+        resp = _query(client, query_env, "2026/01/01", "2026-01-31")
+        assert resp.status_code == 400
+        assert resp.json()["code"] == 40000
+
+    def test_start_after_end_400(self, client, query_env):
+        resp = _query(client, query_env, "2026-02-01", "2026-01-01")
+        assert resp.status_code == 400
+
+    def test_invalid_compare_400(self, client, query_env):
+        resp = _query(client, query_env, "2026-01-01", "2026-01-31", compare="wow")
+        assert resp.status_code == 400
+
+
+class TestExport:
+    def test_export_csv_content(self, client, query_env):
+        """31 天序列 + BOM + 表头；1 月两个有值日 300/70，其余空值。"""
+        resp = client.post("/api/query/export", json={
+            "metric": query_env, "start": "2026-01-01", "end": "2026-01-31",
+        })
+        assert resp.status_code == 200, resp.text
+        assert "attachment" in resp.headers["content-disposition"]
+        assert METRIC_CODE in resp.headers["content-disposition"]
+
+        raw = resp.content
+        assert raw[:3] == b"\xef\xbb\xbf"  # UTF-8 BOM（Excel 兼容）
+        lines = raw.decode("utf-8-sig").strip().splitlines()
+        assert lines[0] == "date,value,period_complete"
+        assert len(lines) == 32  # header + 31 天
+
+        by_date = {line.split(",")[0]: line.split(",")[1] for line in lines[1:]}
+        assert by_date["2026-01-10"] == "300"   # amount 列推断为 int，sum → int
+        assert by_date["2026-01-20"] == "70"
+        assert by_date["2026-01-01"] == ""      # 有覆盖、无数据 → 空
+        flags = {line.split(",")[0]: line.split(",")[2] for line in lines[1:]}
+        assert flags["2026-01-31"] == "1"   # 覆盖期内每天 complete
+
+    def test_export_far_future_all_empty_incomplete(self, client, query_env):
+        """覆盖期外导出：全部 incomplete（value 空、标志 0）。"""
+        resp = client.post("/api/query/export", json={
+            "metric": query_env, "start": "2027-01-01", "end": "2027-01-03",
+        })
+        lines = resp.content.decode("utf-8-sig").strip().splitlines()
+        assert len(lines) == 4
+        for line in lines[1:]:
+            assert line.endswith(",0")
+
+    def test_export_range_too_long_400(self, client, query_env):
+        resp = client.post("/api/query/export", json={
+            "metric": query_env, "start": "2020-01-01", "end": "2026-01-01",
+        })
+        assert resp.status_code == 400
+        assert resp.json()["code"] == 40000

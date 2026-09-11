@@ -1,0 +1,989 @@
+// =============================================================================
+// Element Plus 主题覆盖 (PwC Core Library Feb 2026)
+// 用 !important 强制覆盖 :root 变量，确保胜过 Element Plus 的默认值
+// =============================================================================
+
+:root {
+  // ---------- 主色：品牌橙 (Orange 500) ----------
+  --el-color-primary: #FD5108 !important;
+  --el-color-primary-light-3: #FE7C39 !important;
+  --el-color-primary-light-5: #FFAA72 !important;
+  --el-color-primary-light-7: #FFCDA8 !important;
+  --el-color-primary-light-8: #FFE8D4 !important;
+  --el-color-primary-light-9: #FFF5ED !important;
+  --el-color-primary-dark-2: #C52B09 !important;
+
+  // Success
+  --el-color-success: #059669 !important;
+  --el-color-success-light-3: #4FD3A0 !important;
+  --el-color-success-light-5: #8AF2CA !important;
+  --el-color-success-light-7: #D3FEEB !important;
+  --el-color-success-light-8: #ECFDF5 !important;
+  --el-color-success-light-9: #F0FDF9 !important;
+  --el-color-success-dark-2: #077C59 !important;
+
+  // Warning
+  --el-color-warning: #B37714 !important;
+  --el-color-warning-light-3: #E9B01F !important;
+  --el-color-warning-light-5: #F6D169 !important;
+  --el-color-warning-light-7: #FDF1C0 !important;
+  --el-color-warning-light-8: #FCFAEA !important;
+  --el-color-warning-light-9: #FEFBF0 !important;
+  --el-color-warning-dark-2: #9F6110 !important;
+
+  // Danger
+  --el-color-danger: #D62222 !important;
+  --el-color-danger-light-3: #F66F6F !important;
+  --el-color-danger-light-5: #F6A2A2 !important;
+  --el-color-danger-light-7: #FFE0E0 !important;
+  --el-color-danger-light-8: #FEF2F2 !important;
+  --el-color-danger-light-9: #FEF5F5 !important;
+  --el-color-danger-dark-2: #D12121 !important;
+
+  // Error
+  --el-color-error: #D62222 !important;
+  --el-color-error-light-3: #F66F6F !important;
+  --el-color-error-light-5: #F6A2A2 !important;
+  --el-color-error-light-7: #FFE0E0 !important;
+  --el-color-error-light-8: #FEF2F2 !important;
+  --el-color-error-light-9: #FEF5F5 !important;
+  --el-color-error-dark-2: #D12121 !important;
+
+  // Info: Info 蓝色阶（Info 500 为核心；light-N 映射到浅色档 300/200/100/50）
+  --el-color-info: #2563EB !important;
+  --el-color-info-light-3: #6797FF !important;
+  --el-color-info-light-5: #ABC8FC !important;
+  --el-color-info-light-7: #DCE7FD !important;
+  --el-color-info-light-8: #EFF6FF !important;
+  --el-color-info-light-9: #EFF6FF !important;
+  --el-color-info-dark-2: #185CDF !important;
+
+  // ---------- 圆角：sharp 0px ----------
+  --el-border-radius-base: 0 !important;
+  --el-border-radius-small: 0 !important;
+  --el-border-radius-round: 0 !important;
+  --el-border-radius-circle: 100% !important;
+
+  // ---------- 文本 ----------
+  --el-text-color-primary: #000000 !important;
+  --el-text-color-regular: #000000 !important;
+  --el-text-color-secondary: #626771 !important;
+  --el-text-color-placeholder: #8E95A2 !important;
+  --el-text-color-disabled: #8E95A2 !important;
+
+  // ---------- 边框/背景 ----------
+  --el-border-color: #DFE3E6 !important;
+  --el-border-color-light: #EEEFF1 !important;
+  --el-border-color-lighter: #F5F7F8 !important;
+  --el-border-color-extra-light: #F5F7F8 !important;
+  --el-bg-color: #FFFFFF !important;
+  --el-bg-color-page: #F5F7F8 !important;
+  --el-bg-color-overlay: #FFFFFF !important;
+  --el-fill-color: #F5F7F8 !important;
+  --el-fill-color-light: #F5F7F8 !important;
+  --el-fill-color-lighter: #EEEFF1 !important;
+  --el-fill-color-blank: #FFFFFF !important;
+}
+
+// =============================================================================
+// 关键组件直接覆盖（最高优先级）
+// 用 !important 确保覆盖 Element Plus 的具体规则
+// =============================================================================
+
+// Button Default / Secondary (Outlined): 白底 + 1px Black 边框
+// 尺寸继承 Element Plus 默认（min-height 40px，padding 8px 15px），仅替换颜色
+// hover: Orange 300 填充；active: Orange 200 浅填充；border 始终 1px Black
+// 文字始终为 Black
+.el-button {
+  --el-button-bg-color: #FFFFFF;
+  --el-button-border-color: #000000;
+  --el-button-text-color: #000000;
+  --el-button-hover-bg-color: #FFAA72;
+  --el-button-hover-border-color: #000000;
+  --el-button-hover-text-color: #000000;
+  --el-button-active-bg-color: #FFCDA8;
+  --el-button-active-border-color: #000000;
+  --el-button-active-text-color: #000000;
+  background-color: #FFFFFF !important;
+  border-color: #000000 !important;
+  color: #000000 !important;
+}
+.el-button:hover {
+  background-color: #FFAA72 !important;
+  border-color: #000000 !important;
+  color: #000000 !important;
+}
+.el-button:active {
+  background-color: #FFCDA8 !important;
+  border-color: #000000 !important;
+  color: #000000 !important;
+}
+.el-button.is-disabled,
+.el-button.is-disabled:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Button Primary (Tonal Filled): 浅变体默认 → 全品牌 hover → 回到变体 pressed
+// 文字始终为 Black（Black on Orange 300 = 11.2:1，Black on Orange 500 = 4.58:1）
+.el-button--primary {
+  --el-button-bg-color: #FFAA72;
+  --el-button-border-color: #FFAA72;
+  --el-button-text-color: #000000;
+  --el-button-hover-bg-color: #FD5108;
+  --el-button-hover-border-color: #FD5108;
+  --el-button-hover-text-color: #000000;
+  --el-button-active-bg-color: #FFAA72;
+  --el-button-active-border-color: #FFAA72;
+  --el-button-active-text-color: #000000;
+  background-color: #FFAA72 !important;
+  border-color: #FFAA72 !important;
+  color: #000000 !important;
+}
+.el-button--primary:hover {
+  background-color: #FD5108 !important;
+  border-color: #FD5108 !important;
+  color: #000000 !important;
+}
+.el-button--primary:active {
+  background-color: #FFAA72 !important;
+  border-color: #FFAA72 !important;
+  color: #000000 !important;
+}
+.el-button--primary.is-disabled,
+.el-button--primary.is-disabled:hover {
+  background-color: #DFE3E6 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Button Success (Tonal Filled): Success 300 → Success 500 → Success 300
+// 文字始终为 Black（Black on Success 300 = 11.2:1，on Success 500 = 5.6:1）
+.el-button--success {
+  --el-button-bg-color: #4FD3A0;
+  --el-button-border-color: #4FD3A0;
+  --el-button-text-color: #000000;
+  --el-button-hover-bg-color: #059669;
+  --el-button-hover-border-color: #059669;
+  --el-button-hover-text-color: #000000;
+  --el-button-active-bg-color: #4FD3A0;
+  --el-button-active-border-color: #4FD3A0;
+  --el-button-active-text-color: #000000;
+  background-color: #4FD3A0 !important;
+  border-color: #4FD3A0 !important;
+  color: #000000 !important;
+}
+.el-button--success:hover {
+  background-color: #059669 !important;
+  border-color: #059669 !important;
+  color: #000000 !important;
+}
+.el-button--success:active {
+  background-color: #4FD3A0 !important;
+  border-color: #4FD3A0 !important;
+  color: #000000 !important;
+}
+.el-button--success.is-disabled,
+.el-button--success.is-disabled:hover {
+  background-color: #DFE3E6 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Button Warning (Tonal Filled): Warning 300 → Warning 500 → Warning 300
+// 文字始终为 Black（Black on Warning 300 = 10.7:1，on Warning 500 = 5.6:1）
+.el-button--warning {
+  --el-button-bg-color: #E9B01F;
+  --el-button-border-color: #E9B01F;
+  --el-button-text-color: #000000;
+  --el-button-hover-bg-color: #B37714;
+  --el-button-hover-border-color: #B37714;
+  --el-button-hover-text-color: #000000;
+  --el-button-active-bg-color: #E9B01F;
+  --el-button-active-border-color: #E9B01F;
+  --el-button-active-text-color: #000000;
+  background-color: #E9B01F !important;
+  border-color: #E9B01F !important;
+  color: #000000 !important;
+}
+.el-button--warning:hover {
+  background-color: #B37714 !important;
+  border-color: #B37714 !important;
+  color: #000000 !important;
+}
+.el-button--warning:active {
+  background-color: #E9B01F !important;
+  border-color: #E9B01F !important;
+  color: #000000 !important;
+}
+.el-button--warning.is-disabled,
+.el-button--warning.is-disabled:hover {
+  background-color: #DFE3E6 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Button Danger (Tonal Filled): Error 300 → Error 500 → Error 300
+// 静止/按下黑字（7.4:1）；悬停切白字（Black on Error 500 = 4.1:1 不达标，White = 5.1:1）
+.el-button--danger {
+  --el-button-bg-color: #F66F6F;
+  --el-button-border-color: #F66F6F;
+  --el-button-text-color: #000000;
+  --el-button-hover-bg-color: #D62222;
+  --el-button-hover-border-color: #D62222;
+  --el-button-hover-text-color: #FFFFFF;
+  --el-button-active-bg-color: #F66F6F;
+  --el-button-active-border-color: #F66F6F;
+  --el-button-active-text-color: #000000;
+  background-color: #F66F6F !important;
+  border-color: #F66F6F !important;
+  color: #000000 !important;
+}
+.el-button--danger:hover {
+  background-color: #D62222 !important;
+  border-color: #D62222 !important;
+  color: #FFFFFF !important;
+}
+.el-button--danger:active {
+  background-color: #F66F6F !important;
+  border-color: #F66F6F !important;
+  color: #000000 !important;
+}
+.el-button--danger.is-disabled,
+.el-button--danger.is-disabled:hover {
+  background-color: #DFE3E6 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Button Info (Tonal Filled): Info 300 → Info 500 → Info 300
+// 静止/按下黑字（7.4:1）；悬停切白字（Black on Info 500 = 4.1:1 不达标，White = 5.2:1）
+.el-button--info {
+  --el-button-bg-color: #6797FF;
+  --el-button-border-color: #6797FF;
+  --el-button-text-color: #000000;
+  --el-button-hover-bg-color: #2563EB;
+  --el-button-hover-border-color: #2563EB;
+  --el-button-hover-text-color: #FFFFFF;
+  --el-button-active-bg-color: #6797FF;
+  --el-button-active-border-color: #6797FF;
+  --el-button-active-text-color: #000000;
+  background-color: #6797FF !important;
+  border-color: #6797FF !important;
+  color: #000000 !important;
+}
+.el-button--info:hover {
+  background-color: #2563EB !important;
+  border-color: #2563EB !important;
+  color: #FFFFFF !important;
+}
+.el-button--info:active {
+  background-color: #6797FF !important;
+  border-color: #6797FF !important;
+  color: #000000 !important;
+}
+.el-button--info.is-disabled,
+.el-button--info.is-disabled:hover {
+  background-color: #DFE3E6 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// =============================================================================
+// Plain 按钮（外框式：浅底 + 满色边框 + 深色文字）
+// hover: 底色加深一阶；active: 回到 rest；disabled: 标准灰
+// =============================================================================
+
+// Default plain（无 type，中性灰）
+.el-button.is-plain {
+  background-color: #FFFFFF !important;
+  border-color: #DFE3E6 !important;
+  color: #000000 !important;
+}
+.el-button.is-plain:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #A1A8B3 !important;
+  color: #000000 !important;
+}
+.el-button.is-plain:active {
+  background-color: #EEEFF1 !important;
+  border-color: #A1A8B3 !important;
+  color: #000000 !important;
+}
+.el-button.is-plain.is-disabled,
+.el-button.is-plain.is-disabled:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Primary plain（橙）
+.el-button--primary.is-plain {
+  background-color: #FFF5ED !important;
+  border-color: #FD5108 !important;
+  color: #C52B09 !important;
+}
+.el-button--primary.is-plain:hover {
+  background-color: #FFE8D4 !important;
+  border-color: #FD5108 !important;
+  color: #C52B09 !important;
+}
+.el-button--primary.is-plain:active {
+  background-color: #FFCDA8 !important;
+  border-color: #FD5108 !important;
+  color: #C52B09 !important;
+}
+.el-button--primary.is-plain.is-disabled,
+.el-button--primary.is-plain.is-disabled:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Success plain
+.el-button--success.is-plain {
+  background-color: #ECFDF5 !important;
+  border-color: #059669 !important;
+  color: #077C59 !important;
+}
+.el-button--success.is-plain:hover {
+  background-color: #D3FEEB !important;
+  border-color: #059669 !important;
+  color: #077C59 !important;
+}
+.el-button--success.is-plain:active {
+  background-color: #ECFDF5 !important;
+  border-color: #059669 !important;
+  color: #077C59 !important;
+}
+.el-button--success.is-plain.is-disabled,
+.el-button--success.is-plain.is-disabled:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Warning plain
+.el-button--warning.is-plain {
+  background-color: #FCFAEA !important;
+  border-color: #B37714 !important;
+  color: #9F6110 !important;
+}
+.el-button--warning.is-plain:hover {
+  background-color: #FDF1C0 !important;
+  border-color: #B37714 !important;
+  color: #9F6110 !important;
+}
+.el-button--warning.is-plain:active {
+  background-color: #FCFAEA !important;
+  border-color: #B37714 !important;
+  color: #9F6110 !important;
+}
+.el-button--warning.is-plain.is-disabled,
+.el-button--warning.is-plain.is-disabled:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Danger plain
+.el-button--danger.is-plain {
+  background-color: #FEF2F2 !important;
+  border-color: #D62222 !important;
+  color: #D12121 !important;
+}
+.el-button--danger.is-plain:hover {
+  background-color: #FFE0E0 !important;
+  border-color: #D62222 !important;
+  color: #D12121 !important;
+}
+.el-button--danger.is-plain:active {
+  background-color: #FEF2F2 !important;
+  border-color: #D62222 !important;
+  color: #D12121 !important;
+}
+.el-button--danger.is-plain.is-disabled,
+.el-button--danger.is-plain.is-disabled:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// Info plain（Info 50 底 + Info 500 边 + Info 600 字）
+.el-button--info.is-plain {
+  background-color: #EFF6FF !important;
+  border-color: #2563EB !important;
+  color: #185CDF !important;
+}
+.el-button--info.is-plain:hover {
+  background-color: #DCE7FD !important;
+  border-color: #2563EB !important;
+  color: #185CDF !important;
+}
+.el-button--info.is-plain:active {
+  background-color: #EFF6FF !important;
+  border-color: #2563EB !important;
+  color: #185CDF !important;
+}
+.el-button--info.is-plain.is-disabled,
+.el-button--info.is-plain.is-disabled:hover {
+  background-color: #F5F7F8 !important;
+  border-color: #DFE3E6 !important;
+  color: #8E95A2 !important;
+}
+
+// =============================================================================
+// Text / Link 按钮：透明背景 + 无边框；hover 文本转橘色
+// 文字始终不变字号，仅换色；不画下划线（保持按钮质感）
+// =============================================================================
+
+// 默认 Text / Link（无 type）：Black → Orange 500
+.el-button.is-text,
+.el-button.is-link {
+  background: transparent !important;
+  border: none !important;
+  color: #000000 !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+.el-button.is-text:hover,
+.el-button.is-link:hover {
+  background: transparent !important;
+  border: none !important;
+  color: #FD5108 !important;
+}
+.el-button.is-text:active,
+.el-button.is-link:active {
+  background: transparent !important;
+  border: none !important;
+  color: #C52B09 !important;
+}
+.el-button.is-text.is-disabled,
+.el-button.is-link.is-disabled,
+.el-button.is-text.is-disabled:hover,
+.el-button.is-link.is-disabled:hover {
+  background: transparent !important;
+  border: none !important;
+  color: #8E95A2 !important;
+  cursor: not-allowed;
+}
+
+// Primary Text / Link：Orange 500 → Orange 700（hover 加深而非变浅）
+.el-button--primary.is-text,
+.el-button--primary.is-link {
+  background: transparent !important;
+  border: none !important;
+  color: #FD5108 !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+.el-button--primary.is-text:hover,
+.el-button--primary.is-link:hover {
+  background: transparent !important;
+  border: none !important;
+  color: #C52B09 !important;
+}
+.el-button--primary.is-text:active,
+.el-button--primary.is-link:active {
+  background: transparent !important;
+  border: none !important;
+  color: #000000 !important;
+}
+.el-button--primary.is-text.is-disabled,
+.el-button--primary.is-link.is-disabled,
+.el-button--primary.is-text.is-disabled:hover,
+.el-button--primary.is-link.is-disabled:hover {
+  background: transparent !important;
+  border: none !important;
+  color: #8E95A2 !important;
+  cursor: not-allowed;
+}
+
+// Danger Text / Link：Error 500 → Orange 500（hover 切到品牌色，提示"激活"）
+.el-button--danger.is-text,
+.el-button--danger.is-link {
+  background: transparent !important;
+  border: none !important;
+  color: #D62222 !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+.el-button--danger.is-text:hover,
+.el-button--danger.is-link:hover {
+  background: transparent !important;
+  border: none !important;
+  color: #FD5108 !important;
+}
+.el-button--danger.is-text:active,
+.el-button--danger.is-link:active {
+  background: transparent !important;
+  border: none !important;
+  color: #C52B09 !important;
+}
+.el-button--danger.is-text.is-disabled,
+.el-button--danger.is-link.is-disabled,
+.el-button--danger.is-text.is-disabled:hover,
+.el-button--danger.is-link.is-disabled:hover {
+  background: transparent !important;
+  border: none !important;
+  color: #8E95A2 !important;
+  cursor: not-allowed;
+}
+
+// =============================================================================
+// Link 链接（6 种 type）— 规范依据：
+//   - Link States：中性深色静止 → 品牌悬停（brand-hover = Orange 700 #C52B09）
+//     → 中性深色按下；悬停时下划线从 1px 增至 2px
+//   - Text/Link 按钮状态总表：primary = Orange 500 → Orange 700 → Black；
+//     danger = Error 500 → Orange 500（激活时转品牌色）→ Orange 700
+//   - §2 Branded components：已着色组件悬停加深一档、按下回深中性（Black），
+//     success / info 链接据此用 500 静止 → 600 悬停 → Black 按下
+//   - Warning 500 #B37714 作正文仅 3.8:1 不达 4.5:1（SKILL.md NEVER 条款），
+//     warning 链接整体加深一档：600 静止 → 700 悬停
+// =============================================================================
+
+// Default 链接：Black → Orange 700 → Black
+.el-link {
+  --el-link-text-color: #000000;
+  --el-link-hover-text-color: #C52B09;
+  color: #000000 !important;
+  transition: color 300ms cubic-bezier(0.25, 0, 1);
+}
+.el-link:hover {
+  color: #C52B09 !important;
+}
+.el-link:active {
+  color: #000000 !important;
+}
+
+// 下划线：静止 1px，悬停加粗到 2px（颜色跟随文字 currentColor）
+.el-link.is-underline::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  bottom: 0;
+  border-bottom: 1px solid currentColor;
+}
+.el-link.is-underline:hover::after {
+  border-bottom: 2px solid currentColor;
+}
+
+// Primary 链接：Orange 500 → Orange 700 → Black
+.el-link--primary {
+  --el-link-text-color: #FD5108;
+  --el-link-hover-text-color: #C52B09;
+  color: #FD5108 !important;
+}
+.el-link--primary:hover {
+  color: #C52B09 !important;
+}
+.el-link--primary:active {
+  color: #000000 !important;
+}
+
+// Success 链接：Success 500 → Success 600 → Black
+.el-link--success {
+  --el-link-text-color: #059669;
+  --el-link-hover-text-color: #077C59;
+  color: #059669 !important;
+}
+.el-link--success:hover {
+  color: #077C59 !important;
+}
+.el-link--success:active {
+  color: #000000 !important;
+}
+
+// Warning 链接：Warning 600 → Warning 700 → Black（500 档正文对比度不达标，加深一档）
+.el-link--warning {
+  --el-link-text-color: #9F6110;
+  --el-link-hover-text-color: #7C450A;
+  color: #9F6110 !important;
+}
+.el-link--warning:hover {
+  color: #7C450A !important;
+}
+.el-link--warning:active {
+  color: #000000 !important;
+}
+
+// Danger 链接：Error 500 → Orange 500 → Orange 700（规范 danger 行：激活时转品牌色）
+.el-link--danger {
+  --el-link-text-color: #D62222;
+  --el-link-hover-text-color: #FD5108;
+  color: #D62222 !important;
+}
+.el-link--danger:hover {
+  color: #FD5108 !important;
+}
+.el-link--danger:active {
+  color: #C52B09 !important;
+}
+
+// Info 链接：Info 500 → Info 600 → Black
+.el-link--info {
+  --el-link-text-color: #2563EB;
+  --el-link-hover-text-color: #185CDF;
+  color: #2563EB !important;
+}
+.el-link--info:hover {
+  color: #185CDF !important;
+}
+.el-link--info:active {
+  color: #000000 !important;
+}
+
+// Link 禁用态（全类型统一：Grey 600 文字）
+.el-link.is-disabled,
+.el-link.is-disabled:hover {
+  --el-link-text-color: #8E95A2;
+  color: #8E95A2 !important;
+  cursor: not-allowed;
+}
+
+// Link 键盘焦点：颜色不变，2px 描边（规范 Focused = 2px stroke）
+.el-link:focus-visible {
+  outline: 2px solid var(--pwc-border-focus, #111113);
+  outline-offset: 2px;
+}
+
+// Focus: 颜色不变，仅键盘焦点显示 2px 描边（规范：Focused = 2px stroke, colour unchanged）
+// 鼠标点击获得焦点时不显示（避免点击后卡在 hover 色），仅 Tab 键盘导航时出现
+.el-button:focus-visible {
+  outline: 2px solid var(--pwc-border-focus, #111113);
+  outline-offset: 2px;
+}
+
+// 所有 el-button 圆角
+.el-button {
+  border-radius: 0 !important;
+}
+
+// =============================================================================
+// Field States（输入框 / 文本域 / 选择器 / 日期 / 级联 / 数字，覆盖全部 el-input 系）
+// 规范依据 component-states.md §Field States：
+//   - 状态显示在容器描边上：静止 = 1px 中性 border-strong（Grey 500 #A1A8B3，
+//     对白底 3:1 满足 UI 组件对比）→ 悬停 = 橙色描边（Orange 500 #FD5108，保持 1px）
+//     → 聚焦 = 橙色描边且从 1px 加粗到 2px
+//   - Error（仅文本字段）：Error 500 #D62222 描边 + Error 600 #D12121 错误文案
+//   - Disabled 全组件统一：文字 Grey 600 #8E95A2 + 背景 Grey 200 #DFE3E6
+//   - 占位符 = 中性灰 Grey 600；表单标签 = Label 样式（Helvetica Neue Medium 500）
+// EP 用 inset box-shadow 画描边，1px→2px 过渡不引起布局位移（高度不变）
+// =============================================================================
+
+// EP 字段变量对齐（供内部机制引用；描边本体由下方规则接管）
+:root {
+  --el-input-border-color: #A1A8B3;
+  --el-input-hover-border-color: #FD5108;
+  --el-input-focus-border-color: #FD5108;
+  --el-input-text-color: #000000;
+  --el-input-placeholder-color: #8E95A2;
+  --el-input-bg-color: #FFFFFF;
+  --el-input-disabled-bg-color: #DFE3E6;
+  --el-input-disabled-border-color: #DFE3E6;
+  --el-input-disabled-text-color: #8E95A2;
+}
+
+// 静止：1px 中性 border-strong
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper,
+.el-date-editor.el-input__wrapper {
+  box-shadow: 0 0 0 1px #A1A8B3 inset !important;
+  border-radius: 0;
+  transition: box-shadow 300ms cubic-bezier(0.25, 0, 1);
+}
+
+// 悬停：橙色描边（保持 1px）
+.el-input__wrapper:hover,
+.el-textarea__inner:hover,
+.el-select__wrapper:hover,
+.el-date-editor.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px #FD5108 inset !important;
+}
+
+// 聚焦：橙色描边从 1px 加粗到 2px
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focused,
+.el-date-editor.el-input__wrapper.is-active {
+  box-shadow: 0 0 0 2px #FD5108 inset !important;
+}
+
+// 错误态：Error 500 描边（仅文本字段）
+.el-form-item.is-error .el-input__wrapper,
+.el-form-item.is-error .el-textarea__inner {
+  box-shadow: 0 0 0 1px #D62222 inset !important;
+}
+.el-form-item.is-error .el-input__wrapper.is-focus,
+.el-form-item.is-error .el-textarea__inner:focus {
+  box-shadow: 0 0 0 2px #D62222 inset !important;
+}
+
+// 错误文案：Error 600
+.el-form-item__error {
+  color: #D12121 !important;
+}
+
+// 占位符：中性灰
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: #8E95A2;
+}
+
+// 禁用：文字 Grey 600 + 背景 Grey 200（全组件统一；置于最后以覆盖 hover 橙描边）
+.el-input.is-disabled .el-input__wrapper,
+.el-textarea.is-disabled .el-textarea__inner,
+.el-select__wrapper.is-disabled,
+.el-date-editor.el-input__wrapper.is-disabled {
+  background-color: #DFE3E6;
+  box-shadow: 0 0 0 1px #DFE3E6 inset !important;
+}
+.el-input.is-disabled .el-input__inner,
+.el-textarea.is-disabled .el-textarea__inner,
+.el-select__wrapper.is-disabled .el-select__placeholder,
+.el-input.is-disabled .el-input__inner::placeholder {
+  color: #8E95A2 !important;
+}
+
+// 表单标签：Label 样式（Helvetica Neue Medium 500）
+.el-form-item__label {
+  font-family: 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-weight: 500;
+  color: #000000;
+}
+
+// =============================================================================
+// Dropdown 面板选项状态（Select / TreeSelect / Autocomplete / Cascader /
+// DatePicker / TimePicker / TimeSelect / Dropdown 菜单）
+// 规范依据 component-states.md §4 Contained neutral components：
+//   - 下拉选项属容器中性组件：静止 = 中性容器；悬停 = Grey 1000 @ 6%
+//     （container-hover）；按下 = Grey 1000 @ 10%（container-pressed）
+//     —— 刻意不引入品牌色，保持列表中性
+//   - Selected = 品牌色；橙色文字在白底仅 3.05:1，作为选项文字需加深到
+//     Orange 700 #C52B09（5.9:1，满足「悬停态含文字须 4.5:1」的要求）
+//   - WCAG 修正：EP 选中日期为白字橙底（3.05:1 ✗），规范 WCAG 表要求
+//     Black on Orange 500 = 4.58:1 PASS → 选中格改黑字
+// 实现方式：EP 2.14 各下拉组件的悬停填充均引用 --el-fill-color-light，
+// 在各面板作用域内重定义该令牌即可整体切换为 6% 黑遮罩
+//   Grey 1000 #111113 → hover rgba(17,17,19,0.06) / pressed rgba(17,17,19,0.10)
+// =============================================================================
+
+// ---------- 作用域令牌覆盖：面板内所有悬停填充 → 6% 黑遮罩 ----------
+.el-select__popper,
+.el-tree-select__popper,
+.el-picker__popper,
+.el-cascader__dropdown,
+.el-autocomplete-suggestion,
+.el-dropdown__popper {
+  --el-fill-color-light: rgba(17, 17, 19, 0.06);
+  --el-fill-color: rgba(17, 17, 19, 0.06);
+}
+
+// Dropdown 菜单（EP 用独立变量，默认品牌浅底 + 品牌字，非中性遮罩）
+.el-dropdown,
+.el-dropdown__popper {
+  --el-dropdown-menuItem-hover-fill: rgba(17, 17, 19, 0.06);
+  --el-dropdown-menuItem-hover-color: #000000;
+}
+
+// DatePicker 面板（EP 用独立变量，范围内悬停默认浅灰）
+.el-picker__popper {
+  --el-datepicker-inrange-hover-bg-color: rgba(17, 17, 19, 0.06);
+  --el-datepicker-hover-text-color: #000000;
+}
+
+// ---------- 按下态：10% 黑遮罩 ----------
+.el-select-dropdown__item:active,
+.el-dropdown-menu__item:not(.is-disabled):active,
+.el-cascader-node:active,
+.el-autocomplete-suggestion li:active {
+  background-color: rgba(17, 17, 19, 0.1) !important;
+}
+
+// ---------- 选中项：品牌色文字（Orange 700，4.5:1+） ----------
+// EP 默认选中项橙字为 Orange 500（3.05:1，14px 不达 AA），统一加深到 700
+.el-select-dropdown__item.is-selected,
+.el-time-spinner__item.is-active:not(.is-disabled),
+.time-select-item.selected,
+.el-cascader-node.is-active {
+  color: #C52B09 !important;
+}
+
+// ---------- 日期 / 月份 / 年份表格 ----------
+// 选中格：橙底 + 黑字（Black on Orange 500 = 4.58:1 PASS；EP 白字 3.05:1 ✗）
+.el-picker__popper .el-date-table td.current:not(.disabled) .el-date-table-cell__text,
+.el-picker__popper .el-month-table td.current:not(.disabled) .el-date-table-cell__text,
+.el-picker__popper .el-year-table td.current:not(.disabled) .el-date-table-cell__text,
+.el-picker__popper .el-date-table td.start-date .el-date-table-cell__text,
+.el-picker__popper .el-date-table td.end-date .el-date-table-cell__text {
+  color: #000000 !important;
+}
+
+// 今天：黑字粗体 + 2px 橙色底边（装饰性品牌标记，规避橙小字 3.05:1 不达标）
+.el-picker__popper .el-date-table td.today .el-date-table-cell__text,
+.el-picker__popper .el-month-table td.today .el-date-table-cell__text,
+.el-picker__popper .el-year-table td.today .el-date-table-cell__text {
+  color: #000000;
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 #FD5108;
+}
+
+// 悬停格：黑字 + 6% 黑遮罩（容器中性逻辑；EP 默认橙字）
+.el-picker__popper .el-date-table td.available:hover {
+  color: #000000;
+}
+.el-picker__popper .el-date-table td.available:hover .el-date-table-cell,
+.el-picker__popper .el-month-table td:not(.current):not(.disabled):hover .el-date-table-cell,
+.el-picker__popper .el-year-table td:not(.current):not(.disabled):hover .el-date-table-cell {
+  background-color: rgba(17, 17, 19, 0.06);
+}
+
+// 月份 / 年份选中格的 24px 圆角归零（shape-tokens：UI 组件 0px 直角）
+.el-picker__popper .el-month-table td.current:not(.disabled) .el-date-table-cell,
+.el-picker__popper .el-year-table td.current:not(.disabled) .el-date-table-cell {
+  border-radius: 0;
+}
+
+// ---------- InputNumber 步进按钮（图标类控件：中性静止 → 品牌悬停） ----------
+.el-input-number__decrease:hover:not(.is-disabled),
+.el-input-number__increase:hover:not(.is-disabled) {
+  color: #FD5108;
+}
+
+// 聚焦：整个 InputNumber（含 ± 按钮区）描边统一加粗到 2px 品牌橙
+// 说明：EP 默认仅内层 .el-input__wrapper.is-focus 上 2px 描边，外层 .el-input-number
+// 仍为 1px，视觉上内外描边粗细不一致。把描边抬到外层容器，并屏蔽内层描边避免双层叠加。
+// 必须用伪元素 + z-index：内嵌 .el-input 白底 + ± 按钮（position:absolute,z-index:1）
+// 会盖住外层 inset 阴影；伪元素置顶后 2px 描边才能完整显示在组件四周。
+//
+// 失焦闪烁修复：.el-input__wrapper 在 EP 默认有 200ms box-shadow 过渡，
+// 失焦时 wrapper 1px 灰描边会渐变回来；若伪元素瞬时消失就会节奏不一致。
+// 让伪元素常驻，默认 0 transparent，聚焦时 2px 橙，并匹配 wrapper 的 200ms 过渡，
+// 失焦时橙→灰是同一节奏的平滑渐变，不再闪烁。
+.el-input-number {
+  position: relative;
+}
+.el-input-number::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 0 transparent;
+  pointer-events: none;
+  z-index: 2;
+  transition: box-shadow 200ms cubic-bezier(0.645, 0.045, 0.355, 1);
+}
+.el-input-number:has(.el-input__wrapper.is-focus)::before {
+  box-shadow: inset 0 0 0 2px #FD5108;
+}
+.el-input-number:has(.el-input__wrapper.is-focus) .el-input__wrapper.is-focus {
+  box-shadow: none !important;
+}
+
+// =============================================================================
+// Slider 滑块（shape-tokens.md §Usage Map：slider 属 Sharp 0px）
+// 规范依据 shape-tokens.md：滑块 = 0px 直角（含轨道与手柄）；注意区分 ——
+//   progress indicator（进度条）才是 Full 100% 全圆，两者在规范里是不同类别
+//   （usage map: "Sharp — … sliders" vs "Full — … progress indicators"）
+// EP 默认：轨道 3px 圆角（--el-slider-border-radius）+ 圆形手柄（border-radius:50%）
+// + 圆形断点（--el-border-radius-circle）+ 纵向 bar 底部 3px 圆角 → 全部归零
+// =============================================================================
+
+// 变量层：轨道圆角 3px → 0
+.el-slider {
+  --el-slider-border-radius: 0;
+}
+
+// 手柄：圆形 → 方形（保留 2px 橙描边 + 白底 = EP 默认结构，仅改形状）
+.el-slider__button {
+  border-radius: 0 !important;
+}
+
+// 断点（stops）：圆形 → 方形
+.el-slider__stop {
+  border-radius: 0 !important;
+}
+
+// 纵向轨道已填充段：EP 默认底部 3px 圆角 → 0
+.el-slider.is-vertical .el-slider__bar {
+  border-radius: 0;
+}
+
+// =============================================================================
+// Switch 开关
+// 形状（shape-tokens.md §Usage Map）：switches 属 Sharp 0px —— 轨道与滑块
+//   全部直角；EP 默认是胶囊轨道（三尺寸字面量 10/12/8px）+ 圆形滑块
+// 状态色（component-states.md §Selection Controls）：
+//   - Unselected: rest 中性 → hover 品牌橙描边（与 checkbox 规范 CSS 同构：
+//     .pwc-checkbox:hover { border-color: orange-500 }）
+//   - Selected: rest Orange 500（--el-switch-on-color 已映射）→ hover 加深到
+//     Orange 700 #C52B09（darker brand）—— EP 原生无 hover 态，此处补齐
+//   - Disabled 全组件统一：轨道 Grey 200 + 滑块 Grey 600（EP 默认 opacity .6）
+//   - Focus：2px 黑描边（EP 默认描边色跟随开关色，规范要求中性黑）
+// =============================================================================
+
+// ---------- 形状：轨道胶囊 → 0px（默认 10 / large 12 / small 8 字面量） ----------
+.el-switch__core,
+.el-switch--large .el-switch__core,
+.el-switch--small .el-switch__core {
+  border-radius: 0 !important;
+}
+
+// 滑块圆点 → 方形（action 用 --el-border-radius-circle，直接覆盖）
+.el-switch__core .el-switch__action {
+  border-radius: 0 !important;
+}
+
+// ---------- 未选中 hover：品牌橙描边（branded，保持中性填充避免误读为开启） ----------
+.el-switch:not(.is-checked) .el-switch__core:hover {
+  border-color: #FD5108 !important;
+}
+
+// ---------- 选中 hover：Orange 700（darker brand） ----------
+.el-switch.is-checked .el-switch__core:hover {
+  background-color: #C52B09 !important;
+  border-color: #C52B09 !important;
+}
+
+// ---------- 键盘焦点：2px 中性黑描边（规范 Focused：颜色不变 + 2px stroke） ----------
+.el-switch__input:focus-visible ~ .el-switch__core {
+  outline: 2px solid #111113 !important;
+  outline-offset: 1px;
+}
+
+// ---------- 禁用：统一中性灰（Grey 200 轨道 + Grey 600 滑块），替换 EP 的 opacity .6 ----------
+.el-switch.is-disabled .el-switch__core {
+  background-color: #DFE3E6 !important;
+  border-color: #DFE3E6 !important;
+  opacity: 1;
+}
+.el-switch.is-disabled .el-switch__core .el-switch__action {
+  background-color: #8E95A2 !important;
+  color: #8E95A2;
+}
+.el-switch.is-disabled .el-switch__label {
+  color: #8E95A2 !important;
+}
+
+// ---------- 选中态文字标签：Orange 700（橙 500 文字 3.05:1 不达 AA，加深一档） ----------
+.el-switch__label.is-active {
+  color: #C52B09 !important;
+}
+
+// Tag 圆角
+.el-tag {
+  border-radius: 0 !important;
+}
+
+// Dialog 圆角
+.el-dialog,
+.el-drawer,
+.el-message,
+.el-message-box,
+.el-notification,
+.el-popper {
+  border-radius: 0 !important;
+}

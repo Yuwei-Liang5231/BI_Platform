@@ -1,0 +1,441 @@
+# 行业指标模板包：SaaS / 订阅服务（绑定合成数据集 B 的表结构）
+# 依赖数据集：subscriptions / accounts / plans / usage_events
+# subscriptions.status 枚举：active / churned；billing_cycle：月付 / 季付 / 年付；
+# auto_renew：1 / 0；end_date 为空表示在续订阅。
+industry: saas
+name: SaaS互联网
+description: >
+  面向订阅制/持续服务型业务的指标模板。数据假设：subscriptions 为订阅周期事实表
+  （start_date / end_date / status / billing_cycle / mrr_amount / seats /
+  auto_renew），accounts 为客户账户维度表（signup_date），
+  usage_events 为功能使用事件事实表（event_date / feature_name /
+  usage_count / duration_min）。
+metrics:
+  # ---------------- 经常性收入 ----------------
+  - code: saas_mrr_active
+    name: 活跃MRR
+    aliases: [在续MRR, 月度经常性收入]
+    definition: 统计周期内 status=active 订阅的 mrr_amount 合计（按 start_date 归期）。
+    topic: revenue
+    dimensions: [订阅开始日期, 行业, 区域, 套餐]
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: subscriptions
+        column: mrr_amount
+        filter: "status = 'active'"
+      time_field: start_date
+
+  - code: saas_mrr_total
+    name: 全量MRR
+    aliases: [含流失MRR]
+    definition: 全部状态订阅的 mrr_amount 合计（含已流失，作流失率分母）。
+    topic: revenue
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: subscriptions
+        column: mrr_amount
+      time_field: start_date
+
+  - code: saas_churned_mrr
+    name: 流失MRR
+    aliases: [流失经常性收入]
+    definition: status=churned 订阅的 mrr_amount 合计。
+    topic: revenue
+    parent: saas_mrr_total
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: subscriptions
+        column: mrr_amount
+        filter: "status = 'churned'"
+      time_field: start_date
+
+  - code: saas_ending_mrr
+    name: 到期MRR
+    aliases: [期末到期MRR]
+    definition: 统计周期内 end_date 落在周期的订阅 mrr_amount 合计（观察到期规模，含续约与流失）。
+    topic: revenue
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: subscriptions
+        column: mrr_amount
+      time_field: end_date
+
+  - code: saas_arpu
+    name: 账户平均MRR
+    aliases: [ARPU, 户均MRR]
+    definition: 活跃MRR / 活跃账户数。
+    topic: revenue
+    parent: saas_mrr_active
+    calc_rule:
+      expression: "MRR / ACC"
+      operands:
+        MRR:
+          table: subscriptions
+          column: mrr_amount
+          aggregation: sum
+          filter: "status = 'active'"
+        ACC:
+          table: subscriptions
+          column: account_id
+          aggregation: count_distinct
+          filter: "status = 'active'"
+      time_field: start_date
+
+  # ---------------- 订阅与账户 ----------------
+  - code: saas_subscription_count
+    name: 订阅记录数
+    aliases: [订阅量]
+    definition: 统计周期内新签订阅周期数（按 start_date 归期）。
+    topic: subscriber
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: subscriptions
+        column: subscription_id
+      time_field: start_date
+
+  - code: saas_active_subscription_count
+    name: 活跃订阅数
+    aliases: [在续订阅数]
+    definition: 统计周期内新签且 status=active 的订阅数。
+    topic: subscriber
+    parent: saas_subscription_count
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: subscriptions
+        column: subscription_id
+        filter: "status = 'active'"
+      time_field: start_date
+
+  - code: saas_churned_subscription_count
+    name: 流失订阅数
+    aliases: [退订数]
+    definition: 统计周期内新签且 status=churned 的订阅数。
+    topic: subscriber
+    parent: saas_subscription_count
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: subscriptions
+        column: subscription_id
+        filter: "status = 'churned'"
+      time_field: start_date
+
+  - code: saas_subscription_active_rate
+    name: 订阅活跃率
+    aliases: [在续率]
+    definition: 活跃订阅数 / 订阅记录数。
+    topic: subscriber
+    parent: saas_active_subscription_count
+    calc_rule:
+      expression: "ACT / ALL"
+      operands:
+        ACT:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+          filter: "status = 'active'"
+        ALL:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+      time_field: start_date
+
+  - code: saas_account_count
+    name: 订阅账户数
+    aliases: [客户账户数]
+    definition: 统计周期内有新订阅的去重账户数。
+    topic: subscriber
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: subscriptions
+        column: account_id
+      time_field: start_date
+
+  - code: saas_active_account_count
+    name: 活跃账户数
+    aliases: [在续账户数]
+    definition: 统计周期内有 active 订阅的去重账户数。
+    topic: subscriber
+    parent: saas_account_count
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: subscriptions
+        column: account_id
+        filter: "status = 'active'"
+      time_field: start_date
+
+  - code: saas_subscriptions_per_account
+    name: 户均订阅数
+    aliases: [人均订阅]
+    definition: 订阅记录数 / 订阅账户数。
+    topic: subscriber
+    parent: saas_subscription_count
+    calc_rule:
+      expression: "SUB / ACC"
+      operands:
+        SUB:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+        ACC:
+          table: subscriptions
+          column: account_id
+          aggregation: count_distinct
+      time_field: start_date
+
+  - code: saas_total_seats
+    name: 总席位数
+    aliases: [席位规模]
+    definition: active 订阅的 seats 合计。
+    topic: subscriber
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: subscriptions
+        column: seats
+        filter: "status = 'active'"
+      time_field: start_date
+
+  - code: saas_avg_seats
+    name: 平均席位数
+    aliases: [单订阅席位]
+    definition: 总席位数 / 活跃订阅数。
+    topic: subscriber
+    parent: saas_total_seats
+    calc_rule:
+      expression: "SEATS / SUB"
+      operands:
+        SEATS:
+          table: subscriptions
+          column: seats
+          aggregation: sum
+          filter: "status = 'active'"
+        SUB:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+          filter: "status = 'active'"
+      time_field: start_date
+
+  # ---------------- 流失 ----------------
+  - code: saas_mrr_churn_rate
+    name: MRR流失率
+    aliases: [金额流失率]
+    definition: 流失MRR / 全量MRR（金额口径）。
+    topic: churn
+    parent: saas_churned_mrr
+    disambiguation:
+      question: 流失率按金额还是按客户？
+      options:
+        - {name: MRR口径, description: 流失MRR/全量MRR，反映收入影响（默认）}
+        - {name: 客户口径, description: 流失账户数/总账户数，见客户流失率}
+      default: MRR口径
+    calc_rule:
+      expression: "CHURN / TOTAL"
+      operands:
+        CHURN:
+          table: subscriptions
+          column: mrr_amount
+          aggregation: sum
+          filter: "status = 'churned'"
+        TOTAL:
+          table: subscriptions
+          column: mrr_amount
+          aggregation: sum
+      time_field: start_date
+
+  - code: saas_logo_churn_rate
+    name: 客户流失率
+    aliases: [账户流失率, Logo Churn]
+    definition: 有流失订阅的去重账户数 / 有订阅的去重账户数（客户口径）。
+    topic: churn
+    disambiguation:
+      question: 大客户与小客户是否同权？
+      options:
+        - {name: 同权, description: 每账户计 1，不区分规模（默认）}
+        - {name: 加权, description: 按 MRR 加权，即 MRR流失率}
+      default: 同权
+    calc_rule:
+      expression: "LOST / ALL"
+      operands:
+        LOST:
+          table: subscriptions
+          column: account_id
+          aggregation: count_distinct
+          filter: "status = 'churned'"
+        ALL:
+          table: subscriptions
+          column: account_id
+          aggregation: count_distinct
+      time_field: start_date
+
+  - code: saas_auto_renewal_rate
+    name: 自动续费占比
+    aliases: [自动续约率]
+    definition: active 且 auto_renew=1 的订阅数 / active 订阅数。
+    topic: churn
+    parent: saas_active_subscription_count
+    calc_rule:
+      expression: "AUTO / ACT"
+      operands:
+        AUTO:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+          filter: "status = 'active' AND auto_renew = 1"
+        ACT:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+          filter: "status = 'active'"
+      time_field: start_date
+
+  - code: saas_monthly_share
+    name: 月付占比
+    aliases: [月付订阅占比]
+    definition: billing_cycle=月付 的订阅数 / 订阅记录数。
+    topic: subscriber
+    parent: saas_subscription_count
+    calc_rule:
+      expression: "MO / ALL"
+      operands:
+        MO:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+          filter: "billing_cycle = '月付'"
+        ALL:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+      time_field: start_date
+
+  - code: saas_annual_share
+    name: 年付占比
+    aliases: [年付订阅占比]
+    definition: billing_cycle=年付 的订阅数 / 订阅记录数。
+    topic: subscriber
+    parent: saas_subscription_count
+    calc_rule:
+      expression: "YR / ALL"
+      operands:
+        YR:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+          filter: "billing_cycle = '年付'"
+        ALL:
+          table: subscriptions
+          column: subscription_id
+          aggregation: count
+      time_field: start_date
+
+  # ---------------- 功能使用 ----------------
+  - code: saas_usage_total
+    name: 使用总量
+    aliases: [功能使用量]
+    definition: 统计周期内 usage_events.usage_count 合计。
+    topic: usage
+    dimensions: [使用日期, 功能, 行业, 区域]
+    calc_rule:
+      base_aggregation: sum
+      source:
+        table: usage_events
+        column: usage_count
+      time_field: event_date
+
+  - code: saas_usage_event_count
+    name: 使用事件数
+    aliases: [事件量]
+    definition: 统计周期内使用事件条数。
+    topic: usage
+    calc_rule:
+      base_aggregation: count
+      source:
+        table: usage_events
+        column: event_id
+      time_field: event_date
+
+  - code: saas_usage_active_accounts
+    name: 使用活跃账户数
+    aliases: [活跃使用账户]
+    definition: 统计周期内有使用事件的去重账户数。
+    topic: usage
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: usage_events
+        column: account_id
+      time_field: event_date
+
+  - code: saas_usage_per_account
+    name: 户均使用量
+    aliases: [人均使用]
+    definition: 使用总量 / 使用活跃账户数。
+    topic: usage
+    parent: saas_usage_total
+    calc_rule:
+      expression: "USG / ACC"
+      operands:
+        USG:
+          table: usage_events
+          column: usage_count
+          aggregation: sum
+        ACC:
+          table: usage_events
+          column: account_id
+          aggregation: count_distinct
+      time_field: event_date
+
+  - code: saas_avg_session_minutes
+    name: 平均使用时长
+    aliases: [场均时长(分钟)]
+    definition: 使用事件 duration_min 均值（分钟）。
+    topic: usage
+    calc_rule:
+      base_aggregation: avg
+      source:
+        table: usage_events
+        column: duration_min
+      time_field: event_date
+
+  - code: saas_feature_coverage
+    name: 功能覆盖数
+    aliases: [使用功能数]
+    definition: 统计周期内有使用记录的去重功能数（feature_name）。
+    topic: usage
+    calc_rule:
+      base_aggregation: count_distinct
+      source:
+        table: usage_events
+        column: feature_name
+      time_field: event_date
+
+  # ---------------- 阶段 4a 扩展算子（登记口径，暂不可计算） ----------------
+  - code: saas_nrr
+    name: 净收入留存率
+    aliases: [NRR, 金额留存]
+    definition: >
+      同一 cohort 账户当期 MRR / 期初 MRR（含扩张与收缩）。需按账户 cohort
+      对齐两期，依赖阶段 4a 扩展算子。
+    topic: churn
+    requires: extended-operator
+    calc_rule: {}
+
+  - code: saas_ltv
+    name: 客户生命周期价值
+    aliases: [LTV]
+    definition: >
+      ARPU × 平均客户寿命。平均寿命需流失分组统计，依赖阶段 4a 扩展算子；
+      简化代理式（MRR流失率倒数 × ARPU）上线后可人工换算。
+    topic: revenue
+    requires: extended-operator
+    calc_rule: {}
