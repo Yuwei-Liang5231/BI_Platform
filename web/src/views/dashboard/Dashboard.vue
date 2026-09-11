@@ -37,7 +37,8 @@ const visible = computed(() =>
     : metrics.value.filter((m) => (m.topic || "general") === activeTopic.value),
 );
 
-const selected = computed(() => metrics.value.find((m) => m.id === selectedId.value));
+// 只在当前主题可见列表中选中——图表永远跟随所在主题，不会残留上一主题的指标
+const selected = computed(() => visible.value.find((m) => m.id === selectedId.value));
 
 // 统计周期：默认上一自然月，可自定义（看板所有取数共用）
 const { dateRange, range } = usePeriodRange();
@@ -67,6 +68,12 @@ async function reloadForRange() {
 }
 
 watch(dateRange, reloadForRange);
+
+// 切换主题时默认选中该主题的第一个指标（若主题为空则清空选中），
+// 避免折线图停留在上一主题的指标上造成困惑
+watch(activeTopic, () => {
+  selectedId.value = visible.value[0]?.id ?? null;
+});
 
 async function loadCards() {
   await Promise.all(
