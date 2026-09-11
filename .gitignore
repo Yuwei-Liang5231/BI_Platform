@@ -25,3 +25,6 @@ Thumbs.db
 
 # 凭据
 .env.local
+
+# 走查截屏临时产物
+web/scripts/__*.png
