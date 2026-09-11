@@ -106,7 +106,7 @@ class TestGoldenDatasetA:
         assert q.sql == (
             'SELECT SUM("orders"."pay_amount") AS value FROM "orders" '
             'WHERE "orders"."order_status" = \'paid\' '
-            'AND "orders"."order_date" >= $__start__ AND "orders"."order_date" <= $__end__'
+            'AND "orders"."order_date" >= $__start__ AND "orders"."order_date" < ($__end__ + INTERVAL 1 DAY)'
         )
         assert q.primary_dataset == "orders"
         assert q.coverage_start == date(2026, 1, 1)
@@ -119,7 +119,7 @@ class TestGoldenDatasetA:
         })
         assert q.sql == (
             'SELECT COUNT("orders"."order_id") AS value FROM "orders" '
-            'WHERE "orders"."order_date" >= $__start__ AND "orders"."order_date" <= $__end__'
+            'WHERE "orders"."order_date" >= $__start__ AND "orders"."order_date" < ($__end__ + INTERVAL 1 DAY)'
         )
 
     def test_g03_paying_users_count_distinct(self):
@@ -157,10 +157,10 @@ class TestGoldenDatasetA:
         assert q.sql == (
             'WITH "A" AS (SELECT SUM("orders"."pay_amount") AS value FROM "orders" '
             'WHERE "orders"."order_status" = \'paid\' '
-            'AND "orders"."order_date" >= $__start__ AND "orders"."order_date" <= $__end__), '
+            'AND "orders"."order_date" >= $__start__ AND "orders"."order_date" < ($__end__ + INTERVAL 1 DAY)), '
             '"B" AS (SELECT COUNT(DISTINCT "orders"."user_id") AS value FROM "orders" '
             'WHERE "orders"."order_status" = \'paid\' '
-            'AND "orders"."order_date" >= $__start__ AND "orders"."order_date" <= $__end__) '
+            'AND "orders"."order_date" >= $__start__ AND "orders"."order_date" < ($__end__ + INTERVAL 1 DAY)) '
             'SELECT (("A".value) / NULLIF(("B".value), 0)) AS value FROM "A", "B"'
         )
 
@@ -248,7 +248,7 @@ class TestGoldenDatasetB:
             'SELECT SUM("subscriptions"."mrr_amount") AS value FROM "subscriptions" '
             'WHERE "subscriptions"."status" = \'active\' '
             'AND "subscriptions"."start_date" >= $__start__ '
-            'AND "subscriptions"."start_date" <= $__end__'
+            'AND "subscriptions"."start_date" < ($__end__ + INTERVAL 1 DAY)'
         )
 
     def test_h02_active_accounts_count_distinct(self):

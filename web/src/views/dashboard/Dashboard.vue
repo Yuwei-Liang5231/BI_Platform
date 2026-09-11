@@ -75,39 +75,57 @@ watch(activeTopic, () => {
   selectedId.value = visible.value[0]?.id ?? null;
 });
 
+// 请求序号守卫：快速改区间/切主题/点卡片时，慢的旧响应后到会覆盖新状态
+// （表现为"点开的卡片显示的是别的指标的折线/数值"），过期响应一律丢弃
+let cardsSeq = 0;
+let trendSeq = 0;
+
 async function loadCards() {
+  const seq = ++cardsSeq;
   await Promise.all(
     visible.value.map(async (m) => {
       if (cards[m.id]) return;
       cards[m.id] = { loading: true };
       try {
         const res = await metricValue({ metric: m.code, ...range.value, compare: "mom" });
-        cards[m.id] = { ...res, loading: false };
+        if (seq !== cardsSeq) return; // 过期响应：区间/主题已再次变化
+        // change_pct（百分数）→ TrendBadge 需要的小数变化率
+        const change =
+          res.compare?.change_pct !== null && res.compare?.change_pct !== undefined
+            ? res.compare.change_pct / 100
+            : null;
+        cards[m.id] = { ...res, change, loading: false };
       } catch {
+        if (seq !== cardsSeq) return;
         cards[m.id] = { forbidden: true, loading: false };
       }
     }),
   );
-  if (!selectedId.value && visible.value.length) {
+  if (seq === cardsSeq && !selectedId.value && visible.value.length) {
     selectedId.value = visible.value[0].id;
   }
 }
 
 async function loadTrend() {
-  if (!selected.value) return;
+  const seq = ++trendSeq;
+  if (!selected.value) {
+    trendRows.value = [];
+    return;
+  }
+  let rows = [];
   try {
     const response = await exportCsvBlob({ metric: selected.value.code, ...range.value });
     const text = await response.data.text();
     const lines = text.replace(/^\uFEFF/, "").trim().split(/\r?\n/);
-    const rows = [];
     for (const line of lines.slice(1)) {
       const [date, value] = line.split(",");
       if (date) rows.push({ date, value: value === "" || value === undefined ? null : Number(value) });
     }
-    trendRows.value = rows;
   } catch {
-    trendRows.value = [];
+    rows = [];
   }
+  if (seq !== trendSeq) return; // 过期响应：已选中其他指标，丢弃
+  trendRows.value = rows;
   rerender();
 }
 

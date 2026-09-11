@@ -283,3 +283,78 @@ class TestExport:
         })
         assert resp.status_code == 400
         assert resp.json()["code"] == 40000
+
+
+class TestDatetimeBoundary:
+    """datetime 列边界回归（2026-09-11）：
+
+    时间过滤曾是 `col <= __end__`，datetime 列下被解释为 `<= 端点日 00:00:00`，
+    端点日的全部日间记录被截掉——卡片整段聚合尚有值、逐日序列却几乎全 null
+    （线上实例：61 天只剩 5 个 00:00:00 孤立点，折线图"消失"）。修复为半开
+    区间 `>= __start__ AND < __end__ + 1d`，date/datetime 两种列型统一正确。
+    """
+
+    TS_DATASET = "q_events_ts"
+    TS_METRIC = "q_ts_amount_sum"
+
+    TS_ROWS = [
+        # 覆盖区间 2026-01-10 ~ 2026-02-01；端点日带日间记录
+        ["ts", "amount"],
+        ["2026-01-10 09:15:00", "100"],
+        ["2026-01-10 23:59:59", "50"],
+        ["2026-01-31 12:00:00", "30"],
+        ["2026-02-01 08:00:00", "20"],
+    ]
+
+    @pytest.fixture(scope="class")
+    def ts_env(self, client):
+        rows = self.TS_ROWS
+        resp = client.post(
+            "/api/datasets/upload",
+            files={"file": ("q_events_ts.csv", io.BytesIO(_csv_bytes(rows[0], rows[1:])), "text/csv")},
+            data={"name": self.TS_DATASET},
+        )
+        assert resp.status_code == 200, resp.text
+        resp = client.post("/api/metrics", json={
+            "code": self.TS_METRIC,
+            "name": "时间戳边界测试",
+            "calc_rule": {
+                "base_aggregation": "sum",
+                "source": {"table": self.TS_DATASET, "column": "amount"},
+            },
+        })
+        assert resp.status_code == 200, resp.text
+        return self.TS_METRIC
+
+    def test_end_day_intraday_rows_included(self, client, ts_env):
+        """区间端点日（01-31）的日间记录必须计入：sum = 100+50+30 = 180
+        （修复前 `<= 2026-01-31 00:00:00` 截掉 12:00 的 30 → 150）。
+        区间从覆盖起点（01-10）起 → 完整周期。"""
+        data = _query(client, ts_env, "2026-01-10", "2026-01-31").json()["data"]
+        assert data["value"] == pytest.approx(180.0)
+        assert data["period_complete"] is True
+        # 起点早于覆盖起点（01-10）：值不变，但周期不完整
+        partial = _query(client, ts_env, "2026-01-01", "2026-01-31").json()["data"]
+        assert partial["value"] == pytest.approx(180.0)
+        assert partial["period_complete"] is False
+
+    def test_per_day_series_includes_intraday(self, client, ts_env):
+        """逐日序列：01-10 当天 = 150（修复前该日全天记录被截 → null）。"""
+        resp = client.post("/api/query/export", json={
+            "metric": ts_env, "start": "2026-01-10", "end": "2026-01-10",
+        })
+        lines = resp.content.decode("utf-8-sig").strip().splitlines()
+        assert lines[1] == "2026-01-10,150,1"
+
+    def test_range_end_on_last_coverage_day(self, client, ts_env):
+        """区间终点 = 覆盖终点（02-01）：当天 08:00 的 20 计入，sum = 200。"""
+        data = _query(client, ts_env, "2026-01-10", "2026-02-01").json()["data"]
+        assert data["value"] == pytest.approx(200.0)
+        assert data["period_complete"] is True
+
+    def test_beyond_coverage_partial(self, client, ts_env):
+        """契约 v2 不回归：区间越过覆盖端 → 真实值 + data_through 标注。"""
+        data = _query(client, ts_env, "2026-01-01", "2026-02-28").json()["data"]
+        assert data["value"] == pytest.approx(200.0)
+        assert data["period_complete"] is False
+        assert data["data_through"] == "2026-02-01"

@@ -265,8 +265,12 @@ def _operand_subquery(
     )
     time_field = _resolve_time_field(ds, explicit, context)
     start, end = ds.coverage[time_field]
+    # 时间过滤用半开区间 [__start__, __end__+1d)：datetime 列下 `<= __end__`
+    # 会被解释为 `<= 当日 00:00:00`，把端点日的全部日间记录截掉（卡片整段
+    # 聚合有值、逐日序列几乎全 null 的"卡片有值折线无端"矛盾即源于此）；
+    # 纯 date 列下 < end+1d 与 <= end 语义等价，两种类型统一正确。
     where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} >= $__start__")
-    where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} <= $__end__")
+    where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} < ($__end__ + INTERVAL 1 DAY)")
 
     join_sql = "".join(
         f" JOIN {_q(dim)} ON {_q(ds.name)}.{_q(fk)} = {_q(dim)}.{_q(pk)}"

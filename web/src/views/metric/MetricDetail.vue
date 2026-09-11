@@ -57,20 +57,38 @@ async function loadAll() {
   await Promise.all([loadCurrent(), loadTrend(), loadSql(), metricStore.fetchChanges(metricId.value)]);
 }
 
+// 请求序号守卫：快速改区间时旧响应后到会覆盖新状态，过期响应一律丢弃。
+// 当前值与趋势各自独立计数——两者并发发出，不能互相作废
+let currentSeq = 0;
+let trendSeq = 0;
+
 async function loadCurrent() {
+  const seq = ++currentSeq;
   try {
-    current.value = await queryStore.fetchValue({
+    const res = await queryStore.fetchValue({
       metric: metricId.value,
       start: range.value.start,
       end: range.value.end,
       compare: "mom",
     });
+    if (seq !== currentSeq) return;
+    // change_pct（百分数）→ TrendBadge 需要的小数变化率
+    current.value = {
+      ...res,
+      change:
+        res.compare?.change_pct !== null && res.compare?.change_pct !== undefined
+          ? res.compare.change_pct / 100
+          : null,
+    };
   } catch {
+    if (seq !== currentSeq) return;
     current.value = null;
   }
 }
 
 async function loadTrend() {
+  const seq = ++trendSeq;
+  let rows = [];
   try {
     const response = await exportCsvBlob({
       metric: metricId.value,
@@ -79,15 +97,18 @@ async function loadTrend() {
     });
     const text = await response.data.text();
     const lines = text.replace(/^\uFEFF/, "").trim().split(/\r?\n/);
-    const rows = [];
     for (const line of lines.slice(1)) {
       const [date, value] = line.split(",");
-      if (date && value) rows.push({ date, value: value === "" ? null : Number(value) });
+      // 只判 date：无值日保留 null 占位，保证 x 轴连续（丢行会让日期轴断裂、
+      // 「数据截至」截止线错位，且与看板页解析口径不一致）
+      if (date) rows.push({ date, value: value === "" || value === undefined ? null : Number(value) });
     }
-    trendRows.value = rows;
   } catch {
-    trendRows.value = [];
+    rows = [];
   }
+  if (seq !== trendSeq) return;
+  trendRows.value = rows;
+  rerender();
 }
 
 async function loadSql() {
