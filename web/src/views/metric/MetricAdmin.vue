@@ -475,18 +475,26 @@ async function chooseIndustry(industry) {
   chosenIndustry.value = industry;
   const pack = await templateStore.fetchPack(industry);
   packMetrics.value = pack?.metrics ?? (Array.isArray(pack) ? pack : []);
-  checkedCodes.value = packMetrics.value.filter((m) => !m.imported).map((m) => m.code);
+  // 未导入 + 已导入但 pending（待绑定数据）的指标可勾选：pending 重新导入可升级启用
+  checkedCodes.value = packMetrics.value
+    .filter((m) => !m.imported || m.imported_status === "pending")
+    .map((m) => m.code);
   wizardStep.value = 1;
 }
 
 async function doImport() {
-  const res = await templateStore.importTemplates({
-    industries: [chosenIndustry.value],
-    codes: checkedCodes.value,
-  });
-  importResult.value = res;
-  wizardStep.value = 2;
-  await fetchData();
+  try {
+    const res = await templateStore.importTemplates({
+      industries: [chosenIndustry.value],
+      codes: checkedCodes.value,
+      revalidate: true, // 已存在且 pending 的指标：数据集就绪后可编译则升级为 active
+    });
+    importResult.value = res;
+    wizardStep.value = 2;
+    await fetchData();
+  } catch {
+    /* 失败原因由全局拦截器 toast；向导留在本步允许重试，避免未处理异常 */
+  }
 }
 
 const canManage = computed(() => auth.canWrite);
@@ -783,12 +791,19 @@ onMounted(async () => {
             v-for="m in packMetrics"
             :key="m.code"
             :value="m.code"
-            :disabled="m.imported"
+            :disabled="m.imported && m.imported_status !== 'pending'"
             class="admin__metric-check"
           >
-            {{ m.name }}（{{ m.code }}）<span v-if="m.imported"> · 已导入</span>
+            {{ m.name }}（{{ m.code }}）
+            <span v-if="m.imported && m.imported_status === 'pending'">
+              · 待绑定数据，勾选后重新导入即可启用
+            </span>
+            <span v-else-if="m.imported"> · 已导入</span>
           </el-checkbox>
         </el-checkbox-group>
+        <p v-if="!checkedCodes.length" class="admin__hint">
+          该行业模板指标均已导入且启用，无需再次导入。
+        </p>
       </div>
 
       <div v-else-if="wizardStep === 2" class="admin__wizard-body">
@@ -807,7 +822,7 @@ onMounted(async () => {
             v-if="importResult.totals?.pending > 0"
             class="admin__hint"
           >
-            「待绑定数据」指标暂不在指标目录出现；上传对应数据集后重新执行本向导导入即可自动启用。
+            「待绑定数据」指标暂不在指标目录出现；上传对应数据集后重新执行本向导，勾选待启用指标导入即可自动启用。
           </p>
           <p
             v-for="(r, i) in importResult.results ?? []"

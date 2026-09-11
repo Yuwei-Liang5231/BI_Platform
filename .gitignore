@@ -7,7 +7,7 @@ __pycache__/
 
 # 数据与本地环境（架构约定：全部本地文件不入库）
 data/
-data-test/
+data-test*/
 data-uat/
 data-pro/
 *.db
@@ -15,6 +15,7 @@ data-pro/
 # 前端（B6 起）
 node_modules/
 dist/
+dist-run/
 
 # IDE / 系统
 .idea/
