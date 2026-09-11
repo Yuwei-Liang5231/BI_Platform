@@ -105,6 +105,11 @@ let chart = null;
 
 function renderChart() {
   if (!chartEl.value || !trendRows.value.length) return;
+  // 容器是 v-if 按需挂载：DOM 被销毁重建后旧实例会失联——检测到即重建
+  if (chart && chart.getDom() !== chartEl.value) {
+    chart.dispose();
+    chart = null;
+  }
   if (!chart) chart = echarts.init(chartEl.value);
   const dates = trendRows.value.map((r) => r.date);
   const values = trendRows.value.map((r) => r.value);
@@ -199,12 +204,16 @@ onMounted(async () => {
             style="width: 100%; margin-bottom: 8px"
           />
           <p class="detail__value">
-            {{ current?.value === undefined || current === null ? "—" : formatMetricValue(current.value) }}
+            {{ current?.value == null ? "—" : formatMetricValue(current.value) }}
           </p>
-          <p v-if="current && current.period_complete === false" class="metric-empty">
-            所选区间不在数据覆盖范围内，不展示数值<template
+          <!-- 契约 v2：部分周期显示真实值 + 数据截至标注；区间零数据才提示无数据 -->
+          <p v-if="current && current.value == null" class="metric-empty">
+            所选区间无数据<template
               v-if="current.coverage?.start && current.coverage?.end"
-            >（数据覆盖：{{ current.coverage.start }} ~ {{ current.coverage.end }}）</template>
+            >（数据覆盖：{{ current.coverage.start }} ~ {{ current.coverage.end }}，可调整上方统计周期）</template>
+          </p>
+          <p v-else-if="current && current.period_complete === false && current.data_through" class="metric-empty">
+            统计周期未完整：仅统计 {{ current.data_through }} 之前的数据，环比已按同长度区间对齐
           </p>
           <TrendBadge v-if="current" :change="current.change ?? null" />
         </section>

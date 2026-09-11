@@ -16,5 +16,5 @@ export default [
       eqeqeq: "error",
     },
   },
-  { ignores: ["dist/**", "node_modules/**"] },
+  { ignores: ["dist/**", "dist-run/**", "node_modules/**", "scripts/__*"] },
 ];

@@ -1,10 +1,11 @@
 """B3 统一计算服务 API 集成测试。
 
-验收主线（执行方案 B3）：
+验收主线（执行方案 B3，契约 v2 于 2026-09-11 修订）：
 - 口径一致性：同一指标同一范围，metric-value 结果与手工 SQL 一致
-- 周期完整性：不完整返回 null 且不入缓存（补录数据后不固化 null）
+- 部分周期（契约 v2）：覆盖与区间相交即返回真实值 + data_through 标注；
+  值可入缓存（键含覆盖端点，补录数据后自然失效）
 - 缓存失效：改口径（ver+1）/ 数据集版本变化（dataset_ver+1）后旧缓存失效
-- 环比/同比：查询层基于同一编译产物计算
+- 环比/同比：查询层基于同一编译产物计算；本期不完整时基期对齐数据截止日
 - 导出：CSV（UTF-8 BOM）、按日行数、Content-Disposition
 """
 
@@ -80,6 +81,7 @@ class TestMetricValue:
         data = resp.json()["data"]
         assert data["value"] == pytest.approx(370.0)
         assert data["period_complete"] is True
+        assert data["data_through"] == "2026-01-31"  # min(end, cov_end)
         assert data["cache"] == "miss"
         assert data["coverage"] == {"start": "2025-01-01", "end": "2026-02-05"}
         assert data["metric_code"] == METRIC_CODE
@@ -91,14 +93,26 @@ class TestMetricValue:
         assert data["cache"] == "hit"
         assert data["value"] == pytest.approx(370.0)
 
-    def test_period_incomplete_returns_null_and_bypasses_cache(self, client, query_env):
-        """end 超出覆盖区间 → null；且不缓存（连续两次都 bypass）。"""
-        for _ in range(2):
-            resp = _query(client, query_env, "2026-01-01", "2026-02-28")
-            data = resp.json()["data"]
-            assert data["value"] is None
-            assert data["period_complete"] is False
-            assert data["cache"] == "bypass"
+    def test_partial_period_returns_real_value_and_caches(self, client, query_env):
+        """契约 v2：end 超出覆盖 → 返回覆盖内实际值（370 + 02-05 的 80 = 450），
+        data_through 标注数据截止日；部分值可入缓存（键含覆盖端点，
+        数据补录后键变化自然失效），第二次请求命中缓存。"""
+        data = _query(client, query_env, "2026-01-01", "2026-02-28").json()["data"]
+        assert data["value"] == pytest.approx(450.0)
+        assert data["period_complete"] is False
+        assert data["data_through"] == "2026-02-05"
+        assert data["cache"] == "miss"
+        again = _query(client, query_env, "2026-01-01", "2026-02-28").json()["data"]
+        assert again["cache"] == "hit"
+        assert again["value"] == pytest.approx(450.0)
+
+    def test_no_intersection_returns_null(self, client, query_env):
+        """区间与数据覆盖无交集 → value=None（前端显示区间无数据）。"""
+        resp = _query(client, query_env, "2026-03-01", "2026-03-31")
+        data = resp.json()["data"]
+        assert data["value"] is None
+        assert data["period_complete"] is False
+        assert data["data_through"] is None
 
     def test_complete_but_empty_period_returns_null(self, client, query_env):
         """范围内无数据：完整周期但值为 null（与不完整区分）。"""
@@ -195,15 +209,19 @@ class TestCompare:
         assert data["compare"]["value"] is None
         assert data["compare"]["change_pct"] is None
 
-    def test_compare_incomplete_current_complete_previous(self, client, query_env):
-        """本期超覆盖（02-28 > 02-05）不完整；同比上期 2025-02 在覆盖内且
-        有数据 200 → 完整。两个周期完整性相互独立。"""
+    def test_compare_partial_current_aligned_baseline(self, client, query_env):
+        """契约 v2：本期部分周期（2026-02 仅 02-05 有数据）→ 同比基期对齐到
+        数据实际截止日（2025-02-01~05，同月同日），避免"5 天 vs 全月"假跌幅；
+        基期落在覆盖内但区间无付费数据 → value=None、change_pct=None。"""
         resp = _query(client, query_env, "2026-02-01", "2026-02-28", compare="yoy")
         data = resp.json()["data"]
-        assert data["value"] is None
+        assert data["value"] == pytest.approx(80.0)
         assert data["period_complete"] is False
-        assert data["compare"]["period_complete"] is True
-        assert data["compare"]["value"] == pytest.approx(200.0)
+        assert data["data_through"] == "2026-02-05"
+        assert data["compare"]["start"] == "2025-02-01"
+        assert data["compare"]["end"] == "2025-02-05"
+        assert data["compare"]["value"] is None
+        assert data["compare"]["change_pct"] is None
 
 
 class TestErrors:

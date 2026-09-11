@@ -58,7 +58,7 @@ const rangeCoverageTip = computed(() => {
 function coverageTip(card) {
   const cov = card?.coverage;
   if (!cov?.start || !cov?.end) return "该指标未登记时间覆盖范围";
-  return `数据覆盖：${cov.start} ~ ${cov.end}，所选区间不在覆盖范围内`;
+  return `所选区间与数据覆盖（${cov.start} ~ ${cov.end}）无交集，可调整右上角统计周期`;
 }
 
 async function reloadForRange() {
@@ -126,6 +126,12 @@ let chart = null;
 
 function renderChart() {
   if (!chartEl.value) return;
+  // 容器是 v-if 按需挂载：选中无数据指标时 DOM 被销毁重建，
+  // 旧 ECharts 实例仍挂在已脱离的节点上导致图表"消失"——检测到失联即重建
+  if (chart && chart.getDom() !== chartEl.value) {
+    chart.dispose();
+    chart = null;
+  }
   if (!chart) chart = echarts.init(chartEl.value);
   const dates = trendRows.value.map((r) => r.date);
   const values = trendRows.value.map((r) => r.value);
@@ -239,12 +245,20 @@ onMounted(fetchData);
         <template v-else>
           <strong class="stat-card__value">{{ formatMetricValue(cards[m.id]?.value ?? null) }}</strong>
           <TrendBadge :change="cards[m.id]?.change ?? null" />
+          <!-- 契约 v2：部分周期显示真实值 + 「数据截至」标注；区间零数据才显示「区间无数据」 -->
           <span
-            v-if="cards[m.id]?.period_complete === false"
+            v-if="(cards[m.id]?.value ?? null) === null"
             class="pwc-badge pwc-badge--grey"
             :title="coverageTip(cards[m.id])"
           >
             区间无数据
+          </span>
+          <span
+            v-else-if="cards[m.id]?.period_complete === false && cards[m.id]?.data_through"
+            class="pwc-badge pwc-badge--grey"
+            :title="`统计周期未完整：仅统计 ${cards[m.id].data_through} 之前的数据，环比已按同长度区间对齐`"
+          >
+            数据截至 {{ cards[m.id].data_through.slice(5) }}
           </span>
         </template>
       </div>

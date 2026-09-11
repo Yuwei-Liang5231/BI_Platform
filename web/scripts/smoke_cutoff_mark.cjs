@@ -30,15 +30,17 @@ function step(name, ok, extra = "") {
   await page.waitForURL(/#\/dashboard/, { timeout: 15000 });
   await page.waitForTimeout(2500);
 
-  // 区间 09-01~09-30（transactions 覆盖仅 09-01~04 → 尾部 26 天无数据）
+  // 区间 09-01~09-30（transactions 覆盖仅 09-01~04 → 部分周期）
   await page.getByPlaceholder("开始日期").fill("2026-09-01");
   await page.getByPlaceholder("结束日期").fill("2026-09-30");
   await page.keyboard.press("Enter");
   await page.waitForTimeout(2500);
 
-  // 卡片显示区间无数据徽标
-  const badges = await page.getByText("区间无数据").count();
-  step("T1 卡片显示区间无数据徽标", badges > 0, `徽标数=${badges}`);
+  // 契约 v2：部分周期显示真实值 + 「数据截至」徽标（不再是「区间无数据」）
+  const cutoffBadges = await page.getByText(/数据截至/).count();
+  step("T1 部分周期卡片显示「数据截至」徽标（契约 v2）", cutoffBadges > 0, `徽标数=${cutoffBadges}`);
+  const emptyBadges = await page.getByText("区间无数据").count();
+  step("T1.2 区间内无「区间无数据」误标", emptyBadges === 0, `误标数=${emptyBadges}`);
 
   // 选中一个指标（默认已选首卡），滚动到图表后截屏复核截止线
   await page.waitForTimeout(1500);

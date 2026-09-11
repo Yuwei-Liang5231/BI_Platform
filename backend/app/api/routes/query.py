@@ -39,9 +39,10 @@ class MetricExportRequest(BaseModel):
 def metric_value(db: DbDep, body: MetricValueRequest, user: CurrentUser):
     """指标单值。
 
-    周期完整性约定：请求范围超出数据覆盖区间时 value=null 且
-    period_complete=false（前端显示"—"）；完整但区间无数据 / 比率分母为 0
-    时 value=null 且 period_complete=true。两种 null 语义不同，前端按标志区分。
+    契约 v2（2026-09-11）：覆盖区间与请求区间相交即返回真实值（实际是多少
+    就是多少）。周期未被完整覆盖时 period_complete=false 且 data_through=
+    数据实际截止日（前端标注"数据截至"，环比基期对齐到该日）；仅当区间与
+    数据覆盖无交集或聚合结果为空时 value=null。旧约"不完整周期显示—"已废止。
     """
     data = service.compute_metric_value(
         db,

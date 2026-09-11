@@ -4,7 +4,7 @@
  */
 const { chromium } = require("playwright-core");
 
-const BASE = "http://127.0.0.1:5186";
+const BASE = "http://localhost:5189";
 const results = [];
 function step(name, ok, extra = "") {
   results.push(ok);

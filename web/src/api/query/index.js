@@ -2,8 +2,10 @@ import request from "@/config/request";
 
 /**
  * 单值计算。body: { metric: id|code, start, end, compare: none|mom|yoy }
- * 返回 { value, compare_value, change, period_complete, ... }（以 B3 契约为准）。
- * 周期不完整时 value=null、period_complete=false → 前端显示 "—"。
+ * 返回 { value, compare, change, period_complete, data_through, coverage, ... }。
+ * 契约 v2（2026-09-11）：覆盖与区间相交即返回真实值；周期未完整时
+ * period_complete=false + data_through=数据截止日（前端标注"数据截至"）；
+ * 仅区间与覆盖无交集或聚合为空时 value=null → 前端显示"区间无数据"。
  */
 export const metricValue = (data) => request.post("/query/metric-value", data);
 

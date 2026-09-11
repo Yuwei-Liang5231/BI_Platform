@@ -125,12 +125,22 @@ def _coerce_value(raw):
     return raw
 
 
-def _cache_key(metric: Metric, compiled: CompiledQuery, runtime: dict, start: date, end: date) -> str:
+def _cache_key(
+    metric: Metric,
+    compiled: CompiledQuery,
+    runtime: dict,
+    start: date,
+    end: date,
+    cov_start: date | None = None,
+    cov_end: date | None = None,
+) -> str:
     dataset_vers = ",".join(f"{n}:{runtime[n]['ver']}" for n in sorted(runtime))
     sql_digest = hashlib.sha1(compiled.sql.encode("utf-8")).hexdigest()[:12]
+    # 覆盖端点参与键：部分周期值入库后，数据补录（覆盖变化）→ 键变化 → 自然失效
+    cov_tag = f"{cov_start.isoformat()}~{cov_end.isoformat()}" if cov_start and cov_end else "nocov"
     return metric_cache.make_key(
         "metric", metric.id, metric.ver, dataset_vers,
-        start.isoformat(), end.isoformat(), sql_digest,
+        start.isoformat(), end.isoformat(), sql_digest, cov_tag,
     )
 
 
@@ -142,16 +152,21 @@ def _compute_range(
     start: date,
     end: date,
 ) -> dict:
-    """计算单个时间范围。返回 {value, period_complete, cache}。
+    """计算单个时间范围。返回 {value, period_complete, data_through, cache}。
 
-    周期不完整 → value=None 且不缓存（补录数据后结果会变，缓存会固化 null）。
-    完整但区间内无数据 / 比率分母为 0 → value=None 但 period_complete=True。
+    契约 v2（2026-09-11，替代"不完整周期显示—"旧约）：真实业务逻辑是
+    「实际是多少就是多少」——覆盖区间与请求区间相交即计算真实值，部分周期
+    不虚报也不隐瞒：值照常返回，period_complete=false + data_through
+    （数据实际截止日）供前端标注"数据截至"。
+    - 覆盖未知 / 区间与覆盖无交集 → value=None（区间无数据，不缓存）
+    - 区间有数据但聚合结果为 null（如比率分母为 0）→ value=None
+    - 缓存键含覆盖端点：数据补录（覆盖变化）后键变化，不会返回陈旧部分值。
     """
     cov_start, cov_end = compiled.coverage_start, compiled.coverage_end
-    if cov_start is None or cov_end is None or start < cov_start or end > cov_end:
-        return {"value": None, "period_complete": False, "cache": "bypass"}
+    if cov_start is None or cov_end is None or start > cov_end or end < cov_start:
+        return {"value": None, "period_complete": False, "data_through": None, "cache": "bypass"}
 
-    key = _cache_key(metric, compiled, runtime, start, end)
+    key = _cache_key(metric, compiled, runtime, start, end, cov_start, cov_end)
     cached = metric_cache.get(key)
     if cached is not None:
         return {**cached, "cache": "hit"}
@@ -159,7 +174,12 @@ def _compute_range(
     views = {name: info["parquet_path"] for name, info in runtime.items()}
     with duckdb_views(views) as con:
         row = con.execute(compiled.sql, {"__start__": start, "__end__": end}).fetchone()
-    result = {"value": _coerce_value(row[0] if row else None), "period_complete": True, "cache": "miss"}
+    result = {
+        "value": _coerce_value(row[0] if row else None),
+        "period_complete": start >= cov_start and end <= cov_end,
+        "data_through": min(end, cov_end).isoformat(),
+        "cache": "miss",
+    }
     metric_cache.put(key, result)
     return result
 
@@ -219,6 +239,7 @@ def compute_metric_value(
         "end": end_d.isoformat(),
         "value": current["value"],
         "period_complete": current["period_complete"],
+        "data_through": current["data_through"],
         "cache": current["cache"],
         "coverage": {
             "start": compiled.coverage_start.isoformat() if compiled.coverage_start else None,
@@ -230,6 +251,11 @@ def compute_metric_value(
 
     if compare != "none":
         prev_start, prev_end = _previous_range(start_d, end_d, compare)
+        # 契约 v2：当前周期不完整时，环比基期对齐到数据实际截止日（同月同日），
+        # 避免"10 天的值 vs 上月整月"的假跌幅（如 08-01~08-10 对 07-01~07-10）
+        if not current["period_complete"] and current["data_through"]:
+            eff_end_d = date.fromisoformat(current["data_through"])
+            prev_end = prev_start + (eff_end_d - start_d)
         prev = _compute_range(db, metric, compiled, runtime, prev_start, prev_end)
         payload["compare"] = {
             "type": compare,
@@ -237,6 +263,7 @@ def compute_metric_value(
             "end": prev_end.isoformat(),
             "value": prev["value"],
             "period_complete": prev["period_complete"],
+            "data_through": prev["data_through"],
             "change_pct": _change_pct(current["value"], prev["value"]),
         }
     return payload
