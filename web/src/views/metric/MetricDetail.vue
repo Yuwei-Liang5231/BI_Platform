@@ -106,12 +106,31 @@ let chart = null;
 function renderChart() {
   if (!chartEl.value || !trendRows.value.length) return;
   if (!chart) chart = echarts.init(chartEl.value);
+  const dates = trendRows.value.map((r) => r.date);
+  const values = trendRows.value.map((r) => r.value);
+  // 尾部无数据的日期段画「数据截至」截止线——与当前值卡的「区间无数据」互相印证
+  const lastIdx = values.reduce((acc, v, i) => (v !== null && v !== undefined ? i : acc), -1);
+  const cutoffMark =
+    lastIdx >= 0 && lastIdx < dates.length - 1
+      ? {
+          silent: true,
+          symbol: "none",
+          data: [{ xAxis: dates[lastIdx] }],
+          lineStyle: { color: "#B4BCC2", type: "dashed" },
+          label: {
+            formatter: `数据截至 ${dates[lastIdx].slice(5)}`,
+            position: "end",
+            color: "#7A838A",
+            fontSize: 11,
+          },
+        }
+      : undefined;
   chart.setOption({
     grid: { left: 64, right: 24, top: 24, bottom: 32 },
     tooltip: { trigger: "axis" },
     xAxis: {
       type: "category",
-      data: trendRows.value.map((r) => r.date),
+      data: dates,
       axisLine: { lineStyle: { color: "#DFE3E6" } },
     },
     yAxis: {
@@ -121,12 +140,14 @@ function renderChart() {
     series: [
       {
         type: "line",
-        data: trendRows.value.map((r) => r.value),
+        data: values,
         symbol: "circle",
         symbolSize: 5,
         itemStyle: { color: "#FD5108" },
         lineStyle: { color: "#FE7C39", width: 2 },
         connectNulls: false,
+        // setOption 是合并模式：无截止线时必须显式清空，否则上一个指标的标记会残留
+        markLine: cutoffMark ?? { silent: true, symbol: "none", data: [] },
       },
     ],
   });
