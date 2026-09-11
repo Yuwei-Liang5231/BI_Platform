@@ -10,7 +10,8 @@ import { ElMessage } from "element-plus";
 
 import { metricValue, exportMetric, exportCsvBlob } from "@/api/query";
 import TrendBadge from "@/components/business/TrendBadge.vue";
-import { formatMetricValue, isoDate } from "@/utils/format";
+import { formatMetricValue } from "@/utils/format";
+import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
 import { useAuthStore } from "@/stores/auth";
 
@@ -38,13 +39,34 @@ const visible = computed(() =>
 
 const selected = computed(() => metrics.value.find((m) => m.id === selectedId.value));
 
-const range = computed(() => {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const end = new Date(now.getFullYear(), now.getMonth(), 0);
-  const iso = isoDate;
-  return { start: iso(start), end: iso(end) };
+// 统计周期：默认上一自然月，可自定义（看板所有取数共用）
+const { dateRange, range } = usePeriodRange();
+
+// 序列全为 null（区间内无一天有数据）视为无数据，用于空态提示
+const hasTrendData = computed(() => trendRows.value.some((r) => r.value !== null));
+
+// 所选区间无数据时，提示数据覆盖范围（来自 metric-value 响应的 coverage）
+const rangeCoverageTip = computed(() => {
+  const card = selected.value ? cards[selected.value.id] : null;
+  if (!card || card.forbidden || hasTrendData.value) return "";
+  const cov = card.coverage;
+  if (!cov?.start || !cov?.end) return "所选区间无数据（该指标未登记时间覆盖范围）";
+  return `所选区间无数据：数据覆盖为 ${cov.start} ~ ${cov.end}，可在右上角调整统计周期`;
 });
+
+function coverageTip(card) {
+  const cov = card?.coverage;
+  if (!cov?.start || !cov?.end) return "该指标未登记时间覆盖范围";
+  return `数据覆盖：${cov.start} ~ ${cov.end}，所选区间不在覆盖范围内`;
+}
+
+async function reloadForRange() {
+  Object.keys(cards).forEach((k) => delete cards[k]);
+  await loadCards();
+  await loadTrend();
+}
+
+watch(dateRange, reloadForRange);
 
 async function loadCards() {
   await Promise.all(
@@ -143,6 +165,15 @@ onMounted(fetchData);
         <p class="page-header__subtitle">同一口径 · 同一数值 · 不完整周期显示"—"</p>
       </div>
       <div class="page-header__actions">
+        <el-date-picker
+          v-model="dateRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="~"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          :clearable="false"
+        />
         <el-button :disabled="!selected" type="primary" @click="handleExport">导出 CSV</el-button>
       </div>
     </div>
@@ -179,6 +210,13 @@ onMounted(fetchData);
         <template v-else>
           <strong class="stat-card__value">{{ formatMetricValue(cards[m.id]?.value ?? null) }}</strong>
           <TrendBadge :change="cards[m.id]?.change ?? null" />
+          <span
+            v-if="cards[m.id]?.period_complete === false"
+            class="pwc-badge pwc-badge--grey"
+            :title="coverageTip(cards[m.id])"
+          >
+            区间无数据
+          </span>
         </template>
       </div>
     </div>
@@ -187,8 +225,11 @@ onMounted(fetchData);
       <div class="pwc-card__header">
         <h4>{{ selected.name }} · 日序列（{{ range.start }} ~ {{ range.end }}）</h4>
       </div>
-      <div v-if="trendRows.length" ref="chartEl" class="dash__chart"></div>
-      <p v-else class="metric-empty">—</p>
+      <div v-if="hasTrendData" ref="chartEl" class="dash__chart"></div>
+      <template v-else>
+        <p class="metric-empty">—</p>
+        <p v-if="rangeCoverageTip" class="dash__cov-hint">{{ rangeCoverageTip }}</p>
+      </template>
     </section>
 
     <p v-if="!auth.canWrite" class="dash__readonly">
@@ -203,6 +244,12 @@ onMounted(fetchData);
   flex-wrap: wrap;
   gap: var(--pwc-space-3);
   margin-bottom: var(--pwc-space-6);
+}
+
+.dash__cov-hint {
+  margin-top: var(--pwc-space-2);
+  color: var(--pwc-text-secondary);
+  font-size: var(--pwc-font-body-s);
 }
 
 .stat-card {

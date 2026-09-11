@@ -4,13 +4,14 @@
  * 指标详情：口径说明（为什么这样定/易错点）、当前值与日序列趋势（export CSV 解析）、
  * 变更历史、折叠区展示存档 SQL。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import * as echarts from "echarts";
 
 import { exportCsvBlob } from "@/api/query";
 import TrendBadge from "@/components/business/TrendBadge.vue";
-import { formatMetricValue, isoDate } from "@/utils/format";
+import { formatMetricValue } from "@/utils/format";
+import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
 import { useQueryStore } from "@/stores/query";
 
@@ -25,7 +26,8 @@ const current = ref(null);
 const trendRows = ref([]);
 const sqlExpanded = ref(false);
 const sqlText = ref("");
-const range = ref({ start: "", end: "" });
+// 统计周期：默认上一自然月，可自定义
+const { dateRange, range } = usePeriodRange();
 
 // 口径分歧选项归一化：兼容 {name, description} / {label, value} / 字符串
 const disambiguationOptions = computed(() => {
@@ -43,14 +45,12 @@ const disambiguationOptions = computed(() => {
   });
 });
 
-// 上一个自然月
-(function initRange() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const end = new Date(now.getFullYear(), now.getMonth(), 0);
-  const iso = isoDate;
-  range.value = { start: iso(start), end: iso(end) };
-})();
+// 区间变更时重取当前值与日序列（首次加载由 loadAll 负责）
+watch(dateRange, () => {
+  if (!metricId.value) return;
+  loadCurrent();
+  loadTrend();
+});
 
 async function loadAll() {
   await metricStore.fetchDetail(metricId.value);
@@ -167,11 +167,23 @@ onMounted(async () => {
           <div class="pwc-card__header">
             <h4>当前值（{{ range.start }} ~ {{ range.end }}）</h4>
           </div>
+          <el-date-picker
+            v-model="dateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="~"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            :clearable="false"
+            style="width: 100%; margin-bottom: 8px"
+          />
           <p class="detail__value">
             {{ current?.value === undefined || current === null ? "—" : formatMetricValue(current.value) }}
           </p>
           <p v-if="current && current.period_complete === false" class="metric-empty">
-            观察周期不完整，不展示数值
+            所选区间不在数据覆盖范围内，不展示数值<template
+              v-if="current.coverage?.start && current.coverage?.end"
+            >（数据覆盖：{{ current.coverage.start }} ~ {{ current.coverage.end }}）</template>
           </p>
           <TrendBadge v-if="current" :change="current.change ?? null" />
         </section>
@@ -198,7 +210,7 @@ onMounted(async () => {
         <!-- 日序列趋势 -->
         <section class="pwc-card col-span-12">
           <div class="pwc-card__header">
-            <h4>日序列趋势（上个自然月）</h4>
+            <h4>日序列趋势（{{ range.start }} ~ {{ range.end }}）</h4>
           </div>
           <div
             v-if="trendRows.length"

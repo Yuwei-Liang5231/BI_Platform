@@ -4,13 +4,14 @@
  * 指标目录：主题分组 + 层级展开卡片 + 中文名/别名搜索（后端已过可见性过滤）。
  * 当前值/环比走 metric-value(compare=mom)；周期不完整显示 "—"。
  */
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import { metricValue } from "@/api/query";
 import MetricTrend from "@/components/business/MetricTrend.vue";
 import TrendBadge from "@/components/business/TrendBadge.vue";
-import { formatMetricValue, isoDate } from "@/utils/format";
+import { formatMetricValue } from "@/utils/format";
+import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
 
 const router = useRouter();
@@ -21,14 +22,8 @@ const activeTopic = ref("all");
 // valueMap[metricId] = { value, change, period_complete, loading }
 const valueMap = reactive({});
 
-// 上一个自然月（数据完整的常规选择）
-const defaultRange = computed(() => {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const end = new Date(now.getFullYear(), now.getMonth(), 0);
-  const iso = isoDate;
-  return { start: iso(start), end: iso(end) };
-});
+// 统计周期：默认上一自然月（数据完整的常规选择），可自定义
+const { dateRange, range } = usePeriodRange();
 
 const metrics = computed(() => metricStore.list);
 
@@ -54,7 +49,7 @@ const grouped = computed(() => {
 });
 
 async function loadValues(items) {
-  const { start, end } = defaultRange.value;
+  const { start, end } = range.value;
   await Promise.all(
     items.map(async (m) => {
       if (valueMap[m.id]) return;
@@ -78,6 +73,12 @@ function openDetail(id) {
   router.push(`/metrics/${id}`);
 }
 
+// 区间变更：清空缓存值并按新区间重取
+watch(dateRange, () => {
+  Object.keys(valueMap).forEach((k) => delete valueMap[k]);
+  loadValues(metricStore.list);
+});
+
 onMounted(fetchData);
 </script>
 
@@ -89,6 +90,15 @@ onMounted(fetchData);
         <p class="page-header__subtitle">统一口径 · 一次定义 · 处处一致</p>
       </div>
       <div class="page-header__actions">
+        <el-date-picker
+          v-model="dateRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="~"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          :clearable="false"
+        />
         <el-input
           v-model="search"
           placeholder="搜索中文名 / 别名 / 编码"
