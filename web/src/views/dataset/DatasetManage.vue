@@ -5,9 +5,10 @@
  * 表关系可视化配置（左表·字段 → 右表·字段、关联类型）。
  * 上传/关系写操作仅 admin（后端 AdminUser 强制）。
  */
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
+import { getDatasetQuality, importDatasetData } from "@/api/datasets";
 import { useAuthStore } from "@/stores/auth";
 import { useDatasetStore } from "@/stores/dataset";
 
@@ -186,6 +187,90 @@ async function removeRelation(rel) {
   await datasetStore.fetchRelations(selectedId.value);
 }
 
+// ---------------- 质检报告（B8） ----------------
+const qualityVisible = ref(false);
+const qualityLoading = ref(false);
+const qualityReport = ref(null);
+
+// issue 等级 → 标签样式
+const ISSUE_TAG = { high: "danger", medium: "warning", info: "info" };
+const ISSUE_TEXT = {
+  empty_column: "全空列",
+  mixed_types: "类型混杂",
+  mixed_content: "内容混杂",
+  high_null_ratio: "高空值",
+  constant_column: "常量列",
+};
+
+function openQuality() {
+  if (!selectedId.value) return;
+  qualityVisible.value = true;
+  if (qualityReport.value?.dataset_id === selectedId.value) return; // 已是该数据集的报告
+  loadQuality();
+}
+
+async function loadQuality() {
+  qualityLoading.value = true;
+  try {
+    qualityReport.value = await getDatasetQuality(selectedId.value);
+  } finally {
+    qualityLoading.value = false;
+  }
+}
+
+const qualityColumns = computed(() => qualityReport.value?.columns ?? []);
+
+// ---------------- 增量导入（B8） ----------------
+const importVisible = ref(false);
+const importFiles = ref([]);
+const importMode = ref("append");
+const importing = ref(false);
+const importPercent = ref(0);
+
+function openImport() {
+  importFiles.value = [];
+  importMode.value = "append";
+  importPercent.value = 0;
+  importVisible.value = true;
+}
+
+async function handleImport() {
+  if (importing.value) return;
+  const raw = importFiles.value[0]?.raw;
+  if (!raw) {
+    ElMessage.warning("请先选择数据文件");
+    return;
+  }
+  if (importMode.value === "replace") {
+    await ElMessageBox.confirm(
+      `全量覆盖将清除「${selected.value?.name}」现有全部数据后以新文件替换（不可撤销）。确定继续？`,
+      "覆盖确认",
+      { type: "warning", confirmButtonText: "覆盖", cancelButtonText: "取消" },
+    );
+  }
+  importing.value = true;
+  importPercent.value = 0;
+  try {
+    const fd = new FormData();
+    fd.append("file", raw);
+    fd.append("mode", importMode.value);
+    const res = await importDatasetData(selectedId.value, fd, (p) => (importPercent.value = p));
+    const imp = res.import ?? {};
+    ElMessage.success(
+      `${imp.mode === "replace" ? "覆盖" : "追加"}成功：新增 ${imp.rows_added} 行，现 ${imp.row_count} 行（v${imp.dataset_ver}）`,
+    );
+    importVisible.value = false;
+    await fetchData();
+    await loadQuality(); // 导入后直接给出最新质检报告
+    qualityVisible.value = true;
+  } catch {
+    // 错误提示由 request 拦截器统一给出；保持对话框打开便于重试
+  } finally {
+    importing.value = false;
+    importPercent.value = 0;
+  }
+}
+
 onMounted(fetchData);
 </script>
 
@@ -198,6 +283,13 @@ onMounted(fetchData);
       </div>
       <div class="page-header__actions">
         <el-button type="primary" :disabled="!auth.isAdmin" @click="openUpload">上传接入</el-button>
+        <el-button
+          :disabled="!auth.isAdmin || !selectedId"
+          @click="openImport"
+        >
+          导入数据
+        </el-button>
+        <el-button :disabled="!selectedId" @click="openQuality">质检报告</el-button>
         <el-button
           :disabled="!auth.isAdmin || !selectedId"
           @click="openRelation"
@@ -372,6 +464,121 @@ onMounted(fetchData);
         <el-button type="primary" @click="saveRelation">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 质检报告（B8） -->
+    <el-dialog v-model="qualityVisible" title="数据质检报告" width="820px" top="6vh">
+      <div v-loading="qualityLoading">
+        <template v-if="qualityReport">
+          <p class="ds__quality-meta">
+            {{ qualityReport.name }} · {{ qualityReport.row_count }} 行 × {{ qualityReport.column_count }} 列 ·
+            v{{ qualityReport.dataset_ver }}
+          </p>
+          <p v-if="qualityReport.coverage?.length" class="ds__quality-meta">
+            覆盖区间：<span v-for="c in qualityReport.coverage" :key="c.column" class="ds__quality-cov">
+              {{ c.column }}：{{ c.period_start }} ~ {{ c.period_end }}（{{ c.non_null_count }} 行）
+            </span>
+          </p>
+          <el-table :data="qualityColumns" size="small" style="width: 100%" max-height="480">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="ds__quality-detail">
+                  <template v-if="row.deviations?.length">
+                    <h6>混杂偏离值（{{ row.deviations.length }}/{{ row.deviation_total ?? row.deviations.length }}）</h6>
+                    <el-table :data="row.deviations" size="small" border>
+                      <el-table-column prop="row" label="数据行号" width="100" />
+                      <el-table-column prop="value" label="原始内容" min-width="160" />
+                      <el-table-column prop="value_type" label="实际类型" width="100" />
+                    </el-table>
+                  </template>
+                  <template v-if="row.null_sample_rows?.length">
+                    <h6>空值行号样本（前 {{ row.null_sample_rows.length }} / 共 {{ row.null_total }}）</h6>
+                    <span class="ds__quality-rows">{{ row.null_sample_rows.join("、") }}</span>
+                  </template>
+                  <p v-if="!row.deviations?.length && !row.null_sample_rows?.length" class="ds__quality-rows">
+                    无行级异常明细
+                  </p>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="name" label="列名" min-width="130" />
+            <el-table-column prop="type" label="类型" width="90" />
+            <el-table-column label="空值" width="90">
+              <template #default="{ row }">
+                {{ row.null_count }}（{{ (row.null_ratio * 100).toFixed(1) }}%）
+              </template>
+            </el-table-column>
+            <el-table-column prop="distinct_count" label="去重值" width="80" />
+            <el-table-column label="问题" min-width="200">
+              <template #default="{ row }">
+                <template v-if="row.issues.length">
+                  <el-tag
+                    v-for="issue in row.issues"
+                    :key="issue.code"
+                    :type="ISSUE_TAG[issue.level]"
+                    size="small"
+                    class="ds__quality-tag"
+                    :title="issue.message"
+                  >
+                    {{ ISSUE_TEXT[issue.code] ?? issue.code }}
+                  </el-tag>
+                </template>
+                <span v-else class="ds__quality-ok">正常</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="loadQuality">刷新报告</el-button>
+        <el-button type="primary" @click="qualityVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 导入数据（B8 增量导入 / 全量覆盖） -->
+    <el-dialog
+      v-model="importVisible"
+      title="导入数据"
+      width="560px"
+      :close-on-click-modal="!importing"
+      :close-on-press-escape="!importing"
+      :show-close="!importing"
+    >
+      <el-form label-width="90px">
+        <el-form-item label="目标">
+          <span>{{ selected?.name }}（当前 v{{ detail?.dataset_ver }} · {{ detail?.row_count }} 行）</span>
+        </el-form-item>
+        <el-form-item label="导入方式">
+          <el-radio-group v-model="importMode" :disabled="importing">
+            <el-radio value="append">增量追加（新分片，历史数据不动）</el-radio>
+            <el-radio value="replace">全量覆盖（清除现有数据后替换）</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="文件">
+          <el-upload
+            v-model:file-list="importFiles"
+            :auto-upload="false"
+            :limit="1"
+            accept=".csv,.xlsx,.xls,.txt"
+            :disabled="importing"
+            drag
+          >
+            <div class="ds__upload-hint">
+              拖拽 CSV / Excel 到此，或点击选择（列名须与现有数据集完全一致，顺序可不同）
+            </div>
+          </el-upload>
+        </el-form-item>
+      </el-form>
+      <p class="ds__upload-parsing">
+        导入成功后 dataset_ver 自动 +1，相关指标缓存随之失效（看板数值即时刷新，无需重启）。
+      </p>
+      <el-progress v-if="importPercent > 0" :percentage="importPercent" />
+      <template #footer>
+        <el-button :disabled="importing" @click="importVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="importing" @click="handleImport">
+          {{ importing ? "导入中…" : importMode === "replace" ? "覆盖导入" : "追加导入" }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -395,5 +602,37 @@ onMounted(fetchData);
 
 .ds__upload-parsing--error {
   color: var(--pwc-danger, #d04a02);
+}
+
+.ds__quality-meta {
+  margin: 0 0 var(--pwc-space-3);
+  color: var(--pwc-text-secondary);
+  font-size: 13px;
+}
+
+.ds__quality-cov {
+  margin-right: var(--pwc-space-4);
+}
+
+.ds__quality-detail {
+  padding: var(--pwc-space-2) var(--pwc-space-4);
+}
+
+.ds__quality-detail h6 {
+  margin: var(--pwc-space-2) 0;
+  font-weight: 600;
+}
+
+.ds__quality-rows {
+  color: var(--pwc-text-secondary);
+  font-size: 12px;
+}
+
+.ds__quality-tag {
+  margin-right: var(--pwc-space-2);
+}
+
+.ds__quality-ok {
+  color: var(--pwc-text-secondary);
 }
 </style>

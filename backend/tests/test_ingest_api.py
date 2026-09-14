@@ -291,13 +291,13 @@ def test_gbk_after_ascii_prefix_retried(client):
     assert data["encoding"] == "gbk"
     assert data["row_count"] == 2502
 
-    # 中文内容完好（GBK 正确解码）——直接读 Parquet 尾部验证
+    # 中文内容完好（GBK 正确解码）——直接读 Parquet 尾部验证（B8 起为分片目录）
     import pyarrow.parquet as pq
 
     from app.core.config import get_settings
     from app.infra.storage.paths import StoragePaths
 
-    table = pq.read_table(str(StoragePaths(get_settings()).parquet_dir / "mixed_head.parquet"))
+    table = pq.read_table(str(StoragePaths(get_settings()).parquet_dir / "mixed_head"))
     notes = table.column("note").to_pylist()
     assert "华东区" in notes
     assert "华南区" in notes

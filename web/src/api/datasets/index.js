@@ -21,6 +21,19 @@ export const renameDataset = (datasetId, name) =>
 export const getPreview = (datasetId) =>
   request.get(`/datasets/${datasetId}/preview`);
 
+export const getDatasetQuality = (datasetId) =>
+  request.get(`/datasets/${datasetId}/quality`);
+
+// 增量导入（append）与全量覆盖（replace）同走此接口；大文件放宽超时
+export const importDatasetData = (datasetId, formData, onProgress) =>
+  request.post(`/datasets/${datasetId}/data`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 600000,
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
+    },
+  });
+
 export const getColumnAnomalies = (datasetId, columnName) =>
   request.get(`/datasets/${datasetId}/columns/${columnName}/anomalies`);
 

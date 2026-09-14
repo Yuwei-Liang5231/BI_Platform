@@ -15,6 +15,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -261,8 +262,11 @@ def ingest_file(
 
     col_types = [s.final_type() for s in stats]
 
-    # 第二遍：写 Parquet
-    parquet_path = storage.parquet_dir / f"{final_name}.parquet"
+    # 第二遍：写 Parquet（B8 起统一分片目录布局：data/parquet/{name}/part-0001.parquet，
+    # 增量导入直接追加新分片，无需迁移）
+    dataset_dir = storage.parquet_dir / final_name
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = dataset_dir / "part-0001.parquet"
     header2, rows_iter2 = _iter_xlsx_rows(src_path) if ext == ".xlsx" else _open_rows(src_path, encoding)
     assert header2 == header  # 同一文件两遍表头一致
     _write_parquet(parquet_path, header, col_types, rows_iter2, row_count)
@@ -272,7 +276,7 @@ def ingest_file(
         name=final_name,
         source_filename=original_filename,
         file_path=str(dest),
-        parquet_path=str(parquet_path),
+        parquet_path=str(dataset_dir),
         file_encoding=encoding,
         row_count=row_count,
         column_count=len(header),
@@ -328,6 +332,197 @@ def load_column_values(dataset: Dataset, column: str) -> list[str]:
     """读取 Parquet 单列（字符串视图），用于预览与异常定位。"""
     table = pq.read_table(dataset.parquet_path, columns=[column])
     return ["" if v is None else str(v) for v in table.column(column).to_pylist()]
+
+
+# ---------------------------------------------------------------- 增量导入（B8）
+
+
+def view_target(parquet_path: str) -> str:
+    """数据集存储路径 → DuckDB read_parquet 目标。
+
+    B8 起数据集落盘为分片目录（data/parquet/{name}/part-*.parquet），
+    目录路径展开为 glob；存量单文件数据集原样返回。"""
+    p = Path(parquet_path)
+    if p.is_dir():
+        return (p / "*.parquet").as_posix()
+    return parquet_path
+
+
+def read_dataset_table(dataset: Dataset) -> pa.Table:
+    """读取数据集全部数据（文件或分片目录，pyarrow dataset API 自动发现）。"""
+    return pq.read_table(dataset.parquet_path)
+
+
+def _next_part_path(dataset_dir: Path) -> Path:
+    existing = sorted(dataset_dir.glob("part-*.parquet"))
+    n = len(existing) + 1
+    return dataset_dir / f"part-{n:04d}.parquet"
+
+
+def refresh_coverage_from_table(session: Session, dataset: Dataset, table: pa.Table) -> None:
+    """按当前数据重算覆盖区间并整体替换 dataset_coverage 行（导入事务内调用）。"""
+    import pyarrow.compute as pc
+
+    session.query(DatasetCoverage).filter(DatasetCoverage.dataset_id == dataset.id).delete(
+        synchronize_session=False
+    )
+    for field in table.schema:
+        if not pa.types.is_date(field.type) and not pa.types.is_timestamp(field.type):
+            continue
+        col = table.column(field.name)
+        non_null = col.drop_null()
+        if non_null.length() == 0:
+            continue
+        session.add(
+            DatasetCoverage(
+                dataset_id=dataset.id,
+                column_name=field.name,
+                period_start=pc.min(non_null).as_py(),
+                period_end=pc.max(non_null).as_py(),
+                non_null_count=non_null.length(),
+            )
+        )
+    session.flush()
+
+
+def import_data_file(
+    *,
+    session: Session,
+    storage: StoragePaths,
+    dataset: Dataset,
+    src_path: Path,
+    original_filename: str,
+    mode: str = "append",
+) -> dict:
+    """向既有数据集增量导入（append）或全量覆盖（replace）。B8。
+
+    流程：编码识别 → 表头列名校验（集合一致，顺序可不同）→ 按现有列类型
+    两遍流式转换写分片 → row_count/覆盖区间刷新 → dataset_ver+1（同事务，
+    由 get_db 统一提交）。任何校验失败都不落盘不递增。
+    """
+    if mode not in ("append", "replace"):
+        raise BusinessError("mode 须为 append 或 replace")
+    ext = src_path.suffix.lower()
+    if ext not in SUPPORTED_EXTS:
+        raise BusinessError(f"不支持的文件类型 {ext!r}，当前支持：{', '.join(sorted(SUPPORTED_EXTS))}")
+    storage.ensure_dirs()
+
+    existing_cols = json.loads(dataset.schema_json)
+    existing_names = [c["name"] for c in existing_cols]
+    existing_types = {c["name"]: c["type"] for c in existing_cols}
+
+    # ---- 读取与校验（与首次上传同款编码重试逻辑）----
+    if ext == ".xlsx":
+        header, rows_iter = _iter_xlsx_rows(src_path)
+        stats, row_count, ragged = scan_rows(header, rows_iter)
+        encoding = "xlsx"
+    else:
+        encoding = detect_encoding(src_path)
+        candidates = [encoding] + [e for e in ("gbk", "gb18030") if e != encoding]
+        last_error: UnicodeDecodeError | None = None
+        for enc in candidates:
+            try:
+                header, rows_iter = _open_rows(src_path, enc)
+                stats, row_count, ragged = scan_rows(header, rows_iter)
+                if enc != encoding:
+                    logger.warning("编码重试生效: 采样判定 %s，实际按 %s 解码成功 (%s)", encoding, enc, src_path.name)
+                    encoding = enc
+                break
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        else:
+            raise BusinessError(
+                "文件无法用已支持的编码（UTF-8 / GBK / GB18030）完整解码；请将文件另存为 UTF-8 后重试",
+                data={"byte_position": last_error.start if last_error else None},
+            )
+    if ragged:
+        raise BusinessError(
+            f"列数不一致：{len(ragged)}+ 行结构异常，首见数据行号 {ragged}（1-based，最多列前 10 个）",
+            data={"ragged_rows": ragged},
+        )
+    if row_count == 0:
+        raise BusinessError("文件没有数据行")
+
+    missing = [n for n in existing_names if n not in set(header)]
+    extra = [n for n in header if n not in set(existing_names)]
+    if missing or extra:
+        raise BusinessError(
+            "表头与现有数据集不一致，增量导入要求列名集合完全一致（顺序可不同）",
+            data={"missing_columns": missing, "extra_columns": extra},
+        )
+
+    # 按现有 schema 顺序重排列；类型沿用现有 schema（不重新推断）
+    col_types = [existing_types[n] for n in existing_names]
+    reorder = [header.index(n) for n in existing_names]
+
+    def reordered(rows: Iterator[list[str]]) -> Iterator[list[str]]:
+        for row in rows:
+            yield [row[i] for i in reorder]
+
+    # ---- 落盘（安全顺序：先写临时分片，全部成功后才动既有数据；
+    #      任何失败只留下待清理的临时文件，既有分片/单文件原样不动）----
+    old_path = Path(dataset.parquet_path)  # 可能是单文件（存量）或分片目录（B8 起）
+    is_dir_layout = old_path.is_dir()
+    dataset_dir = old_path if is_dir_layout else old_path.parent / dataset.name
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = dataset_dir / f".tmp-{datetime.now().strftime('%Y%m%d%H%M%S%f')}.parquet"
+
+    header2, rows_iter2 = (
+        _iter_xlsx_rows(src_path) if ext == ".xlsx" else _open_rows(src_path, encoding)
+    )
+    try:
+        _write_parquet(tmp_path, existing_names, col_types, reordered(rows_iter2), row_count)
+    except BaseException:
+        # 显式关闭底层 CSV 迭代器（Windows 句柄释放后才可能清理临时文件）
+        close = getattr(rows_iter2, "close", None)
+        if close is not None:
+            close()
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    if mode == "append" and not is_dir_layout:
+        # 存量单文件迁移：旧文件移入目录为 part-0001，新数据紧随其后
+        old_path.rename(dataset_dir / "part-0001.parquet")
+    if mode == "replace":
+        # 全量覆盖：清掉既有分片/单文件后，新数据成为 part-0001
+        if is_dir_layout:
+            for old in dataset_dir.glob("part-*.parquet"):
+                old.unlink()
+        else:
+            old_path.unlink()
+    target = dataset_dir / "part-0001.parquet" if mode == "replace" else _next_part_path(dataset_dir)
+    tmp_path.rename(target)
+    dataset.parquet_path = str(dataset_dir)
+
+    # 原始件留档（审计与重放）
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    audit_path = storage.uploads_dir / f"{dataset.name}__{mode}__{ts}{ext}"
+    try:
+        audit_path.write_bytes(src_path.read_bytes())
+    except OSError as exc:
+        logger.warning("增量导入原始件留档失败 %s: %s", audit_path, exc)
+
+    # ---- 元数据刷新（同事务）----
+    if mode == "replace":
+        dataset.row_count = row_count
+        rows_added = row_count
+    else:
+        dataset.row_count += row_count
+        rows_added = row_count
+    dataset.file_encoding = encoding
+    dataset.dataset_ver += 1
+
+    table = read_dataset_table(dataset)
+    refresh_coverage_from_table(session, dataset, table)
+
+    return {
+        "mode": mode,
+        "rows_added": rows_added,
+        "dataset_ver": dataset.dataset_ver,
+        "row_count": dataset.row_count,
+        "part_file": target.name,
+        "audit_file": audit_path.name,
+    }
 
 
 def locate_mixed_values(dataset: Dataset, column: str, limit: int = 50) -> dict:

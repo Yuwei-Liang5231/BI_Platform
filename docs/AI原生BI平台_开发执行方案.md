@@ -164,3 +164,57 @@
 ---
 
 *本方案为执行层约定，与计划 V1.4 / 架构 V1.1 保持一致；批次划分随实际进展在 `PROGRESS.md` 中更新。*
+
+---
+
+## 十、阶段 2 详细设计（V1.2 增补，2026-09-14）
+
+> MVP（B0–B7 + 全量回归）已于 2026-09-11/14 验收通过。本节回答架构文档第九节的 4 个"阶段 2 详细设计必答项"，并细化 B8/B9 批次范围。
+
+### 10.1 必答项 2：增量导入策略
+
+**决策：分片 Parquet 目录组织 + append/replace 双模式。**
+
+| 项 | 决策 |
+|---|---|
+| 存储组织 | 新数据集落盘为 `data/parquet/{name}/part-0001.parquet`，`datasets.parquet_path` 记录**目录**；追加写新分片 `part-{N:04d}.parquet`，不重写历史数据（O(增量) 而非 O(全量)） |
+| 存量兼容 | B1 时代的单文件数据集（`parquet_path` 指向 .parquet 文件）原样可读；首次 append/replace 时自动迁移为目录（旧文件移入为 part-0001），迁移失败（文件占用）→ 400 明确报错 |
+| append | 表头列名集合必须与现有 schema **完全一致**（顺序可不同，写入时按现有 schema 重排）；新行按现有列类型转换（混杂列已是 string 接受任意值；转换失败 400 带行号+列名+原始值）；不做去重（重复责任在数据方，质检报告可见） |
+| replace | 清空分片目录重写 part-0001，语义 = 全量覆盖；schema 校验与 append 相同 |
+| dataset_ver | append/replace 成功后在**同一事务**内 +1 → 指标缓存键含 dataset_ver → 自然失效（机制 B3 已备，本次补端到端测试） |
+| 审计 | 原始上传件保留于 `data/uploads/{name}__{mode}__{ts}{ext}` |
+| API | `POST /api/datasets/{id}/data`（multipart: file + mode=append\|replace，默认 append；admin 专用）；响应 = 数据集详情 + `{mode, rows_added, dataset_ver, coverage}` |
+
+### 10.2 必答项 3：覆盖区间刷新触发
+
+**决策：导入事务内自动刷新，无定时调度。** 本地单机部署，导入即生效：重算所有分片 date/datetime 列的 min/max/non-null 并整体替换 `dataset_coverage` 行，与 `dataset_ver+1` 同事务提交。缓存失效依赖 dataset_ver（指标定义未变而数据变化同样生效——正是契约 v2 缓存键含覆盖端点的补充保险）。
+
+### 10.3 必答项 4：质检结果呈现（行列级定位）
+
+**决策：按需计算的质检报告 API + 前端质检面板；"可操作修正"通过 replace 重导闭环。**
+
+- `GET /api/datasets/{id}/quality`（登录即可）：逐列报告 `{name, type, mixed, null_count, null_ratio, distinct_count, is_empty(全空列), is_constant(常量列), issues:[{level: high/medium/info, code, message}], deviations(mixed 列: 行号+原始值+实际类型, 前 20), null_sample_rows(非字符串列前 10 个空值行号)}` + 整体 `coverage`。
+- issue 等级：high = 空列/混杂列（影响计算口径）；medium = null 率 > 50%；info = 常量列（区分度低）。
+- 前端：数据集页新增「质检报告」抽屉（列清单 + 问题徽标 + 异常行展开）；上传/增量导入成功后引导查看。
+- 修正路径：混杂/异常列 → 数据方修正文件 → `POST /{id}/data` replace 重导（ver+1 全局刷新）——不做在线单元格编辑（超出 BI 平台职责，数据主权留在源系统）。
+
+### 10.4 B9 问数 Agent 设计要点
+
+| 项 | 决策 |
+|---|---|
+| LLM 边界（计划铁律） | LLM **只产意图**（选指标/时间/维度/排序），数值一律由指标中心统一计算；LLM 不写 SQL、不产数字 |
+| 配置 | `llm_base_url/llm_api_key/llm_model`（config 已预留）；未配置时问数接口 400 明确提示，页面入口置灰 |
+| 解析器 | `infra/llm` 适配器（OpenAI 兼容 chat.completions，JSON mode）+ 确定性关键词兜底解析器（无 LLM/LLM 失败时降级，保证测试集可离线回归） |
+| API | `POST /api/query/ask`（body {question}）→ 理解卡 `{metric_code, start, end, compare, ambiguous:[{field, options, default, reason}], can_compute, no_metric_reason?}`；`POST /api/query/ask/execute`（确认后的卡）→ 与看板同一 compute_metric_value（权限同源） |
+| 歧义 | 理解卡黄色提示引用 `metrics.disambiguation` 登记的默认算法（如"下降"默认按减少金额）；指标找不到/算不了（超纲语义）明确返回，不现场拼装查询 |
+| 权限继承 | ask/execute 走与看板同一 `restricted_metric_ids` 判定；无权限指标理解卡直接提示"该指标无权限" |
+| 回归 | 问数测试集 `backend/tests/ask_testset.json`（问题 → 期望指标/时间/歧义标记），pytest 断言（兜底解析器离线跑）+ 走查脚本（LLM 在线跑，可跳过） |
+
+### 10.5 批次划分（阶段 2）
+
+| 批次 | 内容 | 验收 |
+|---|---|---|
+| B8-1 | 质检报告 API + 前端质检面板 | 构造 CSV（混杂/空列/常量/高 null）行列级定位准确 |
+| B8-2 | 增量导入（append/replace）+ 目录组织迁移 + ver 递增 + 覆盖刷新 + 缓存失效端到端 | append 后同区间取数 cache=miss 且值更新；schema 不符 400 |
+| B8-3 | 测试 + 走查 + 文档 + 提交 | pytest 全过 + smoke 全过 |
+| B9 | 问数 Agent（解析器 + 理解卡 + execute + 权限 + 测试集） | M3/M4 里程碑标准 |

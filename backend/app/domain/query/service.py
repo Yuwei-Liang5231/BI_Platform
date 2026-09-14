@@ -25,6 +25,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.core.response import BusinessError
+from app.domain.ingestion.service import view_target
 from app.domain.metric.compiler import CompiledQuery, compile_metric
 from app.domain.metric.schema import CalcRuleError
 from app.infra.cache import metric_cache
@@ -179,7 +180,8 @@ def _compute_range(
     if cached is not None:
         return {**cached, "cache": "hit"}
 
-    views = {name: info["parquet_path"] for name, info in runtime.items()}
+    # B8：分片目录数据集展开为 glob（存量单文件原样）
+    views = {name: view_target(info["parquet_path"]) for name, info in runtime.items()}
     # 常数指标 SQL 无 $__start__/__end__ 占位符，绑定空参数（DuckDB 对未使用
     # 的命名参数不保证容忍，缺参/多参都不冒这个险）
     params: dict = {} if is_constant else {"__start__": start, "__end__": end}

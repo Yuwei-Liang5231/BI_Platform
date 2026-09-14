@@ -16,11 +16,14 @@ from pydantic import BaseModel
 
 from app.api.deps import AdminUser, CurrentUser, DbDep, SettingsDep
 from app.core.response import BusinessError, ok_response
+from app.domain.ingestion.quality import quality_report
 from app.domain.ingestion.service import (
     dataset_to_dict,
+    import_data_file,
     ingest_file,
     load_column_values,
     locate_mixed_values,
+    read_dataset_table,
     sanitize_name,
 )
 from app.infra.models import Dataset, DatasetCoverage, DatasetRelation
@@ -184,6 +187,65 @@ def column_anomalies(dataset_id: int, column_name: str, db: DbDep, _: CurrentUse
     return ok_response(locate_mixed_values(ds, column_name, limit=limit))
 
 
+# ---------------------------------------------------------------- 质检报告（B8）
+
+
+@router.get("/{dataset_id}/quality")
+def dataset_quality(dataset_id: int, db: DbDep, _: CurrentUser):
+    """全量质检报告：逐列类型/空值/空列/常量列/混杂偏离（行列级定位）+ 覆盖区间。"""
+    ds = _get_dataset(db, dataset_id)
+    table = read_dataset_table(ds)
+    return ok_response(quality_report(ds, _coverages_of(db, dataset_id), table))
+
+
+# ---------------------------------------------------------------- 增量导入（B8）
+
+
+@router.post("/{dataset_id}/data")
+def append_dataset_data(
+    dataset_id: int,
+    settings: SettingsDep,
+    db: DbDep,
+    _: AdminUser,
+    file: UploadFile = File(...),
+    mode: str = Form("append"),
+):
+    """向既有数据集增量导入（append）或全量覆盖（replace，管理员专用）。
+
+    成功后 dataset_ver+1（同事务）→ 相关指标缓存自然失效，覆盖区间自动刷新。"""
+    ds = _get_dataset(db, dataset_id)
+    original = file.filename or "data.csv"
+    suffix = Path(original).suffix.lower()
+
+    storage = StoragePaths(settings)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp:
+        tmp_path = Path(tmp.name)
+        size = 0
+        while chunk := file.file.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_UPLOAD_MB * 1024 * 1024:
+                tmp_path.unlink(missing_ok=True)
+                raise BusinessError(f"文件超过 {MAX_UPLOAD_MB}MB 上限")
+            tmp.write(chunk)
+
+    try:
+        result = import_data_file(
+            session=db,
+            storage=storage,
+            dataset=ds,
+            src_path=tmp_path,
+            original_filename=original,
+            mode=mode,
+        )
+    except PermissionError as exc:
+        raise BusinessError("文件被其他程序占用（可能正被 Excel 打开），请关闭后重试") from exc
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    db.commit()  # 增量导入显式提交：保证 ver+1 与覆盖刷新原子生效
+    return ok_response({**_detail(db, _get_dataset(db, dataset_id)), "import": result}, message=f"数据{'覆盖' if mode == 'replace' else '追加'}成功")
+
+
 # ---------------------------------------------------------------- 删除
 
 
@@ -204,7 +266,16 @@ def delete_dataset(dataset_id: int, db: DbDep, settings: SettingsDep, _: AdminUs
     removed, failed = 0, []
     for p in (file_path, parquet_path):
         try:
-            Path(p).unlink(missing_ok=True)
+            path = Path(p)
+            if path.is_dir():  # B8 分片目录：先逐文件删（句柄占用可定位），再删空目录
+                for f in sorted(path.rglob("*"), reverse=True):
+                    if f.is_file():
+                        f.unlink(missing_ok=True)
+                    elif f.is_dir():
+                        f.rmdir()
+                path.rmdir()
+            else:
+                path.unlink(missing_ok=True)
             removed += 1
         except OSError as exc:
             # 不静默：文件被占用等情况下必须可追溯（元数据已删，文件成孤儿）
