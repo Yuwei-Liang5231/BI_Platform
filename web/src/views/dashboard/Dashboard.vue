@@ -98,7 +98,10 @@ async function loadCards() {
   const seq = ++cardsSeq;
   await Promise.all(
     visible.value.map(async (m) => {
-      if (cards[m.id]) return;
+      // 已完成的卡片不重复取数；但仍在 loading 的旧批次占位必须由新批次接管重取——
+      // 首屏点主题的竞态：新批次跳过 + 旧批次响应被 seq 守卫丢弃并清理占位，
+      // 该卡片将无人补载，永远停留在「区间无数据」（切走再切回才恢复）
+      if (cards[m.id] && !cards[m.id].loading) return;
       // 注意：cards 是 reactive，读出的占位符是代理对象，与原始对象引用不相等，
       // 不能用 === 判定归属——用唯一 token 标记（属性读取穿透代理，恒等成立）
       const token = Symbol();
@@ -117,6 +120,9 @@ async function loadCards() {
             ? res.compare.change_pct / 100
             : null;
         cards[m.id] = { ...res, change, loading: false };
+        // 选中指标的数据在选中之后才到达（快速切主题的竞态）：
+        // isConstantCard 在此之前无法判定，折线请求需等卡片落定后重新决策
+        if (m.id === selectedId.value) loadTrend();
       } catch {
         if (seq !== cardsSeq) {
           if (cards[m.id]?.__token === token) delete cards[m.id];
@@ -133,8 +139,10 @@ async function loadCards() {
 
 async function loadTrend() {
   const seq = ++trendSeq;
-  // 全期常数指标无逐日序列（后端也只返回单点），不发起请求
-  if (!selected.value || selectedConstant.value) {
+  // 全期常数指标无逐日序列（后端也只返回单点），不发起请求；
+  // 选中卡片仍在取数时常数与否未知，也不发——等卡片响应后由 loadCards 触发重判，
+  // 否则竞态下会先画出错误的折线（如常数指标的单点）
+  if (!selected.value || selectedConstant.value || cards[selected.value.id]?.loading) {
     trendRows.value = [];
     return;
   }
