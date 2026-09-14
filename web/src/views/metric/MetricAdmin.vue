@@ -442,7 +442,6 @@ function openEdit(row) {
 }
 
 async function handleTryCompile() {
-  if (!validateTimeField()) return;
   const parsed = parseRule();
   if (!parsed.ok) return;
   try {

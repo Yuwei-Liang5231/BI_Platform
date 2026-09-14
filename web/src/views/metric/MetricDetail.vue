@@ -52,6 +52,46 @@ watch(dateRange, () => {
   loadTrend();
 });
 
+/* ── 变更历史：后端存 before/after 快照，前端生成可读摘要 ──
+   后端只对口径变更强制填写 reason；别名/说明等基础信息编辑不强制，
+   原因列显示占位符，变更内容由 before/after 字段级 diff 自动生成。 */
+const CHANGE_FIELD_LABELS = {
+  name: "名称",
+  aliases: "别名",
+  definition: "口径说明",
+  calc_rule: "计算规则（口径）",
+  topic: "主题",
+  parent_id: "父级指标",
+  disambiguation: "维度消歧",
+  owner_department: "归属部门",
+  status: "状态",
+};
+
+function fmtChangeVal(v) {
+  if (v === undefined) return "（无）";
+  if (v === null || v === "") return "（空）";
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s.length > 26 ? `${s.slice(0, 26)}…` : s;
+}
+
+function changeSummary(row) {
+  const before = row?.before ?? {};
+  const after = row?.after ?? {};
+  const keys = Object.keys(CHANGE_FIELD_LABELS).filter(
+    (k) => JSON.stringify(after[k] ?? null) !== JSON.stringify(before[k] ?? null),
+  );
+  if (!keys.length) return "（元数据变更，无业务字段差异）";
+  return keys
+    .map((k) => {
+      const label = CHANGE_FIELD_LABELS[k];
+      if (k === "calc_rule") {
+        return `计算规则（口径）变更${after.ver ? `（版本 → v${after.ver}）` : ""}`;
+      }
+      return `${label}：${fmtChangeVal(before[k])} → ${fmtChangeVal(after[k])}`;
+    })
+    .join("；");
+}
+
 async function loadAll() {
   await metricStore.fetchDetail(metricId.value);
   await Promise.all([loadCurrent(), loadTrend(), loadSql(), metricStore.fetchChanges(metricId.value)]);
@@ -278,9 +318,15 @@ onMounted(async () => {
           </div>
           <el-table :data="metricStore.changes" style="width: 100%">
             <el-table-column prop="created_at" label="时间" width="180" />
-            <el-table-column prop="operator" label="操作人" width="140" />
-            <el-table-column prop="reason" label="原因" min-width="200" />
-            <el-table-column prop="summary" label="变更内容" min-width="280" />
+            <el-table-column label="操作人" width="140">
+              <template #default="{ row }">{{ row.operator_id || "—" }}</template>
+            </el-table-column>
+            <el-table-column label="原因" min-width="200">
+              <template #default="{ row }">{{ row.reason || "基础信息更新（未要求填写原因）" }}</template>
+            </el-table-column>
+            <el-table-column label="变更内容" min-width="320">
+              <template #default="{ row }">{{ changeSummary(row) }}</template>
+            </el-table-column>
           </el-table>
         </section>
 
