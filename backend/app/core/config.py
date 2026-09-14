@@ -98,4 +98,15 @@ def get_settings() -> Settings:
     settings = Settings(_env_file=str(env_file), _env_file_encoding="utf-8")
     # APP_ENV 以进程环境为准（env 文件仅作缺省），保证一致性
     settings.app_env = app_env
+
+    # 本地覆盖文件 .env.{APP_ENV}.local（不进 git，存放真实凭据，如 LLM_API_KEY）。
+    # 文件内条目优先于 .env.{APP_ENV}；进程环境变量仍最高（pydantic-settings 语义不变）
+    local_file = ENV_DIR / f".env.{app_env}.local"
+    if local_file.exists():
+        override = Settings(_env_file=str(local_file), _env_file_encoding="utf-8")
+        for field in type(settings).model_fields:
+            value = getattr(override, field)
+            default = type(settings).model_fields[field].default
+            if value != default:
+                setattr(settings, field, value)
     return settings

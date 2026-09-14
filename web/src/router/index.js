@@ -52,6 +52,12 @@ const routes = [
         component: () => import("@/views/dataset/DatasetManage.vue"),
         meta: { title: "数据集与表关系" },
       },
+      {
+        path: "llm-models",
+        name: "LlmModels",
+        component: () => import("@/views/llm/LlmModels.vue"),
+        meta: { title: "模型管理", adminOnly: true },
+      },
     ],
   },
   { path: "/:pathMatch(.*)*", redirect: "/dashboard" },
@@ -66,6 +72,9 @@ router.beforeEach((to) => {
   const auth = useAuthStore();
   if (!to.meta.public && !auth.isLoggedIn) {
     return { name: "Login", query: { redirect: to.fullPath } };
+  }
+  if (to.meta.adminOnly && !auth.isAdmin) {
+    return { path: "/dashboard" };
   }
   if (to.name === "Login" && auth.isLoggedIn) {
     return { path: "/" };

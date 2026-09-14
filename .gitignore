@@ -23,8 +23,9 @@ dist-run/
 Thumbs.db
 .DS_Store
 
-# 凭据
+# 凭据（本地覆盖文件不进 git：真实 LLM key 等只放 .env.{env}.local）
 .env.local
+backend/env/.env.*.local
 
 # 走查截屏临时产物
 web/scripts/__*.png

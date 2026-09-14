@@ -97,7 +97,7 @@
 
 - **B7 验收**：按《AI原生BI平台_B7验收报告.md》第七节走查清单操作（一键 smoke + 浏览器端到端约 5 分钟）；B6 视觉走查项继续有效。
 - 已知偏差（有意为之）：主键 ID 后端为 int，前端直接透传未转 string（规范"与后端不一致时须先确认"——沿用后端契约）。
-- **阶段 2（B8 质检/增量导入 + B9 问数）已完成**（2026-09-14）。**B9 LLM 凭据待用户填入**：`backend/env/.env.dev` 的 `LLM_BASE_URL / LLM_API_KEY / LLM_MODEL`（DeepSeek 兼容接口）——填入重启后问数页自动切 LLM 解析（未填时规则解析照常可用）。下一步方向：阶段 3（B10 异动检测、B11 预警触达、B12 归因与报告）、扩展算子（4a）、行级权限（4b）。
+- **阶段 2（B8 质检/增量导入 + B9 问数）已完成**（2026-09-14）。**B9 LLM 已配置 + 模型管理上线**（2026-09-14）：① `backend/env/.env.dev` 已填入工作区 env 文件的 DeepSeek 凭据（兜底默认）；② 新增「模型管理」页（admin 专享，`/llm-models`）+ `llm_models` 表 + `/api/llm/models` CRUD/启用切换/连通性测试接口——用户可自行登记多个 OpenAI 兼容模型、一键切换，**DB 启用记录 > env 兜底**，删除启用记录自动回退；api_key 全程脱敏返回。测试：pytest 224 passed（+10）；本地 Mock LLM 端到端 9/9 PASS（`backend/scripts/verify_llm_admin.py` + `mock_llm_server.py`，因公司网络屏蔽外网 LLM 用 Mock 验证全链路）。下一步方向：阶段 3（B10 异动检测、B11 预警触达、B12 归因与报告）、扩展算子（4a）、行级权限（4b）。
 
 ## 五、运行与验证（三种方式，任选）
 

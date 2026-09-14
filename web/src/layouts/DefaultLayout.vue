@@ -16,9 +16,12 @@ const navItems = [
   { path: "/metrics", label: "指标目录" },
   { path: "/metrics/admin", label: "指标管理", writeOnly: true },
   { path: "/datasets", label: "数据集与表关系" },
+  { path: "/llm-models", label: "模型管理", adminOnly: true },
 ];
 
-const visibleNav = navItems.filter((item) => !item.writeOnly || auth.canWrite);
+const visibleNav = navItems.filter(
+  (item) => (!item.writeOnly || auth.canWrite) && (!item.adminOnly || auth.isAdmin),
+);
 
 function isActive(path) {
   if (path === "/metrics") {

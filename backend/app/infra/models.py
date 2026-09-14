@@ -185,3 +185,26 @@ class MetricVisibilityRestriction(Base):
     subject_value: Mapped[str] = mapped_column(String(100))
     created_by: Mapped[str] = mapped_column(String(64), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+
+
+# ---------------------------------------------------------------- 阶段 2 LLM 模型管理
+
+
+class LlmModel(Base):
+    """LLM 模型登记（阶段 2）：OpenAI 兼容接口，支持多模型登记与运行时切换。
+
+    is_active 全局唯一启用一条（切换在 service 层用事务保证互斥）；
+    无任何记录或未启用时回退 env 配置（settings.llm_*）。
+    """
+
+    __tablename__ = "llm_models"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)     # 展示名（唯一）
+    base_url: Mapped[str] = mapped_column(String(500))              # OpenAI 兼容根地址，如 https://api.deepseek.com
+    api_key: Mapped[str] = mapped_column(String(300))               # 凭据（列表接口脱敏返回）
+    model: Mapped[str] = mapped_column(String(200))                 # 模型标识，如 deepseek-v4-flash
+    is_active: Mapped[int] = mapped_column(Integer, default=0)      # 1=当前启用（唯一）
+    remark: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)

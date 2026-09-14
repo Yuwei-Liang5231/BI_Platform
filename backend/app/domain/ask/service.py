@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.response import BusinessError
 from app.domain.auth.service import restricted_metric_ids
-from app.infra.llm import chat_json, llm_available
+from app.infra.llm import chat_json, resolve_llm_config
 from app.infra.models import Metric
 
 
@@ -117,7 +117,7 @@ def match_metrics(question: str, metrics: list[Metric]) -> list[Metric]:
 # ---------------------------------------------------------------- LLM 意图
 
 
-def _llm_intent(settings, question: str, metrics: list[Metric], today: date) -> dict | None:
+def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date) -> dict | None:
     """LLM 意图解析。输出经严格校验：指标必须在候选清单内，日期必须合法——
     任何越纲/非法字段一律丢弃（宁缺毋滥，防幻觉）。"""
     metric_list = "\n".join(
@@ -134,7 +134,7 @@ def _llm_intent(settings, question: str, metrics: list[Metric], today: date) -> 
         f"今天：{today.isoformat()}\n候选指标清单：\n{metric_list or '（无）'}\n"
         f"用户问题：{question}"
     )
-    intent = chat_json(settings, system, user)
+    intent = chat_json(config, system, user)
     if not isinstance(intent, dict):
         return None
 
@@ -166,6 +166,8 @@ def build_card(db: Session, user, question: str) -> dict:
     from app.core.config import get_settings
 
     settings = get_settings()
+    # LLM 配置：模型管理页启用的记录优先，env 兜底；都无则走关键词解析器
+    llm_cfg = resolve_llm_config(db, settings)
     today = date.today()
 
     hidden = restricted_metric_ids(db, user)
@@ -209,8 +211,8 @@ def build_card(db: Session, user, question: str) -> dict:
 
     # LLM 通道：在候选清单内改选指标/给出合法时间与比较方式，越纲字段丢弃
     source = "fallback"
-    if llm_available(settings):
-        intent = _llm_intent(settings, question, visible, today)
+    if llm_cfg:
+        intent = _llm_intent(llm_cfg, question, visible, today)
         if intent:
             source = "llm"
             if intent.get("metric_code"):
@@ -245,7 +247,7 @@ def build_card(db: Session, user, question: str) -> dict:
 
     return {
         "question": question,
-        "llm_configured": llm_available(settings),
+        "llm_configured": llm_cfg is not None,
         "source": source,
         "metric": ({"id": metric.id, "code": metric.code, "name": metric.name} if metric else None),
         "start": start.isoformat(),
