@@ -249,12 +249,53 @@ async function loadColumns(tableName) {
       const type = (typeof c === "string" ? "" : String(c.type ?? c.dtype ?? "")).toLowerCase();
       return {
         name,
+        type,
         isDate: type.includes("date") || /date|日期|_at$|_dt$/i.test(name),
       };
     });
+    autoPickTimeField(tableName);
   } catch {
     datasetColumns[tableName] = [];
   }
+}
+
+/* 数据集有多个日期列时，后端会拒绝编译（口径歧义）。前端自动选一个最可能的
+   时间字段（写时间类词 > datetime 类型 > 靠前），选择在下拉框中可见可更改，
+   既保证开箱即用，又不掩盖口径选择。 */
+const TIME_FIELD_PRIORITY = /(write|create|update|occur|event|record|_time|time$)/i;
+
+function autoPickTimeField(tableName) {
+  if (builder.mode !== "flat" || builder.flat.table !== tableName) return;
+  if (builder.flat.time_field) return;
+  const cols = (datasetColumns[tableName] ?? []).filter((c) => c.isDate);
+  if (cols.length <= 1) return;
+  const best = [...cols].sort((a, b) => score(b) - score(a))[0];
+  builder.flat.time_field = best.name;
+  ElMessage.info(`数据集「${tableName}」有 ${cols.length} 个日期列，已自动选择时间字段「${best.name}」，可手动更改`);
+  function score(c) {
+    let s = 0;
+    if (TIME_FIELD_PRIORITY.test(c.name)) s += 2;
+    if (c.type === "datetime") s += 1;
+    return s;
+  }
+}
+
+const flatDateCols = computed(() =>
+  (datasetColumns[builder.flat.table] ?? []).filter((c) => c.isDate),
+);
+
+/* 试编译/保存前的本地预检：多日期列数据集必须显式选定时间字段，
+   提前给出可操作的提示，而不是等服务端报口径歧义错误。 */
+function validateTimeField() {
+  if (builder.mode === "flat" && flatDateCols.value.length > 1 && !builder.flat.time_field.trim()) {
+    ElMessage.warning(
+      `数据集「${builder.flat.table}」存在 ${flatDateCols.value.length} 个日期列（${flatDateCols.value
+        .map((c) => c.name)
+        .join("、")}），请先选择时间字段`,
+    );
+    return false;
+  }
+  return true;
 }
 
 function onOperandTableChange(operand) {
@@ -347,6 +388,7 @@ function openEdit(row) {
 }
 
 async function handleTryCompile() {
+  if (!validateTimeField()) return;
   const parsed = parseRule();
   if (!parsed.ok) return;
   try {
@@ -359,6 +401,7 @@ async function handleTryCompile() {
 
 async function handleSave() {
   await formRef.value.validate();
+  if (!validateTimeField()) return;
   const parsed = parseRule();
   if (!parsed.ok) return;
   const disResult = buildDisambiguation();
@@ -651,14 +694,23 @@ onMounted(async () => {
                 placeholder="过滤条件（可选），如：order_status = '已支付'"
                 class="rule-builder__mono"
               />
-              <el-select v-model="builder.flat.time_field" placeholder="时间字段（可选，默认自动识别日期列）" clearable filterable>
+              <el-select
+                :model-value="builder.flat.time_field ?? ''"
+                @update:model-value="builder.flat.time_field = $event ?? ''"
+                :placeholder="flatDateCols.length > 1 ? `时间字段（该数据集有 ${flatDateCols.length} 个日期列，请确认）` : '时间字段（可选，默认自动识别日期列）'"
+                clearable filterable
+              >
                 <el-option
-                  v-for="c in (datasetColumns[builder.flat.table] ?? []).filter((c) => c.isDate)"
+                  v-for="c in flatDateCols"
                   :key="c.name"
                   :label="c.name"
                   :value="c.name"
                 />
               </el-select>
+              <p v-if="flatDateCols.length > 1" class="admin__hint admin__hint--warn">
+                该数据集有 {{ flatDateCols.length }} 个日期列（{{ flatDateCols.map((c) => c.name).join("、") }}），
+                不同日期列的时间范围可能差异很大，请确认所选时间字段符合业务口径。
+              </p>
             </template>
 
             <!-- 比率组合 -->
@@ -869,6 +921,10 @@ onMounted(async () => {
 .admin__hint {
   color: var(--pwc-text-secondary);
   font-size: var(--pwc-font-body-s);
+}
+
+.admin__hint--warn {
+  color: var(--el-color-warning);
 }
 
 .admin__rule :deep(textarea),

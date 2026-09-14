@@ -73,6 +73,50 @@ def _query(client, metric, start, end, compare="none"):
     })
 
 
+class TestCountAggregation:
+    """count 聚合不受列类型限制（类型检查仅覆盖 sum/avg/max/min）：
+    数值列 count 必须编译成功且执行正确；不带列时为 COUNT(*)。"""
+
+    def test_compile_count_on_numeric_column(self, client, query_env):
+        resp = client.post("/api/metrics/compile", json={
+            "calc_rule": {"base_aggregation": "count",
+                          "source": {"table": DATASET_NAME, "column": "amount"}},
+        })
+        assert resp.status_code == 200, resp.text
+        assert "COUNT(" in resp.json()["data"]["sql"]
+
+    def test_count_numeric_value_and_count_star(self, client, query_env):
+        """端到端：数值列 count 指标创建 + 查询（2026-01 两行 → 2）。
+        扁平形态不带列的 count 被设计性拒绝（提示用 operand 形态）；
+        operand 形态省略 column 即 COUNT(*)（全表 6 行）。"""
+        code = "q_count_num_0"
+        resp = client.post("/api/metrics", json={
+            "code": code, "name": "计数测试数值列",
+            "calc_rule": {"base_aggregation": "count",
+                          "source": {"table": DATASET_NAME, "column": "amount"}},
+        })
+        assert resp.status_code == 200, resp.text
+        data = _query(client, code, "2026-01-01", "2026-01-31").json()["data"]
+        assert data["value"] == pytest.approx(2.0)
+
+        flat_no_col = client.post("/api/metrics/compile", json={
+            "calc_rule": {"base_aggregation": "count", "source": {"table": DATASET_NAME}},
+        })
+        assert flat_no_col.status_code == 400
+        assert "operand 形态" in flat_no_col.json()["message"]
+
+        code2 = "q_count_star_0"
+        resp = client.post("/api/metrics", json={
+            "code": code2, "name": "计数测试全表",
+            "calc_rule": {"expression": "A", "operands": {
+                "A": {"table": DATASET_NAME, "aggregation": "count"},
+            }},
+        })
+        assert resp.status_code == 200, resp.text
+        data = _query(client, code2, "2026-01-01", "2026-01-31").json()["data"]
+        assert data["value"] == pytest.approx(2.0)  # 区间内共 2 行
+
+
 class TestMetricValue:
     def test_value_matches_expectation(self, client, query_env):
         """口径一致性：2026-01 paid GMV = 300 + 70 = 370。"""
