@@ -24,10 +24,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // dev 环境经 Vite 代理转发 /api 到本地 FastAPI，规避跨域
+    // dev 环境经 Vite 代理转发 /api 到本地 FastAPI，规避跨域；
+    // 目标后端可用环境变量 BI_BACKEND_ORIGIN 覆盖（如换端口启动后端时），默认 8100
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8100",
+        target: process.env.BI_BACKEND_ORIGIN || "http://127.0.0.1:8100",
         changeOrigin: true,
       },
     },
