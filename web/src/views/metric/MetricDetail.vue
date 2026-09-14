@@ -24,6 +24,8 @@ const metricId = computed(() => route.params.id);
 const metric = computed(() => metricStore.detail);
 const current = ref(null);
 const trendRows = ref([]);
+// 全期常数指标（未绑定时间字段）：无逐日序列，趋势区显示说明而非折线
+const isConstant = computed(() => current.value?.constant === true);
 const sqlExpanded = ref(false);
 const sqlText = ref("");
 // 统计周期：默认上一自然月，可自定义
@@ -301,13 +303,17 @@ onMounted(async () => {
         <!-- 日序列趋势 -->
         <section class="pwc-card col-span-12">
           <div class="pwc-card__header">
-            <h4>日序列趋势（{{ range.start }} ~ {{ range.end }}）</h4>
+            <h4>
+              日序列趋势（{{ range.start }} ~ {{ range.end }}）
+              <span v-if="isConstant" class="pwc-badge pwc-badge--grey"
+                title="全期常数指标：未绑定时间字段，不按时间过滤，任意统计区间返回同一全期汇总值">全期值</span>
+            </h4>
           </div>
-          <div
-            v-if="trendRows.length"
-            ref="chartEl"
-            class="detail__chart"
-          ></div>
+          <!-- 全期常数指标：与统计区间无关，无逐日序列（与统一看板口径一致） -->
+          <p v-if="isConstant" class="metric-empty">
+            该指标为「全期常数」（未绑定时间字段）：不按时间过滤，任意统计区间返回同一全期汇总值，因此没有逐日折线。
+          </p>
+          <div v-else-if="trendRows.length" ref="chartEl" class="detail__chart"></div>
           <p v-else class="metric-empty">—</p>
         </section>
 
