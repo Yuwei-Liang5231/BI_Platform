@@ -32,8 +32,35 @@ if (-not (Test-Path $Py)) {
     Write-Error "未找到 managed venv 解释器：$Py`n请先执行：& 'C:\Users\William Y Liang\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m venv 'C:\Users\William Y Liang\.workbuddy\binaries\python\envs\default'"
 }
 
+# 启动前端口体检：绑定失败时直接给出占用方与处置建议，避免只见裸 WinError 10013
+function Test-PortAvailable([int]$Port) {
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        $inner = $_.Exception.InnerException
+        $msg = if ($inner -and $inner.Message) { $inner.Message } else { $_.Exception.Message }
+        Write-Warning "端口 $Port 当前无法绑定（$msg）"
+        Write-Host "占用情况（netstat）：" -ForegroundColor Yellow
+        netstat -ano | Select-String ":$Port\s" | ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+        $pids = netstat -ano | Select-String ":$Port\s.*ESTABLISHED|:$Port\s.*LISTENING" |
+            ForEach-Object { ($_ -split '\s+')[-1] } | Sort-Object -Unique
+        foreach ($p in $pids) {
+            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+            if ($proc) { Write-Host "  PID $p = $($proc.ProcessName)" -ForegroundColor Yellow }
+        }
+        Write-Host "处置建议：`n  1) 换端口启动：.\scripts\bi.ps1 run -Env $Env -Port 8101（前端需同步 BI_BACKEND_ORIGIN=http://127.0.0.1:8101）`n  2) 若占用方为系统服务随机抢注，可用管理员权限永久保留端口：netsh int ipv4 add excludedportrange protocol=tcp startport=$Port numberofports=1`n  3) 或重启对应的第三方服务释放连接" -ForegroundColor Cyan
+        return $false
+    } finally {
+        if ($listener) { $listener.Stop() }
+    }
+}
+
 switch ($Command) {
     'run' {
+        if (-not (Test-PortAvailable $Port)) { return }
         $env:APP_ENV = $Env
         $env:PYTHONPATH = Join-Path $Root 'backend'
         Write-Host "启动后端  env=$Env  http://127.0.0.1:$Port/docs"
