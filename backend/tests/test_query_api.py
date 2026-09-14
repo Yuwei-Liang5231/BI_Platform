@@ -332,6 +332,28 @@ class TestCompare:
         assert data["compare"]["value"] is None
         assert data["compare"]["change_pct"] is None
 
+    def test_compare_mom_cross_month_eff_window_alignment(self, client, query_env):
+        """跨月长区间基期回归（2026-09-14）：区间尾部超出覆盖时，环比基期按
+        「有效数据窗口」[start, data_through] 整体前移一期，而不是只平移窗口
+        末端——旧实现起点仍锚定完整区间前移，会把基期漂到覆盖边缘（假涨幅）
+        或覆盖之外（无环比）。yoy 因起点天然对齐，行为不变。"""
+        # 2026-01-01 ~ 2026-02-28：覆盖至 02-05 → 有效窗口 01-01~02-05（36 天）
+        data = _query(client, query_env, "2026-01-01", "2026-02-28", compare="mom").json()["data"]
+        assert data["value"] == pytest.approx(450.0)      # 370 + 80，真实值
+        assert data["period_complete"] is False
+        assert data["data_through"] == "2026-02-05"
+        assert data["compare"]["start"] == "2025-11-26"   # 同长度前移（旧实现漂成 2025-11-03）
+        assert data["compare"]["end"] == "2025-12-31"     # 旧实现漂成 2025-12-08
+        assert data["compare"]["value"] is None           # 11-26~12-31 无数据行
+        assert data["compare"]["change_pct"] is None
+
+        # yoy：有效窗口去年同期（2025-01-01~02-05 = 100 + 50 = 150）→ +200%
+        data2 = _query(client, query_env, "2026-01-01", "2026-02-28", compare="yoy").json()["data"]
+        assert data2["compare"]["start"] == "2025-01-01"
+        assert data2["compare"]["end"] == "2025-02-05"
+        assert data2["compare"]["value"] == pytest.approx(150.0)
+        assert data2["compare"]["change_pct"] == pytest.approx(200.0)
+
 
 class TestErrors:
     def test_unknown_metric_404(self, client, query_env):

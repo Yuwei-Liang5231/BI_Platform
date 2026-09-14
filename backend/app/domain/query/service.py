@@ -272,12 +272,18 @@ def compute_metric_value(
     }
 
     if compare != "none" and not is_constant:
-        prev_start, prev_end = _previous_range(start_d, end_d, compare)
-        # 契约 v2：当前周期不完整时，环比基期对齐到数据实际截止日（同月同日），
-        # 避免"10 天的值 vs 上月整月"的假跌幅（如 08-01~08-10 对 07-01~07-10）
+        # 契约 v2：当前周期不完整（数据未覆盖到区间尾）时，先截出「有效数据窗口」
+        # [start, data_through]，再对其同长度前移一期作基期。旧实现 prev_end =
+        # prev_start + (data_through - start) 只对齐窗口末端、起点仍锚定完整区间
+        # 前移，跨月长区间会把基期推到覆盖边缘甚至之外——如 12-01~01-29 数据截至
+        # 12-31 时基期漂成 10-02~11-01（仅 11-01 一天有数据 → +640909% 假涨幅），
+        # 或 12-01~01-31 时漂到 10-01~10-31（覆盖外 → 直接无环比）。
+        # 有效窗口对齐后，长区间与「12 月整月」的环比一致（都是 vs 11 月同长度窗口），
+        # 短区间场景（08-01~08-31 截至至 08-10 → 基期 07-01~07-10）行为不变。
+        eff_end_d = end_d
         if not current["period_complete"] and current["data_through"]:
             eff_end_d = date.fromisoformat(current["data_through"])
-            prev_end = prev_start + (eff_end_d - start_d)
+        prev_start, prev_end = _previous_range(start_d, eff_end_d, compare)
         prev = _compute_range(db, metric, compiled, runtime, prev_start, prev_end)
         payload["compare"] = {
             "type": compare,
