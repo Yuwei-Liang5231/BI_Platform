@@ -40,8 +40,12 @@ function step(name, ok, detail = "") {
     await page.waitForTimeout(500);
   }
   async function closeDialog() {
-    await page.locator(".el-dialog__headerbtn").click();
-    await page.waitForTimeout(400);
+    // 保存成功会自动关框；仅在对话框仍可见时才点关闭
+    const btn = page.locator(".el-dialog__headerbtn");
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click();
+      await page.waitForTimeout(400);
+    }
   }
   async function pickGrid(idx, optionText) {
     await gridSelects.nth(idx).click();
@@ -75,11 +79,12 @@ function step(name, ok, detail = "") {
   await page.waitForTimeout(2500);
   step("T3 保存成功（列表可见）", (await page.getByRole("row", { hasText: "smoke_md_count" }).count()) >= 1);
 
-  // ===== T4: 清空时间字段 → 前端警告拦截 =====
+  // ===== T4: 清空时间字段 → 确认框知情 → 确认后按全期常数编译通过 =====
+  // （2026-09-14「日期可选」契约：留空是合法选择，弹确认框而非拦截）
   await page.reload({ waitUntil: "networkidle" }); // 保存关闭对话框后 overlay 可能残留，刷新拿干净状态
   await page.waitForTimeout(1500);
   await openDialog();
-  await fillBasic("smoke_md_noTF", "走查无时间字段拦截");
+  await fillBasic("smoke_md_notf", "走查无时间字段拦截");
   console.log("T4 step: basic filled");
   await pickGrid(0, "multi_date_ds");
   console.log("T4 step: ds picked");
@@ -97,18 +102,38 @@ function step(name, ok, detail = "") {
   await page.keyboard.press("Escape"); // 清空可能弹开下拉面板，关闭后再操作 grid
   await page.waitForTimeout(400);
   console.log("T4 step: cleared:", (await tfSel.innerText()).replace(/\s+/g, " ").slice(0, 40));
+  // 行内警示应说明「全期常数」语义
+  const warnHint = await dialog.locator(".admin__hint--warn", { hasText: "全期常数" }).count();
+  step("T4a 清空后行内警示说明全期常数语义", warnHint >= 1, `hint=${warnHint}`);
   await pickGrid(1, "amount");
   console.log("T4 step: column picked");
+  // 试编译 = 纯预览，不弹确认框、直接按全期常数编译通过
   await page.getByRole("button", { name: "试编译" }).click();
-  console.log("T4 step: compile clicked");
-  await page.waitForTimeout(1200);
-  const warnMsg = await page.locator(".el-message--warning", { hasText: "请先选择时间字段" }).count();
-  const errMsg = await page.locator(".el-message--error").count();
-  step("T4 清空后前端拦截（warning 而非后端 error）",
-    warnMsg >= 1 && errMsg === 0, `warning=${warnMsg} error=${errMsg}`);
+  await page.waitForTimeout(1500);
+  const t4bMsg = await page.locator(".el-message", { hasText: "编译通过" }).count();
+  const t4bBox = await page.locator(".el-message-box").count();
+  step("T4b 试编译直接通过（确认框只在保存时把关）", t4bMsg >= 1 && t4bBox === 0,
+    `msg=${t4bMsg} box=${t4bBox}`);
+  // 保存 = 口径落库，必须先弹知情确认框（waitFor 轮询，避免固定 sleep 时序抖动）
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const msgBox = page.locator(".el-message-box", { hasText: "未选择时间字段" });
+  let boxShown = true;
+  try {
+    await msgBox.waitFor({ state: "visible", timeout: 6000 });
+  } catch {
+    boxShown = false;
+  }
+  step("T4c 保存弹出「未选择时间字段」确认框", boxShown,
+    boxShown ? "" : `box=${await page.locator(".el-message-box").count()}, valErrs=${JSON.stringify(await dialog.locator(".el-form-item__error").allInnerTexts())}, msgs=${JSON.stringify(await page.locator(".el-message").allInnerTexts())}`);
+  if (boxShown) {
+    await page.getByRole("button", { name: "创建全期常数指标" }).click();
+    await page.waitForTimeout(2500);
+  }
+  step("T4d 确认后保存成功（列表可见）",
+    (await page.getByRole("row", { hasText: "smoke_md_notf" }).count()) >= 1);
   await closeDialog();
 
-  // ===== T5: 单日期列数据集留空 → 仍自动识别 =====
+  // ===== T5: 单日期列数据集 → 自动预填该列（开箱即用，仍可改） =====
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(1500);
   await openDialog();
@@ -116,7 +141,7 @@ function step(name, ok, detail = "") {
   await pickGrid(0, "transactions");
   await page.waitForTimeout(600);
   const tf2 = (await dialog.locator(".el-select").nth(3).innerText()).replace(/\s+/g, " ");
-  step("T5a 单日期列不自动填（后端自动识别）", !tf2.includes("tx_date"), `实际: ${tf2.slice(0, 40)}`);
+  step("T5a 单日期列自动预填 tx_date", tf2.includes("tx_date"), `实际: ${tf2.slice(0, 40)}`);
   await pickGrid(1, "amount");
   await page.getByRole("button", { name: "试编译" }).click();
   await page.waitForTimeout(1500);
