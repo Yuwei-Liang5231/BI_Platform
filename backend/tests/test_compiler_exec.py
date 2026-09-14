@@ -140,3 +140,82 @@ class TestExecDatasetA:
             [date(2026, 1, 1), date(2026, 12, 31)],
         ).fetchone()[0]
         assert compiled_value == pytest.approx(manual)
+
+
+class TestConstantMetricExec:
+    """日期可选（2026-09-14）：无日期列数据集 / time_field 显式 null → 全期常数指标。
+
+    SQL 不含时间过滤占位符，以空参数执行；任意区间语义下返回同一全期值；
+    混合形态（常数操作数 + 时间操作数）各自正确。
+    """
+
+    @pytest.fixture(scope="class")
+    def const_env(self, duck_env, tmp_path_factory):
+        """复用 orders/users 视图所在的连接，补一个无日期列维表视图（项目预算表）。"""
+        tmp: Path = tmp_path_factory.mktemp("const")
+        projects = Table.from_pydict({
+            "project_id": [1, 2, 3],
+            "budget": [100.0, 200.0, 300.0],
+            "dept": ["A", "B", "A"],
+        })
+        parquet.write_table(projects, tmp / "projects.parquet")
+        duck_env.execute(
+            f"CREATE VIEW projects AS SELECT * FROM read_parquet('{(tmp / 'projects.parquet').as_posix()}')"
+        )
+        return duck_env
+
+    def _datasets(self):
+        ds = dataset_a()
+        ds["projects"] = DatasetInfo(
+            id=9, name="projects",
+            columns={"project_id": "int", "budget": "float", "dept": "string"},
+            coverage={},
+        )
+        return ds
+
+    def test_no_date_column_sums_whole_table(self, const_env):
+        """无日期列：全表 budget 求和 = 600，空参数执行（无时间占位符）。"""
+        compiled = compile_metric(
+            {"base_aggregation": "sum", "source": {"table": "projects", "column": "budget"}},
+            self._datasets(), REL_A,
+        )
+        assert compiled.is_constant
+        row = const_env.execute(compiled.sql, {}).fetchone()
+        assert row[0] == pytest.approx(600.0)
+
+    def test_explicit_null_ignores_time_range(self, const_env):
+        """time_field: null：orders 全期 paid 求和 = 600，与请求区间无关。"""
+        compiled = compile_metric(
+            {"base_aggregation": "sum",
+             "source": {"table": "orders", "column": "pay_amount",
+                         "filter": "order_status = 'paid'"},
+             "time_field": None},
+            self._datasets(), REL_A,
+        )
+        assert compiled.is_constant
+        row = const_env.execute(compiled.sql, {}).fetchone()
+        assert row[0] == pytest.approx(600.0)  # 120.5 + 80 + 99.5 + 300，3 月订单与退款也在内
+
+    def test_mixed_constant_operand_ratio(self, const_env):
+        """混合形态：A 按 2026-01 过滤（200.5），B 全期常数（3 个项目）→ 66.833...；
+        B 子查询无时间条件，A 子查询有。"""
+        compiled = compile_metric(
+            {"expression": "A / B",
+             "operands": {
+                 "A": {"table": "orders", "column": "pay_amount", "aggregation": "sum"},
+                 "B": {"table": "projects", "column": "project_id",
+                        "aggregation": "count_distinct", "time_field": None},
+             }},
+            self._datasets(), REL_A,
+        )
+        assert not compiled.is_constant
+        assert compiled.time_fields == {"orders": "order_date"}
+        assert compiled.coverage_start == date(2026, 1, 1)  # 覆盖只来自有时间绑定的 A
+        assert compiled.coverage_end == date(2026, 6, 30)
+        row = const_env.execute(
+            compiled.sql, {"__start__": date(2026, 1, 1), "__end__": date(2026, 1, 31)}
+        ).fetchone()
+        assert row[0] == pytest.approx(200.5 / 3)
+        # B 的子查询里不应出现时间条件（CTE 内检查）
+        b_cte = compiled.sql.split('"B" AS (')[1].split(")")[0]
+        assert "$__start__" not in b_cte

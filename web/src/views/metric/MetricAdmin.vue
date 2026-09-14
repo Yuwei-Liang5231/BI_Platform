@@ -106,7 +106,7 @@ const AGG_OPTIONS = [
 
 const builder = reactive({
   mode: "flat", // flat | expr | json
-  flat: { table: "", column: "", aggregation: "sum", filter: "", time_field: "" },
+  flat: { table: "", column: "", aggregation: "sum", filter: "", time_field: "", time_none: false, time_confirmed: false },
   expr: {
     expression: "A / B",
     operands: [
@@ -135,6 +135,8 @@ function fillBuilderFromRule(rule) {
       aggregation: "sum",
       filter: "",
       time_field: "",
+      time_none: false,
+      time_confirmed: false,
     });
     builder.expr.expression = "A / B";
     builder.expr.operands = [
@@ -152,7 +154,13 @@ function fillBuilderFromRule(rule) {
       aggregation: rule.base_aggregation ?? "sum",
       filter: rule.source?.filter ?? "",
       time_field: rule.time_field ?? "",
+      // 规则里 time_field 显式为 null = 已声明的全期常数指标，编辑时不得被自动补填，
+      // 也不再次弹确认框（time_confirmed）
+      time_none: rule.time_field === null,
+      time_confirmed: rule.time_field === null,
     });
+    // 旧规则未声明 time_field（键缺失）：列加载后自动补填，避免保存时被当成显式常数
+    if (rule.time_field === undefined) autoPickTimeField(builder.flat.table);
   } else if (builder.mode === "expr") {
     builder.expr.expression = rule.expression ?? "A / B";
     const names = Object.keys(rule.operands ?? {});
@@ -184,7 +192,13 @@ function buildRule() {
     const f = builder.flat;
     const rule = { base_aggregation: f.aggregation, source: { table: f.table, column: f.column } };
     if (f.filter.trim()) rule.source.filter = f.filter.trim();
-    if (f.time_field.trim()) rule.time_field = f.time_field.trim();
+    if (f.time_field.trim()) {
+      rule.time_field = f.time_field.trim();
+    } else if (f.time_none || Array.isArray(datasetColumns[f.table])) {
+      // 用户显式清空（time_none）或数据集无日期列：显式声明全期常数（不按时间过滤）。
+      // 列信息尚未加载时不写 time_field 键，保持后端自动解析语义，避免误改口径。
+      rule.time_field = null;
+    }
     return rule;
   }
   if (builder.mode === "expr") {
@@ -259,19 +273,24 @@ async function loadColumns(tableName) {
   }
 }
 
-/* 数据集有多个日期列时，后端会拒绝编译（口径歧义）。前端自动选一个最可能的
-   时间字段（写时间类词 > datetime 类型 > 靠前），选择在下拉框中可见可更改，
-   既保证开箱即用，又不掩盖口径选择。 */
+/* 时间字段自动补填：有日期列时选一个最可能的（写时间类词 > datetime 类型 > 靠前），
+   选择在下拉框中可见可更改，既保证开箱即用，又不掩盖口径选择。
+   留空（用户显式清空）或数据集无日期列 → buildRule 写 time_field: null，
+   指标为「全期常数」：不按时间过滤，任意区间返回同一全期汇总值。 */
 const TIME_FIELD_PRIORITY = /(write|create|update|occur|event|record|_time|time$)/i;
 
 function autoPickTimeField(tableName) {
   if (builder.mode !== "flat" || builder.flat.table !== tableName) return;
-  if (builder.flat.time_field) return;
+  if (builder.flat.time_field || builder.flat.time_none) return;
   const cols = (datasetColumns[tableName] ?? []).filter((c) => c.isDate);
-  if (cols.length <= 1) return;
-  const best = [...cols].sort((a, b) => score(b) - score(a))[0];
+  if (!cols.length) return;
+  const best = cols.length === 1 ? cols[0] : [...cols].sort((a, b) => score(b) - score(a))[0];
   builder.flat.time_field = best.name;
-  ElMessage.info(`数据集「${tableName}」有 ${cols.length} 个日期列，已自动选择时间字段「${best.name}」，可手动更改`);
+  builder.flat.time_none = false;
+  builder.flat.time_confirmed = false;
+  if (cols.length > 1) {
+    ElMessage.info(`数据集「${tableName}」有 ${cols.length} 个日期列，已自动选择时间字段「${best.name}」，可手动更改`);
+  }
   function score(c) {
     let s = 0;
     if (TIME_FIELD_PRIORITY.test(c.name)) s += 2;
@@ -280,20 +299,53 @@ function autoPickTimeField(tableName) {
   }
 }
 
+function onFlatTableChange(tableName) {
+  builder.flat.column = "";
+  builder.flat.time_field = "";
+  builder.flat.time_none = false;
+  builder.flat.time_confirmed = false;
+  loadColumns(tableName); // 未缓存时内部会再调 autoPickTimeField
+  autoPickTimeField(tableName); // 已缓存时 loadColumns 提前返回，这里补一次
+}
+
 const flatDateCols = computed(() =>
   (datasetColumns[builder.flat.table] ?? []).filter((c) => c.isDate),
 );
 
-/* 试编译/保存前的本地预检：多日期列数据集必须显式选定时间字段，
-   提前给出可操作的提示，而不是等服务端报口径歧义错误。 */
-function validateTimeField() {
-  if (builder.mode === "flat" && flatDateCols.value.length > 1 && !builder.flat.time_field.trim()) {
-    ElMessage.warning(
-      `数据集「${builder.flat.table}」存在 ${flatDateCols.value.length} 个日期列（${flatDateCols.value
-        .map((c) => c.name)
-        .join("、")}），请先选择时间字段`,
-    );
-    return false;
+const flatTimePlaceholder = computed(() => {
+  const n = flatDateCols.value.length;
+  if (n > 1) return `时间字段（该数据集有 ${n} 个日期列；留空则全期汇总，不按时间过滤）`;
+  if (n === 1) return "时间字段（留空则不按时间过滤，返回全期汇总值）";
+  return Array.isArray(datasetColumns[builder.flat.table])
+    ? "时间字段（该数据集无日期列，指标为全期常数）"
+    : "时间字段（可选；留空则不按时间过滤）";
+});
+
+/* 试编译/保存前的本地预检：留空时间字段是合法选择（全期常数指标），
+   但属于易被忽视的口径差异——弹确认框让用户知情，而不是静默生效或一刀切拦截。 */
+async function confirmTimeFieldChoice() {
+  const colsLoaded = Array.isArray(datasetColumns[builder.flat.table]);
+  if (
+    builder.mode === "flat" &&
+    builder.flat.table &&
+    colsLoaded &&
+    !builder.flat.time_confirmed && // 已确认过（或编辑既有常数指标）不重复弹窗
+    !builder.flat.time_field.trim() &&
+    flatDateCols.value.length >= 1
+  ) {
+    try {
+      await ElMessageBox.confirm(
+        `数据集「${builder.flat.table}」有日期列（${flatDateCols.value
+          .map((c) => c.name)
+          .join("、")}）但未选择时间字段：指标将作为「全期常数」——不按时间过滤，` +
+          "任意统计区间返回同一全期汇总值，看板卡片无环比、无逐日折线。是否继续？",
+        "未选择时间字段",
+        { confirmButtonText: "创建全期常数指标", cancelButtonText: "返回选择", type: "warning" },
+      );
+      builder.flat.time_confirmed = true; // 本次会话内确认过，不再重复弹窗
+    } catch {
+      return false; // 用户返回选择时间字段
+    }
   }
   return true;
 }
@@ -320,6 +372,8 @@ function fillFlatSample() {
     aggregation: "sum",
     filter: "",
     time_field: "",
+    time_none: false,
+    time_confirmed: false,
   });
   loadColumns(t);
   ElMessage.info(`已填入示例骨架：选数据集「${t}」后，再选字段并按需加过滤条件`);
@@ -401,7 +455,7 @@ async function handleTryCompile() {
 
 async function handleSave() {
   await formRef.value.validate();
-  if (!validateTimeField()) return;
+  if (!(await confirmTimeFieldChoice())) return;
   const parsed = parseRule();
   if (!parsed.ok) return;
   const disResult = buildDisambiguation();
@@ -668,7 +722,7 @@ onMounted(async () => {
                 ? "对一个数据集的某字段做聚合，可选加过滤条件。如：已支付订单金额求和 = 客单价的分子。"
                 : builder.mode === "expr"
                   ? "先定义若干个「操作数」（各自的聚合口径），再用表达式组合。表达式只能用 + - * / 和操作数名。"
-                  : "直接编辑 JSON（完整能力，含跨表 operand 级 time_field）。切换回表单模式前需为合法 JSON。" }}
+                  : "直接编辑 JSON（完整能力，含跨表 operand 级 time_field；规则级 time_field 置 null 即「全期常数」不按时间过滤）。切换回表单模式前需为合法 JSON。" }}
             </p>
 
             <!-- 简单聚合 -->
@@ -678,7 +732,7 @@ onMounted(async () => {
                   v-model="builder.flat.table"
                   placeholder="数据集"
                   style="width: 180px"
-                  @change="(t) => { builder.flat.column = ''; loadColumns(t); }"
+                  @change="onFlatTableChange"
                 >
                   <el-option v-for="d in datasetStore.list" :key="d.id" :label="d.name" :value="d.name" />
                 </el-select>
@@ -696,8 +750,8 @@ onMounted(async () => {
               />
               <el-select
                 :model-value="builder.flat.time_field ?? ''"
-                @update:model-value="builder.flat.time_field = $event ?? ''"
-                :placeholder="flatDateCols.length > 1 ? `时间字段（该数据集有 ${flatDateCols.length} 个日期列，请确认）` : '时间字段（可选，默认自动识别日期列）'"
+                @update:model-value="(v) => { builder.flat.time_field = v ?? ''; builder.flat.time_none = !v; if (v) builder.flat.time_confirmed = false; }"
+                :placeholder="flatTimePlaceholder"
                 clearable filterable
               >
                 <el-option
@@ -707,6 +761,12 @@ onMounted(async () => {
                   :value="c.name"
                 />
               </el-select>
+              <p v-if="!builder.flat.time_field && flatDateCols.length >= 1" class="admin__hint admin__hint--warn">
+                未选择时间字段：指标将为「全期常数」——不按时间过滤，任意统计区间返回同一全期汇总值，看板卡片无环比、无逐日折线。
+              </p>
+              <p v-else-if="flatDateCols.length === 0 && Array.isArray(datasetColumns[builder.flat.table])" class="admin__hint admin__hint--warn">
+                该数据集没有日期列：指标将为「全期常数」——不按时间过滤，任意统计区间返回同一全期汇总值。
+              </p>
               <p v-if="flatDateCols.length > 1" class="admin__hint admin__hint--warn">
                 该数据集有 {{ flatDateCols.length }} 个日期列（{{ flatDateCols.map((c) => c.name).join("、") }}），
                 不同日期列的时间范围可能差异很大，请确认所选时间字段符合业务口径。

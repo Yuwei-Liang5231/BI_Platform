@@ -7,7 +7,8 @@ compile(calc_rule, datasets, relations) -> CompiledQuery
 - 关系解析只允许 dataset_relations 显式注册的星型结构（不变式 6）：
   过滤列不在本表时，查「本表 → 维度表」一跳关系；找不到即拒绝并明确提示，禁止隐式推断
 - 时间对齐：所有 operand 强制按各自数据集的 time_field 加同一时间范围条件，
-  避免分子分母口径漂移
+  避免分子分母口径漂移；数据集无日期列或 time_field 显式置 null 的操作数
+  不加时间过滤（全期常数），coverage 计入 None（2026-09-14「日期可选」）
 - 行业无关：本模块无任何行业字段/分支（不变式 7），A/B 两套数据集交叉验证
 
 不支持（保存即拒绝，见 schema.py）：cohort、窗口函数、嵌套聚合、自定义 SQL、
@@ -66,11 +67,17 @@ class CompiledQuery:
     primary_dataset: str
     primary_dataset_id: int
     dataset_names: list[str]                # 参与的数据集（去重，按出现顺序）
-    time_fields: dict[str, str]             # 数据集名 -> 时间字段
+    time_fields: dict[str, str]             # 数据集名 -> 时间字段（空 = 全期常数指标）
     coverage_start: date | None             # 合并覆盖区间（周期完整性判定用）
     coverage_end: date | None
     grain: str = "day"                      # v1 编译粒度固定为 day（最细粒度）
     used_relations: list[dict] = field(default_factory=list)  # 可解释性：用到的表关系
+
+    @property
+    def is_constant(self) -> bool:
+        """全期常数指标：无任何时间绑定——SQL 不含时间过滤，任意查询区间
+        返回同一全期汇总值（数据集无日期列，或 time_field 显式置 null）。"""
+        return not self.time_fields
 
 
 # ---------------------------------------------------------------- 渲染辅助
@@ -204,9 +211,11 @@ def _resolve_time_field(
     ds: DatasetInfo,
     explicit: str | None,
     context: str,
-) -> str:
+) -> str | None:
     """时间字段解析：显式指定（operand 级，或规则级命中本数据集）优先且严格校验；
-    否则该数据集恰好只有一个日期列时自动采用，多个日期列即拒绝。"""
+    否则该数据集恰好只有一个日期列时自动采用；数据集没有任何日期列时返回 None
+    （该操作数为全期常数，不按时间过滤）；多个日期列即拒绝（口径歧义，须显式
+    指定日期列或以 time_field: null 声明全期常数）。"""
     if explicit is not None:
         if explicit not in ds.columns:
             raise CompileError(
@@ -225,14 +234,12 @@ def _resolve_time_field(
         return explicit
     candidates = sorted(ds.coverage)
     if not candidates:
-        raise CompileError(
-            f"{context}：数据集 {ds.name!r} 没有日期列覆盖区间登记，无法按周期过滤。"
-            f"请重新接入数据集或为日期列补充覆盖信息"
-        )
+        return None  # 日期可选（2026-09-14）：无日期列 → 全期常数，不再拒绝
     if len(candidates) > 1:
         raise CompileError(
             f"{context}：数据集 {ds.name!r} 存在多个日期列 {candidates}，"
-            f"请在 calc_rule 中显式指定 time_field（operand 级或规则级），避免口径歧义"
+            f"请在 calc_rule 中显式指定 time_field（operand 级或规则级），"
+            f"或置 time_field 为 null 声明全期常数（不按时间过滤），避免口径歧义"
         )
     return candidates[0]
 
@@ -268,10 +275,13 @@ def _operand_subquery(    operand: Operand,
     rule_time_field: str | None,
     context: str,
     used_relations: list[dict],
-) -> tuple[str, str, str, tuple[date, date] | None, list[str]]:
+    force_no_time: bool = False,
+) -> tuple[str, str, str | None, tuple[date, date] | None, list[str]]:
     """生成单个 operand 的聚合子查询。返回 (sql, dataset_name, time_field, coverage, joined_names)。
 
-    时间字段优先级：operand 级 > 规则级（仅当该列存在于本数据集）> 自动解析唯一日期列。
+    时间字段优先级：规则级全期常数声明（force_no_time）> operand 级 no_time > operand 级
+    time_field > 规则级 time_field（仅当该列存在于本数据集）> 自动解析唯一日期列；
+    数据集无日期列或显式声明常数时 time_field 为 None——不加时间 WHERE，coverage 返回 None。
     joined_names 为跨表过滤列经关系 JOIN 的维度表名（无时间绑定，调用方须将其
     纳入 dataset_names，否则执行时不会创建对应视图）。
     """
@@ -284,28 +294,34 @@ def _operand_subquery(    operand: Operand,
         operand, ds, datasets, relations, context, joins, used_relations
     )
 
-    explicit = operand.time_field or (
-        rule_time_field if rule_time_field in ds.columns else None
-    )
-    time_field = _resolve_time_field(ds, explicit, context)
-    start, end = ds.coverage[time_field]
-    # 时间过滤用半开区间 [__start__, __end__+1d)：datetime 列下 `<= __end__`
-    # 会被解释为 `<= 当日 00:00:00`，把端点日的全部日间记录截掉（卡片整段
-    # 聚合有值、逐日序列几乎全 null 的"卡片有值折线无端"矛盾即源于此）；
-    # 纯 date 列下 < end+1d 与 <= end 语义等价，两种类型统一正确。
-    where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} >= $__start__")
-    where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} < ($__end__ + INTERVAL 1 DAY)")
+    cov: tuple[date, date] | None = None
+    if force_no_time or operand.no_time:
+        time_field = None  # 全期常数：不按时间过滤（规则级声明 / operand 级显式置 null）
+    else:
+        explicit = operand.time_field or (
+            rule_time_field if rule_time_field in ds.columns else None
+        )
+        time_field = _resolve_time_field(ds, explicit, context)
+    if time_field is not None:
+        start, end = ds.coverage[time_field]
+        cov = (start, end)
+        # 时间过滤用半开区间 [__start__, __end__+1d)：datetime 列下 `<= __end__`
+        # 会被解释为 `<= 当日 00:00:00`，把端点日的全部日间记录截掉（卡片整段
+        # 聚合有值、逐日序列几乎全 null 的"卡片有值折线无端"矛盾即源于此）；
+        # 纯 date 列下 < end+1d 与 <= end 语义等价，两种类型统一正确。
+        where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} >= $__start__")
+        where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} < ($__end__ + INTERVAL 1 DAY)")
 
     join_sql = "".join(
         f" JOIN {_q(dim)} ON {_join_on_sql(ds, datasets, fk, dim, pk)}"
         for dim, fk, pk in joins
     )
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     sql = (
         f"SELECT {_agg_sql(operand, f'{_q(ds.name)}.{_q(column)}' if column else None)} AS value "
-        f"FROM {_q(ds.name)}{join_sql} "
-        f"WHERE {' AND '.join(where_clauses)}"
+        f"FROM {_q(ds.name)}{join_sql} {where_sql}"
     )
-    return sql, ds.name, time_field, (start, end), [dim for dim, _, _ in joins]
+    return sql, ds.name, time_field, cov, [dim for dim, _, _ in joins]
 
 
 def _validate_operand_names(calc: CalcRule, datasets: dict[str, DatasetInfo]) -> None:
@@ -330,14 +346,30 @@ def compile_metric(
         raise CalcRuleError("time_field 在 calc_rule 内已指定，不要重复传入")
     effective_time_field = calc.time_field or time_field
 
+    # 规则级 time_field: null（全期常数声明）与 operand 级显式 time_field 互斥，
+    # 同时出现说明口径自相矛盾，保存即拒绝
+    if calc.no_time:
+        offenders = (
+            [calc.source] if calc.mode == "flat" else list(calc.operands.values())
+        )
+        conflicting = [op for op in offenders if op.time_field]
+        if conflicting:
+            raise CalcRuleError(
+                "规则级 time_field 已置 null（全期常数，不按时间过滤），"
+                "与操作数级 time_field 冲突；请二选一：删除操作数级 time_field，"
+                "或去掉规则级 null 声明"
+            )
+
     used_relations: list[dict] = []
     coverages: list[tuple[date, date]] = []
     time_fields: dict[str, str] = {}
     dataset_names: list[str] = []
 
-    def track(name: str, tf: str, cov: tuple[date, date] | None) -> None:
+    def track(name: str, tf: str | None, cov: tuple[date, date] | None) -> None:
         if name not in dataset_names:
             dataset_names.append(name)
+        if tf is None:
+            return  # 全期常数操作数：无时间绑定，不计覆盖区间
         prev = time_fields.get(name)
         if prev is not None and prev != tf:
             raise CompileError(
@@ -361,7 +393,8 @@ def compile_metric(
                 f"source 指定的 time_field {calc.time_field!r} 在数据集 {calc.source.table!r} 中不存在"
             )
         sql, ds_name, tf, cov, joined = _operand_subquery(
-            calc.source, datasets, relations, effective_time_field, "source", used_relations
+            calc.source, datasets, relations, effective_time_field, "source", used_relations,
+            force_no_time=calc.no_time,
         )
         track(ds_name, tf, cov)
         track_joined(joined)

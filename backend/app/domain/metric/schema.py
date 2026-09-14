@@ -16,12 +16,15 @@
                         "filter": "status = 'paid'"},
                   "B": {"table": "orders", "column": "user_id", "aggregation": "count_distinct"}}}
 
-time_field 语义：
+time_field 语义（2026-09-14 起「日期可选」）：
 - 规则级 "time_field"（顶层）：扁平形态下必须为目标数据集的日期列（严格）；
   表达式形态下作为默认值——仅应用于拥有该列的数据集，其余数据集自动解析唯一日期列。
+- 规则级 "time_field": null（显式置空）：声明「全期常数指标」——所有操作数
+  不按时间过滤，任意查询区间返回同一全期汇总值（与 operand 级 time_field 互斥）。
 - operand 级 "time_field"：严格指定该 operand 数据集的日期列（跨表比率中
-  各表日期列名不同时使用）。
-- 数据集有多个日期列且未显式指定时编译拒绝，避免口径歧义。
+  各表日期列名不同时使用）；置 null 表示该操作数不按时间过滤（全期常数）。
+- 数据集没有任何日期列：自动视为全期常数（不报错）；
+  多个日期列且未显式指定时仍编译拒绝，避免口径歧义。
 
 filter 文法（合取范式，v1 算子清单）：
     condition (AND condition)*
@@ -43,8 +46,8 @@ AGGREGATIONS = ("sum", "count", "count_distinct", "avg", "max", "min")
 NUMERIC_ONLY = ("sum", "avg")
 
 ALLOWED_TOP_KEYS = {"base_aggregation", "source", "expression", "operands", "time_field"}
-ALLOWED_SOURCE_KEYS = {"table", "column", "filter"}
-ALLOWED_OPERAND_KEYS = {"table", "column", "aggregation", "filter"}
+ALLOWED_SOURCE_KEYS = {"table", "column", "filter", "time_field"}
+ALLOWED_OPERAND_KEYS = {"table", "column", "aggregation", "filter", "time_field"}
 
 _COMPARISON_OPS = ("<=", ">=", "!=", "<>", "=", ">", "<")
 
@@ -70,6 +73,7 @@ class Operand:
     aggregation: str
     filter: list[FilterCondition] = field(default_factory=list)
     time_field: str | None = None
+    no_time: bool = False  # time_field 显式置 null：该操作数不按时间过滤（全期常数）
 
 
 # 表达式 AST：("name", "A") 或 ("binop", op, left, right)
@@ -84,6 +88,7 @@ class CalcRule:
     expression: ExprNode | None = None
     operands: dict[str, Operand] = field(default_factory=dict)
     time_field: str | None = None
+    no_time: bool = False  # 规则级 time_field 显式置 null：整条指标为全期常数
 
 
 # ---------------------------------------------------------------- 词法
@@ -273,11 +278,18 @@ def _parse_operand(raw: dict, context: str) -> Operand:
         raise CalcRuleError(
             f"{context}.aggregation 必须是 {list(AGGREGATIONS)} 之一，实际是 {aggregation!r}"
         )
+    tf = raw.get("time_field")
+    if tf is not None and (not isinstance(tf, str) or not tf.strip()):
+        raise CalcRuleError(
+            f"{context}.time_field 必须是非空字符串或 null（null = 该操作数不按时间过滤，全期常数）"
+        )
     return Operand(
         table=table.strip(),
         column=column.strip() if isinstance(column, str) else None,
         aggregation=aggregation,
         filter=parse_filter(raw.get("filter") or ""),
+        time_field=tf.strip() if isinstance(tf, str) else None,
+        no_time="time_field" in raw and raw["time_field"] is None,
     )
 
 
@@ -294,7 +306,11 @@ def parse_calc_rule(raw: dict) -> CalcRule:
 
     time_field = raw.get("time_field")
     if time_field is not None and (not isinstance(time_field, str) or not time_field.strip()):
-        raise CalcRuleError("time_field 必须是非空字符串")
+        raise CalcRuleError(
+            "time_field 必须是非空字符串或 null（null = 全期常数指标，不按时间过滤）"
+        )
+    # time_field 键显式存在且为 null → 全期常数声明；键缺失 → 维持自动解析语义
+    rule_no_time = "time_field" in raw and raw["time_field"] is None
 
     has_flat = "base_aggregation" in raw or "source" in raw
     has_expr = "expression" in raw or "operands" in raw
@@ -318,11 +334,15 @@ def parse_calc_rule(raw: dict) -> CalcRule:
         unknown = set(source) - ALLOWED_SOURCE_KEYS
         if unknown:
             raise CalcRuleError(f"source 含不支持的字段：{sorted(unknown)}。允许字段：{sorted(ALLOWED_SOURCE_KEYS)}")
-        operand = _parse_operand(
-            {"table": source.get("table"), "column": source.get("column"),
-             "aggregation": raw["base_aggregation"], "filter": source.get("filter")},
-            "source",
-        )
+        # 仅当 source 显式携带 time_field 时透传（键缺失 ≠ 显式 null，
+        # 否则所有扁平指标都会被误判为全期常数）
+        source_operand_raw = {
+            "table": source.get("table"), "column": source.get("column"),
+            "aggregation": raw["base_aggregation"], "filter": source.get("filter"),
+        }
+        if "time_field" in source:
+            source_operand_raw["time_field"] = source.get("time_field")
+        operand = _parse_operand(source_operand_raw, "source")
         if operand.column is None:
             raise CalcRuleError("source.column 必填（count 需要计数目标；如需 COUNT(*) 请用 operand 形态的 count 且省略 column）")
         return CalcRule(
@@ -330,6 +350,7 @@ def parse_calc_rule(raw: dict) -> CalcRule:
             base_aggregation=raw["base_aggregation"],
             source=operand,
             time_field=time_field.strip() if isinstance(time_field, str) else None,
+            no_time=rule_no_time,
         )
 
     if "expression" not in raw or "operands" not in raw:
@@ -363,4 +384,5 @@ def parse_calc_rule(raw: dict) -> CalcRule:
         expression=expr,
         operands=operands,
         time_field=time_field.strip() if isinstance(time_field, str) else None,
+        no_time=rule_no_time,
     )

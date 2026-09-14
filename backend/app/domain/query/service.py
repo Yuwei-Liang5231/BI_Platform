@@ -7,7 +7,9 @@
   口径变更 / 数据重导入后旧键自然失效；不完整周期不入缓存；
 - 环比/同比在查询层基于同一编译产物计算（架构 7.2：不属于编译器表达式）；
 - 执行时实时重编译：保证使用当前数据集覆盖区间与表关系（元数据规模小，
-  编译为毫秒级）；存档 SQL 仅用于展示与历史回看（B2 语义不变）。
+  编译为毫秒级）；存档 SQL 仅用于展示与历史回看（B2 语义不变）；
+- 全期常数指标（2026-09-14「日期可选」）：未绑定时间字段的指标与区间无关，
+  任意范围返回同一全期值；不参与环比，按日序列退化为单点。
 
 权限（B4 落地）：user 为必填参数；受限指标在取数出口强制 403（不变式 2，
 与 metric 元数据接口共用 auth.service 的同一套判定——权限双出口）。
@@ -161,9 +163,15 @@ def _compute_range(
     - 覆盖未知 / 区间与覆盖无交集 → value=None（区间无数据，不缓存）
     - 区间有数据但聚合结果为 null（如比率分母为 0）→ value=None
     - 缓存键含覆盖端点：数据补录（覆盖变化）后键变化，不会返回陈旧部分值。
+    - 全期常数指标（2026-09-14「日期可选」）：编译产物无时间过滤，与请求区间
+      无关——不做覆盖判定，period_complete=True、data_through=None，
+      缓存键不含覆盖端点（cov_tag=nocov）。
     """
     cov_start, cov_end = compiled.coverage_start, compiled.coverage_end
-    if cov_start is None or cov_end is None or start > cov_end or end < cov_start:
+    is_constant = compiled.is_constant
+    if not is_constant and (
+        cov_start is None or cov_end is None or start > cov_end or end < cov_start
+    ):
         return {"value": None, "period_complete": False, "data_through": None, "cache": "bypass"}
 
     key = _cache_key(metric, compiled, runtime, start, end, cov_start, cov_end)
@@ -172,14 +180,25 @@ def _compute_range(
         return {**cached, "cache": "hit"}
 
     views = {name: info["parquet_path"] for name, info in runtime.items()}
+    # 常数指标 SQL 无 $__start__/__end__ 占位符，绑定空参数（DuckDB 对未使用
+    # 的命名参数不保证容忍，缺参/多参都不冒这个险）
+    params: dict = {} if is_constant else {"__start__": start, "__end__": end}
     with duckdb_views(views) as con:
-        row = con.execute(compiled.sql, {"__start__": start, "__end__": end}).fetchone()
-    result = {
-        "value": _coerce_value(row[0] if row else None),
-        "period_complete": start >= cov_start and end <= cov_end,
-        "data_through": min(end, cov_end).isoformat(),
-        "cache": "miss",
-    }
+        row = con.execute(compiled.sql, params).fetchone()
+    if is_constant:
+        result = {
+            "value": _coerce_value(row[0] if row else None),
+            "period_complete": True,
+            "data_through": None,
+            "cache": "miss",
+        }
+    else:
+        result = {
+            "value": _coerce_value(row[0] if row else None),
+            "period_complete": start >= cov_start and end <= cov_end,
+            "data_through": min(end, cov_end).isoformat(),
+            "cache": "miss",
+        }
     metric_cache.put(key, result)
     return result
 
@@ -228,6 +247,7 @@ def compute_metric_value(
 
     compiled = _compile_metric(db, metric)
     runtime = _dataset_runtime(db, compiled)
+    is_constant = compiled.is_constant
     current = _compute_range(db, metric, compiled, runtime, start_d, end_d)
 
     payload = {
@@ -241,6 +261,8 @@ def compute_metric_value(
         "period_complete": current["period_complete"],
         "data_through": current["data_through"],
         "cache": current["cache"],
+        # 全期常数指标：未绑定时间字段，任意区间返回同一全期汇总值
+        "constant": is_constant,
         "coverage": {
             "start": compiled.coverage_start.isoformat() if compiled.coverage_start else None,
             "end": compiled.coverage_end.isoformat() if compiled.coverage_end else None,
@@ -249,7 +271,7 @@ def compute_metric_value(
         "compare": None,
     }
 
-    if compare != "none":
+    if compare != "none" and not is_constant:
         prev_start, prev_end = _previous_range(start_d, end_d, compare)
         # 契约 v2：当前周期不完整时，环比基期对齐到数据实际截止日（同月同日），
         # 避免"10 天的值 vs 上月整月"的假跌幅（如 08-01~08-10 对 07-01~07-10）
@@ -287,6 +309,18 @@ def compute_metric_series(
     _ensure_visible(db, user, metric)
     compiled = _compile_metric(db, metric)
     runtime = _dataset_runtime(db, compiled)
+
+    # 全期常数指标与时间无关：序列退化为单点（逐日循环只会重复同一值，
+    # 既浪费执行也会在导出 CSV 里制造误导性的"每天一个相同值"）
+    if compiled.is_constant:
+        point = _compute_range(db, metric, compiled, runtime, start_d, start_d)
+        return [
+            {
+                "date": start_d.isoformat(),
+                "value": point["value"],
+                "period_complete": point["period_complete"],
+            }
+        ]
 
     series = []
     cursor = start_d

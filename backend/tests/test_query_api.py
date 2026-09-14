@@ -467,3 +467,98 @@ class TestDatetimeBoundary:
         assert data["value"] == pytest.approx(200.0)
         assert data["period_complete"] is False
         assert data["data_through"] == "2026-02-01"
+
+
+class TestConstantMetric:
+    """日期可选 → 全期常数指标（2026-09-14）：
+
+    数据集无日期列（或 time_field 显式置 null）的指标与统计区间无关：
+    - 任意区间返回同一全期汇总值，不因"区间与覆盖无交集"返回 null；
+    - period_complete=True、data_through=None、coverage 为空（start/end=null）；
+    - 缓存键不含覆盖端点（nocov）；
+    - 环比不参与（compare=null，前端隐藏 TrendBadge）；
+    - 按日序列退化为单点（导出 CSV 仅一行数据）。
+    """
+
+    NO_DATE_DATASET = "q_projects_nodate"
+    METRIC_EXPLICIT = "q_budget_sum_const"
+    METRIC_AUTO = "q_budget_sum_auto"
+
+    PROJECT_ROWS = [
+        ["project_id", "budget", "dept"],
+        ["1", "100", "A"],
+        ["2", "200", "B"],
+        ["3", "300", "A"],
+    ]
+
+    @pytest.fixture(scope="class")
+    def const_env(self, client):
+        metric_cache.clear()
+        resp = client.post(
+            "/api/datasets/upload",
+            files={"file": ("q_projects_nodate.csv", io.BytesIO(_csv_bytes(
+                self.PROJECT_ROWS[0], self.PROJECT_ROWS[1:]
+            )), "text/csv")},
+            data={"name": self.NO_DATE_DATASET},
+        )
+        assert resp.status_code == 200, resp.text
+
+        # UI 留空时间字段 → calc_rule 显式携带 time_field: null
+        resp = client.post("/api/metrics", json={
+            "code": self.METRIC_EXPLICIT, "name": "全期常数-显式声明",
+            "calc_rule": {"base_aggregation": "sum",
+                           "source": {"table": self.NO_DATE_DATASET, "column": "budget"},
+                           "time_field": None},
+        })
+        assert resp.status_code == 200, resp.text
+        # 无日期列数据集 + 键缺失（API 直连旧用法）：同样自动视为全期常数
+        resp = client.post("/api/metrics", json={
+            "code": self.METRIC_AUTO, "name": "全期常数-自动识别",
+            "calc_rule": {"base_aggregation": "sum",
+                           "source": {"table": self.NO_DATE_DATASET, "column": "budget"}},
+        })
+        assert resp.status_code == 200, resp.text
+        return self.METRIC_EXPLICIT
+
+    def test_value_independent_of_range(self, client, const_env):
+        """完全在覆盖外的两个区间也返回同一全期值（600），
+        period_complete=True、data_through=None、coverage 为空、constant=True。"""
+        for start, end in [("2020-01-01", "2020-01-31"), ("2026-08-01", "2026-08-31")]:
+            data = _query(client, const_env, start, end).json()["data"]
+            assert data["value"] == pytest.approx(600.0)
+            assert data["constant"] is True
+            assert data["period_complete"] is True
+            assert data["data_through"] is None
+            assert data["coverage"] == {"start": None, "end": None}
+
+    def test_auto_constant_without_time_field_key(self, client):
+        """键缺失 + 无日期列 → 自动常数，语义与显式 null 一致。"""
+        data = _query(client, self.METRIC_AUTO, "2026-01-01", "2026-01-31").json()["data"]
+        assert data["value"] == pytest.approx(600.0)
+        assert data["constant"] is True
+
+    def test_cache_nocov_key(self, client, const_env):
+        """常数指标值可入缓存且键不含覆盖端点：第二次请求命中。"""
+        metric_cache.clear()
+        first = _query(client, const_env, "2026-03-01", "2026-03-31").json()["data"]
+        assert first["cache"] == "miss"
+        second = _query(client, const_env, "2026-03-01", "2026-03-31").json()["data"]
+        assert second["cache"] == "hit"
+        assert second["value"] == pytest.approx(600.0)
+
+    def test_compare_not_applicable(self, client, const_env):
+        """全期常数与周期无关：请求环比 → compare=null（不报错、不算假变化）。"""
+        data = _query(client, const_env, "2026-01-01", "2026-01-31", compare="mom").json()["data"]
+        assert data["value"] == pytest.approx(600.0)
+        assert data["compare"] is None
+
+    def test_export_single_point(self, client, const_env):
+        """导出 CSV：序列退化为单点（header + 1 行）。"""
+        resp = client.post("/api/query/export", json={
+            "metric": const_env, "start": "2026-01-01", "end": "2026-01-31",
+        })
+        assert resp.status_code == 200, resp.text
+        lines = resp.content.decode("utf-8-sig").strip().splitlines()
+        assert lines[0] == "date,value,period_complete"
+        assert len(lines) == 2
+        assert lines[1] == "2026-01-01,600,1"

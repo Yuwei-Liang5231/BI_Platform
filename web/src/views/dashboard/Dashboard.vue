@@ -46,10 +46,18 @@ const { dateRange, range } = usePeriodRange();
 // 序列全为 null（区间内无一天有数据）视为无数据，用于空态提示
 const hasTrendData = computed(() => trendRows.value.some((r) => r.value !== null));
 
+// 全期常数指标：未绑定时间字段（coverage 为空）——任意区间返回同一全期汇总值，
+// 无环比、无逐日折线
+function isConstantCard(card) {
+  return !!card && !card.forbidden && !!card.coverage && !card.coverage.start;
+}
+
+const selectedConstant = computed(() => isConstantCard(cards[selected.value?.id]));
+
 // 所选区间无数据时，提示数据覆盖范围（来自 metric-value 响应的 coverage）
 const rangeCoverageTip = computed(() => {
   const card = selected.value ? cards[selected.value.id] : null;
-  if (!card || card.forbidden || hasTrendData.value) return "";
+  if (!card || card.forbidden || hasTrendData.value || selectedConstant.value) return "";
   const cov = card.coverage;
   if (!cov?.start || !cov?.end) return "所选区间无数据（该指标未登记时间覆盖范围）";
   return `所选区间无数据：数据覆盖为 ${cov.start} ~ ${cov.end}，可在右上角调整统计周期`;
@@ -57,6 +65,9 @@ const rangeCoverageTip = computed(() => {
 
 function coverageTip(card) {
   const cov = card?.coverage;
+  if (isConstantCard(card)) {
+    return "全期常数指标（未绑定时间字段）：当前无数据，请检查数据集是否有数据、过滤条件是否有命中";
+  }
   if (!cov?.start || !cov?.end) return "该指标未登记时间覆盖范围";
   return `所选区间与数据覆盖（${cov.start} ~ ${cov.end}）无交集，可调整右上角统计周期`;
 }
@@ -122,7 +133,8 @@ async function loadCards() {
 
 async function loadTrend() {
   const seq = ++trendSeq;
-  if (!selected.value) {
+  // 全期常数指标无逐日序列（后端也只返回单点），不发起请求
+  if (!selected.value || selectedConstant.value) {
     trendRows.value = [];
     return;
   }
@@ -292,6 +304,14 @@ onMounted(fetchData);
           >
             数据截至 {{ cards[m.id].data_through.slice(5) }}
           </span>
+          <!-- 全期常数指标：未绑定时间字段，与统计区间无关 -->
+          <span
+            v-else-if="isConstantCard(cards[m.id])"
+            class="pwc-badge pwc-badge--grey"
+            title="全期常数指标：未绑定时间字段，不按时间过滤，任意统计区间返回同一全期汇总值"
+          >
+            全期值
+          </span>
         </template>
       </div>
     </div>
@@ -300,7 +320,15 @@ onMounted(fetchData);
       <div class="pwc-card__header">
         <h4>{{ selected.name }} · 日序列（{{ range.start }} ~ {{ range.end }}）</h4>
       </div>
-      <div v-if="hasTrendData" ref="chartEl" class="dash__chart"></div>
+      <template v-if="selectedConstant">
+        <p class="metric-empty">—</p>
+        <p class="dash__cov-hint">
+          该指标为「全期常数」（未绑定时间字段）：不按时间过滤，任意统计区间返回同一全期汇总值（见上方卡片「全期值」标注），因此没有逐日折线。
+        </p>
+      </template>
+      <template v-else-if="hasTrendData">
+        <div ref="chartEl" class="dash__chart"></div>
+      </template>
       <template v-else>
         <p class="metric-empty">—</p>
         <p v-if="rangeCoverageTip" class="dash__cov-hint">{{ rangeCoverageTip }}</p>
