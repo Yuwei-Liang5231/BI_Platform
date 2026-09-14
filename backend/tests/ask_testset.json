@@ -1,0 +1,41 @@
+{
+  "description": "问数测试集（B9）：问题 → 期望理解卡。pytest 以关键词兜底解析器离线回归（LLM 未配置时的确定性通道）；LLM 在线走查可复用本文件。",
+  "convention": {
+    "metric_code": "期望命中的指标 code；缺省不断言",
+    "start/end": "显式日期期望（相对时间用 relative_time 表达）",
+    "relative_time": "prev_month | this_month | this_year | last_year | last_n_days_{N}",
+    "compare": "none | mom | yoy"
+  },
+  "cases": [
+    {
+      "id": "A1",
+      "question": "2026年1月销售额是多少",
+      "expect": { "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-31", "compare": "none" }
+    },
+    {
+      "id": "A2",
+      "question": "上个月营业额环比如何",
+      "expect": { "metric_code": "ask_gmv", "relative_time": "prev_month", "compare": "mom" }
+    },
+    {
+      "id": "A3",
+      "question": "看一下 GMV 销售额",
+      "expect": { "metric_code": "ask_gmv", "relative_time": "prev_month", "compare": "none" }
+    },
+    {
+      "id": "A4",
+      "question": "2026-01-01至2026-01-15的销售额同比",
+      "expect": { "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-15", "compare": "yoy" }
+    },
+    {
+      "id": "A5",
+      "question": "本月ask_gmv怎么样",
+      "expect": { "metric_code": "ask_gmv", "relative_time": "this_month", "compare": "none" }
+    },
+    {
+      "id": "A6",
+      "question": "库存周转率是多少",
+      "expect": { "can_compute": false }
+    }
+  ]
+}

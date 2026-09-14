@@ -12,6 +12,7 @@ const auth = useAuthStore();
 
 const navItems = [
   { path: "/dashboard", label: "统一看板" },
+  { path: "/ask", label: "AI 问数" },
   { path: "/metrics", label: "指标目录" },
   { path: "/metrics/admin", label: "指标管理", writeOnly: true },
   { path: "/datasets", label: "数据集与表关系" },

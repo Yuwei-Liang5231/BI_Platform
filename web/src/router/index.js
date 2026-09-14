@@ -23,6 +23,12 @@ const routes = [
         meta: { title: "统一看板" },
       },
       {
+        path: "ask",
+        name: "Ask",
+        component: () => import("@/views/ask/Ask.vue"),
+        meta: { title: "AI 问数" },
+      },
+      {
         path: "metrics",
         name: "MetricCatalog",
         component: () => import("@/views/metric/MetricCatalog.vue"),

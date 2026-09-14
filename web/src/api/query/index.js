@@ -9,6 +9,12 @@ import request from "@/config/request";
  */
 export const metricValue = (data) => request.post("/query/metric-value", data);
 
+/** 问数（B9）：问句 → 理解卡（只解析意图，不产数值）。 */
+export const ask = (question) => request.post("/query/ask", { question });
+
+/** 理解卡确认后执行（与看板同一计算出口，口径同源）。 */
+export const askExecute = (data) => request.post("/query/ask/execute", data);
+
 /** 拿 CSV blob（UTF-8 BOM），不触发浏览器下载——画序列图等内部用途走这个。 */
 export const exportCsvBlob = (data) =>
   request.post("/query/export", data, { responseType: "blob" });
