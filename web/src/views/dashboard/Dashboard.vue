@@ -70,9 +70,12 @@ async function reloadForRange() {
 watch(dateRange, reloadForRange);
 
 // 切换主题时默认选中该主题的第一个指标（若主题为空则清空选中），
-// 避免折线图停留在上一主题的指标上造成困惑
+// 避免折线图停留在上一主题的指标上造成困惑；
+// 同时补载新主题卡片——改区间会清空全部卡片但只重载当前所在主题，
+// 不补载的话切换后其他主题的卡片会停留在空值（显示"区间无数据"）
 watch(activeTopic, () => {
   selectedId.value = visible.value[0]?.id ?? null;
+  loadCards();
 });
 
 // 请求序号守卫：快速改区间/切主题/点卡片时，慢的旧响应后到会覆盖新状态
@@ -85,10 +88,18 @@ async function loadCards() {
   await Promise.all(
     visible.value.map(async (m) => {
       if (cards[m.id]) return;
-      cards[m.id] = { loading: true };
+      // 注意：cards 是 reactive，读出的占位符是代理对象，与原始对象引用不相等，
+      // 不能用 === 判定归属——用唯一 token 标记（属性读取穿透代理，恒等成立）
+      const token = Symbol();
+      cards[m.id] = { loading: true, __token: token };
       try {
         const res = await metricValue({ metric: m.code, ...range.value, compare: "mom" });
-        if (seq !== cardsSeq) return; // 过期响应：区间/主题已再次变化
+        if (seq !== cardsSeq) {
+          // 过期响应：区间/主题已再次变化。仅当占位符还是自己设的才清除，
+          // 避免误删新一轮请求的 loading 占位（否则该卡片会永久卡在 loading）
+          if (cards[m.id]?.__token === token) delete cards[m.id];
+          return;
+        }
         // change_pct（百分数）→ TrendBadge 需要的小数变化率
         const change =
           res.compare?.change_pct !== null && res.compare?.change_pct !== undefined
@@ -96,7 +107,10 @@ async function loadCards() {
             : null;
         cards[m.id] = { ...res, change, loading: false };
       } catch {
-        if (seq !== cardsSeq) return;
+        if (seq !== cardsSeq) {
+          if (cards[m.id]?.__token === token) delete cards[m.id];
+          return;
+        }
         cards[m.id] = { forbidden: true, loading: false };
       }
     }),
@@ -215,7 +229,7 @@ onMounted(fetchData);
     <div class="page-header">
       <div>
         <h1 class="page-header__title">统一看板</h1>
-        <p class="page-header__subtitle">同一口径 · 同一数值 · 不完整周期显示"—"</p>
+        <p class="page-header__subtitle">同一口径 · 同一数值 · 部分周期标注「数据截至」</p>
       </div>
       <div class="page-header__actions">
         <el-date-picker
