@@ -97,8 +97,10 @@ def chat_json(
         "max_tokens": 500,
     }
     headers = {"Authorization": f"Bearer {config['api_key']}"}
+    # 连接 5s 快速失败（外网不可达时尽快降级关键词解析器），生成读取给足 30s
+    timeout_policy = httpx.Timeout(timeout, connect=5.0)
     try:
-        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout_policy)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
         # 兼容个别模型无视 json_object 模式包裹代码围栏
@@ -128,7 +130,7 @@ def test_connection(config: dict | None, timeout: float = 15.0) -> tuple[bool, s
     }
     headers = {"Authorization": f"Bearer {config['api_key']}"}
     try:
-        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+        resp = httpx.post(url, json=payload, headers=headers, timeout=httpx.Timeout(timeout, connect=5.0))
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
         return True, f"连接成功，模型已响应：{(content or '').strip()[:50]}"
