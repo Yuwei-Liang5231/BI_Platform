@@ -255,7 +255,9 @@ onMounted(fetchData);
           <h5 class="ds__subhead">已登记表关系</h5>
           <el-table :data="datasetStore.relations" size="small" style="width: 100%">
             <el-table-column label="左表.字段" min-width="180">
-              <template #default>{{ selected?.name }}.{{ scopeUndefined }}</template>
+              <template #default="{ row }">
+                {{ selected?.name }}.{{ row.from_column }}
+              </template>
             </el-table-column>
             <el-table-column label="右表.字段" min-width="180">
               <template #default="{ row }">

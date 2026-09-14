@@ -185,6 +185,71 @@ class TestMetricValue:
         assert resp.status_code == 200, resp.text
 
 
+class TestCrossTableFilter:
+    """跨表过滤：显式表关系一跳 JOIN + 双引号列名 + 键类型不匹配自动 cast。
+
+    场景还原真实接入：事实表键为字符串（Excel 接入常见），维度表键为整数；
+    维度表列名含空格（"cust city"），filter 必须用双引号引用。"""
+
+    @pytest.fixture(scope="class")
+    def rel_env(self, client):
+        def upload(name, rows):
+            resp = client.post(
+                "/api/datasets/upload",
+                files={"file": (f"{name}.csv", io.BytesIO(_csv_bytes(rows[0], rows[1:])), "text/csv")},
+                data={"name": name},
+            )
+            assert resp.status_code == 200, resp.text
+            listing = client.get("/api/datasets", params={"search": name}).json()["data"]
+            items = listing if isinstance(listing, list) else listing.get("items", [])
+            return next(d["id"] for d in items if d["name"] == name)
+
+        fact_id = upload("rel_fact", [
+            ["order_date", "cust_key", "amount"],
+            ["2026-01-10", "101", "100"],
+            ["2026-01-20", "102", "50"],
+            ["2026-02-01", "101", "30"],
+            ["2026-01-25", "A999", "999"],  # 非数字键：列推断为 string；JOIN 不匹配被排除
+        ])
+        dim_id = upload("rel_dim", [
+            ["dim_id", "cust city"],
+            ["101", "上海"],
+            ["102", "北京"],
+        ])
+        resp = client.post(f"/api/datasets/{fact_id}/relations", json={
+            "target_dataset_id": dim_id,
+            "from_column": "cust_key",
+            "target_column": "dim_id",
+            "relation_type": "many_to_one",
+        })
+        assert resp.status_code == 200, resp.text
+        code = "rel_gmv_sh"
+        resp = client.post("/api/metrics", json={
+            "code": code, "name": "跨表过滤测试",
+            "calc_rule": {
+                "base_aggregation": "sum",
+                "source": {"table": "rel_fact", "column": "amount",
+                           "filter": "\"cust city\" = '上海'"},
+            },
+        })
+        assert resp.status_code == 200, resp.text
+        return code
+
+    def test_join_with_quoted_column_and_type_cast(self, client, rel_env):
+        """cust_key(string) → dim_id(int) 自动 TRY_CAST；"cust city" 双引号列名。
+        上海客户订单 = 100 + 30 = 130（键 999 的行 JOIN 不匹配被排除）。"""
+        compiled = client.post("/api/metrics/compile", json={
+            "calc_rule": {"base_aggregation": "sum",
+                          "source": {"table": "rel_fact", "column": "amount",
+                                     "filter": "\"cust city\" = '上海'"}},
+        }).json()["data"]["sql"]
+        assert "JOIN" in compiled and "TRY_CAST" in compiled
+        data = client.post("/api/query/metric-value", json={
+            "metric": rel_env, "start": "2026-01-01", "end": "2026-02-28",
+        }).json()["data"]
+        assert data["value"] == pytest.approx(130.0)
+
+
 class TestCacheInvalidation:
     def test_calc_rule_change_invalidates(self, client, query_env):
         """改口径 → ver+1 → 缓存键变化 → 重新计算，值随新口径。"""

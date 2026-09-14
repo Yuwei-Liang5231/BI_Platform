@@ -237,8 +237,32 @@ def _resolve_time_field(
     return candidates[0]
 
 
-def _operand_subquery(
-    operand: Operand,
+_NUMERIC_TYPES = {"int", "float"}
+_TEXTY_TYPES = {"string", "mixed"}
+
+
+def _join_on_sql(
+    ds: DatasetInfo,
+    datasets: dict[str, DatasetInfo],
+    fk: str,
+    dim: str,
+    pk: str,
+) -> str:
+    """关系 JOIN 的 ON 条件。两侧键类型不匹配（文本键 vs 数值键，常见于
+    Excel/CSV 接入）时对文本侧做 TRY_CAST——脏值转 NULL 自然不匹配，
+    而不是整条 SQL 因 Binder 错误不可用。"""
+    left_ref = f"{_q(ds.name)}.{_q(fk)}"
+    right_ref = f"{_q(dim)}.{_q(pk)}"
+    lt = datasets[ds.name].columns.get(fk, "")
+    rt = datasets[dim].columns.get(pk, "")
+    if lt in _TEXTY_TYPES and rt in _NUMERIC_TYPES:
+        left_ref = f"TRY_CAST({left_ref} AS DOUBLE)"
+    elif rt in _TEXTY_TYPES and lt in _NUMERIC_TYPES:
+        right_ref = f"TRY_CAST({right_ref} AS DOUBLE)"
+    return f"{left_ref} = {right_ref}"
+
+
+def _operand_subquery(    operand: Operand,
     datasets: dict[str, DatasetInfo],
     relations: list[RelationInfo],
     rule_time_field: str | None,
@@ -273,7 +297,7 @@ def _operand_subquery(
     where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} < ($__end__ + INTERVAL 1 DAY)")
 
     join_sql = "".join(
-        f" JOIN {_q(dim)} ON {_q(ds.name)}.{_q(fk)} = {_q(dim)}.{_q(pk)}"
+        f" JOIN {_q(dim)} ON {_join_on_sql(ds, datasets, fk, dim, pk)}"
         for dim, fk, pk in joins
     )
     sql = (

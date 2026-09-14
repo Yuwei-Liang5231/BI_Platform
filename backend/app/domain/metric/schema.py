@@ -28,6 +28,7 @@ filter 文法（合取范式，v1 算子清单）：
     condition := column ( = | != | <> | > | >= | < | <= ) literal
                | column IS [NOT] NULL
     literal   := 数字 | '字符串' | true | false
+    column    := 标识符 | "带空格/特殊字符的列名"（双引号，"" 转义）
 
 明确不支持（保存即拒绝）：OR / NOT / 括号分组、嵌套聚合、窗口函数、
 自定义 SQL 片段、group_by/cohort 等任何结构外字段。
@@ -92,6 +93,7 @@ _TOKEN_RE = re.compile(
     r"""\s*(?:
         (?P<number>-?\d+(?:\.\d+)?)
       | (?P<string>'(?:[^']|'')*')
+      | (?P<qident>"(?:[^"]|"")*")
       | (?P<ident>[A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff]*)
       | (?P<op><>|!=|>=|<=|=|>|<|\+|\-|\*|/|\(|\))
     )""",
@@ -102,7 +104,8 @@ _KEYWORDS = {"and", "is", "not", "null", "true", "false"}
 
 
 def _tokenize(text: str, context: str) -> list[tuple[str, str]]:
-    """返回 [(kind, value)]，kind ∈ number/string/ident/op。"""
+    """返回 [(kind, value)]，kind ∈ number/string/qident/ident/op。
+    qident 为双引号列名（Excel/CSV 接入的列常含空格，如 "Project Name"）。"""
     tokens: list[tuple[str, str]] = []
     pos = 0
     while pos < len(text):
@@ -116,7 +119,9 @@ def _tokenize(text: str, context: str) -> list[tuple[str, str]]:
         pos = m.end()
         kind = m.lastgroup
         value = m.group(kind)
-        if kind == "ident" and value.lower() in _KEYWORDS:
+        if kind == "qident":
+            tokens.append(("ident", value[1:-1].replace('""', '"')))
+        elif kind == "ident" and value.lower() in _KEYWORDS:
             tokens.append(("keyword", value.lower()))
         else:
             tokens.append((kind, value))

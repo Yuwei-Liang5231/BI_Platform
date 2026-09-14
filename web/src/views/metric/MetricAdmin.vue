@@ -767,7 +767,7 @@ onMounted(async () => {
             />
 
             <p class="admin__hint rule-builder__filter-help">
-              过滤条件文法：仅支持「字段 比较符 值」，多个条件用 AND 连接；比较符 = != > >= < <=，文本值加单引号。不支持 OR / NOT / 括号 / 函数。
+              过滤条件文法：仅支持「字段 比较符 值」，多个条件用 AND 连接；比较符 = != > >= < <=，文本值加单引号，列名含空格时用双引号包裹（如 "Project Name" = 'X'）。不支持 OR / NOT / 括号 / 函数。
             </p>
           </div>
         </el-form-item>
