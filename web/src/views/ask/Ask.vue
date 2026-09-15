@@ -72,6 +72,7 @@ function newConversation() {
   multiSelected.value = [];
   messages.value = [];
   cardCollapsed.value = false;
+  question.value = ""; // 新对话同时清空输入框
   Object.assign(cardEdit, {
     metricCode: "", range: [], compare: "none", dimension: "",
     filters: [], order_by: "value", order: "desc", top_n: null,
@@ -206,6 +207,7 @@ async function submit(questionOverride) {
     return;
   }
   asking.value = true;
+  question.value = ""; // 问题发出即清空输入框（问句已入会话气泡）
   results.value = [];
   messages.value.push({ role: "user", text: q });
   try {
@@ -376,7 +378,9 @@ onMounted(() => {
     <aside v-show="!sidebarCollapsed" class="ask__sidebar">
       <div class="ask__sidebar-head">
         <el-button type="primary" class="ask__new-btn" @click="newConversation">＋ 新对话</el-button>
-        <el-button text size="small" title="收起列表" @click="sidebarCollapsed = true">«</el-button>
+        <el-button class="ask__collapse-btn" title="收起列表" @click="sidebarCollapsed = true">
+          ‹ 收起
+        </el-button>
       </div>
       <div class="ask__conv-list">
         <div
@@ -400,10 +404,9 @@ onMounted(() => {
     <el-button
       v-if="sidebarCollapsed"
       class="ask__sidebar-expand"
-      text
       title="展开历史列表"
       @click="sidebarCollapsed = false"
-    >»</el-button>
+    >» 历史</el-button>
 
     <!-- 右侧：消息流（滚动）+ 底部固定输入 -->
     <main class="ask__main">
@@ -802,6 +805,23 @@ onMounted(() => {
   flex: 1;
 }
 
+/* 收起/展开列表按钮：明显可点（用户反馈小到像圆点） */
+.ask__collapse-btn {
+  padding: 8px 10px;
+  border: 1px solid var(--pwc-border, rgba(0, 0, 0, 0.15));
+  border-radius: 8px;
+  color: var(--pwc-text-secondary);
+}
+
+.ask__sidebar-expand {
+  align-self: flex-start;
+  margin: var(--pwc-space-2) 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pwc-border, rgba(0, 0, 0, 0.15));
+  border-radius: 8px;
+  color: var(--pwc-text-secondary);
+}
+
 .ask__conv-list {
   flex: 1;
   overflow-y: auto;
@@ -859,11 +879,6 @@ onMounted(() => {
   padding: var(--pwc-space-3);
 }
 
-.ask__sidebar-expand {
-  align-self: flex-start;
-  margin-top: var(--pwc-space-2);
-}
-
 /* 右侧主区：页头 + 滚动消息流 + 底部输入条 */
 .ask__main {
   flex: 1;
@@ -907,9 +922,28 @@ onMounted(() => {
   font-weight: 700;
 }
 
+/* 空态推荐问题：两列网格卡片，完整展示问句（用户反馈挤成一行不合理） */
 .ask__welcome .ask__examples {
-  justify-content: center;
-  margin-top: var(--pwc-space-4);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--pwc-space-2);
+  max-width: 680px;
+  margin: var(--pwc-space-4) auto 0;
+}
+
+.ask__welcome .ask__example {
+  height: auto;
+  white-space: normal;
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: 10px;
+  line-height: 1.5;
+  font-size: 13px;
+}
+
+.ask__welcome .ask__example::before {
+  content: "↗ ";
+  opacity: 0.6;
 }
 
 /* 底部固定输入条 */

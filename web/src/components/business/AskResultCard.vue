@@ -70,8 +70,10 @@ const displayName = computed(() => props.data?.name || props.label || "");
       </el-table-column>
     </el-table>
     <div v-if="data.compare" class="ask__hint">
-      基期：{{ data.compare.start }} ~ {{ data.compare.end }}
+      {{ data.compare.type === "yoy" ? "同比基期（去年同期）" : "环比基期（上一等长周期）" }}
+      ：{{ data.compare.start }} ~ {{ data.compare.end }}
       <template v-if="!data.compare.period_complete">（数据截至 {{ data.compare.data_through }}）</template>
+      —— 与上方查询区间对比得出变化
     </div>
     <p v-else class="ask__hint">未启用对比或全期常数指标（无基期概念）</p>
   </section>

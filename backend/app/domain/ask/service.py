@@ -726,8 +726,10 @@ def _persist_results(db: Session, user, conversation_id: int | None, data: dict)
 def build_suggestions(db: Session, user, limit: int = 5) -> list[str]:
     """空态推荐问题：从登录用户可见的 active 指标自动生成示例问法。
 
-    行业无关：只用指标名 + 真实低基数维度列名拼模板（不硬编码任何业务词）；
+    行业无关：只用指标名 + 真实维度列名拼模板（不硬编码任何业务词）；
     权限同源（restricted_metric_ids）；维度候选获取失败仅少拆解示例，不阻塞。
+    生成策略（2026-09-15 优化）：跨指标轮转（避免 5 条全是同一指标）、
+    业务可读名优先（含中文的指标/维度列排前，代码风命名如 Sum_Saving 降权）。
     """
     hidden = restricted_metric_ids(db, user)
     visible = [
@@ -736,22 +738,37 @@ def build_suggestions(db: Session, user, limit: int = 5) -> list[str]:
     ]
     if not visible:
         return []
-    out: list[str] = []
-    for m in sorted(visible, key=lambda x: -x.id):  # 新建的指标排前面，建议随目录更新
-        name = m.name
-        out.append(f"上个月{name}是多少")
-        out.append(f"上个月{name}环比如何")
-        try:
-            from app.domain.query.service import list_breakdown_dimensions
 
-            dims = [
-                d for d in list_breakdown_dimensions(db, metric_ref=m.code, user=user)["dimensions"]
-                if d["low_cardinality"]
-            ]
+    def _readable(s: str) -> bool:
+        return any("\u4e00" <= ch <= "\u9fff" for ch in (s or ""))
+
+    # 业务可读性优先，同级内新建指标排前（建议随目录更新）
+    visible.sort(key=lambda m: (-int(_readable(m.name)), -m.id))
+
+    from app.domain.query.service import list_breakdown_dimensions
+
+    per_metric: list[list[str]] = []
+    for m in visible[:limit]:
+        name = m.name
+        items = [f"上个月{name}是多少", f"上个月{name}环比如何"]
+        try:
+            dims = list_breakdown_dimensions(db, metric_ref=m.code, user=user)["dimensions"]
+            # 拆解示例的列名同样业务可读优先，同级取低基数（拆出来更好读）
+            dims.sort(key=lambda d: (-int(_readable(d["column"])), d["distinct_count"]))
             if dims:
-                out.append(f"按{dims[0]['column']}拆解上个月{name}的环比")
+                items.append(f"按「{dims[0]['column']}」拆解上个月{name}的环比")
         except Exception:
             pass  # 维度候选失败不阻塞推荐
-        if len(out) >= limit:
-            break
+        per_metric.append(items)
+
+    # 轮转交错：第 1 条取指标1、第 2 条取指标2…让 5 条覆盖多个指标
+    out: list[str] = []
+    idx = 0
+    while len(out) < limit and idx < limit:
+        for items in per_metric:
+            if idx < len(items):
+                out.append(items[idx])
+                if len(out) >= limit:
+                    break
+        idx += 1
     return out[:limit]
