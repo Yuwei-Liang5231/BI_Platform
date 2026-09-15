@@ -273,30 +273,18 @@ onMounted(fetchSuggestions);
           @keyup.enter="submit()"
         >
           <template #append>
-            <el-button type="primary" :loading="asking" @click="submit()">理解问题</el-button>
+            <el-button type="danger" :loading="asking" @click="submit()">理解问题</el-button>
           </template>
         </el-input>
       </div>
-      <div class="ask__examples">
-        <el-tag
-          v-for="ex in EXAMPLES"
-          :key="ex"
-          class="ask__example"
-          type="info"
-          effect="plain"
-          @click="question = ex; submit(ex)"
-        >
-          {{ ex }}
-        </el-tag>
-      </div>
     </section>
 
-    <!-- 空态推荐问题（B9.2-3）：按当前用户可见指标自动生成，点击即问 -->
-    <section v-if="!card && suggestions.length" class="pwc-card ask__card">
+    <!-- 空态推荐问题（B9.2-3）：优先后端按可见指标生成，接口为空回落静态示例；点击即问 -->
+    <section v-if="!card" class="pwc-card ask__card">
       <h4>试试这样问</h4>
       <div class="ask__examples">
         <el-tag
-          v-for="s in suggestions"
+          v-for="s in suggestions.length ? suggestions : EXAMPLES"
           :key="s"
           class="ask__example"
           effect="plain"
@@ -587,7 +575,7 @@ onMounted(fetchSuggestions);
               <template v-else>
                 <span v-if="row.change_pct === null">—</span>
                 <span v-else :class="row.change_pct >= 0 ? 'up' : 'down'">
-                  {{ row.change_pct >= 0 ? "↑" : "↓" }} {{ Math.abs(row.change_pct).toFixed(2) }}%
+                  {{ row.change_pct >= 0 ? "▲" : "▼" }} {{ Math.abs(row.change_pct).toFixed(2) }}%
                 </span>
               </template>
             </template>
@@ -615,7 +603,7 @@ onMounted(fetchSuggestions);
         <div v-if="changePctOf(r.data) !== null" class="ask__result-compare">
           {{ r.data.compare?.type === "yoy" ? "同比" : "环比" }}
           <span :class="changePctOf(r.data) >= 0 ? 'up' : 'down'">
-            {{ changePctOf(r.data) >= 0 ? "↑" : "↓" }} {{ Math.abs(changePctOf(r.data)).toFixed(2) }}%
+            {{ changePctOf(r.data) >= 0 ? "▲" : "▼" }} {{ Math.abs(changePctOf(r.data)).toFixed(2) }}%
           </span>
         </div>
         <p v-else class="ask__hint">无对比基期数据</p>
@@ -728,11 +716,11 @@ onMounted(fetchSuggestions);
 
 .ask__result-compare .up,
 .ask__table .up {
-  color: var(--pwc-positive, #059669);
+  color: var(--pwc-up, #D62222);
 }
 
 .ask__result-compare .down,
 .ask__table .down {
-  color: var(--pwc-danger, #dc2626);
+  color: var(--pwc-down, #059669);
 }
 </style>

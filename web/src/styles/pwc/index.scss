@@ -193,8 +193,8 @@ a:hover {
     font-size: var(--pwc-font-body-s);
     font-weight: 500;
 
-    &--up   { color: #059669; }
-    &--down { color: #D62222; }
+    &--up   { color: var(--pwc-up, #D62222); }
+    &--down { color: var(--pwc-down, #059669); }
   }
 
   &__icon {

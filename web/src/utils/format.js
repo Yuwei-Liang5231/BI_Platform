@@ -29,8 +29,9 @@ export function formatPercent(value) {
 }
 
 /**
- * D19 涨跌语义：状态色（绿=向好 / 红=恶化）+ 箭头 + 文字，不单靠颜色。
- * 比率类（如退款率、流失率）上升为恶化；总量类上升为向好。
+ * D19 涨跌语义：方向判定（good=向好 / bad=恶化 / flat），配合文字/三角不单靠颜色。
+ * 比率类（如退款率、流失率）上升为恶化（goodWhenUp=false）；总量类上升为向好。
+ * 配色（2026-09-15 起红涨绿跌）由 TrendBadge 按变化方向决定，与本函数的 good/bad 解耦。
  */
 export function trendDirection(change, goodWhenUp = true) {
   if (change === null || change === undefined) return "none";

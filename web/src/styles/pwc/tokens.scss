@@ -83,6 +83,10 @@ $pwc-tangerine-500: #FF9F00;
   --pwc-state-container-hover: rgba(0, 0, 0, 0.06);
   --pwc-state-container-pressed: rgba(0, 0, 0, 0.10);
 
+  // 涨跌语义（2026-09-15 用户约定：红涨绿跌；PwC Error 500 / Success 500）
+  --pwc-up:                    #{$pwc-error-500};
+  --pwc-down:                  #{$pwc-success-500};
+
   // 字号 (Desktop)
   --pwc-font-display-l: 48px;  // ITC Charter
   --pwc-font-display-m: 36px;
@@ -166,6 +170,10 @@ $pwc-tangerine-500: #FF9F00;
   --pwc-state-pressed:         #{$pwc-white};
   --pwc-state-container-hover: rgba(255, 255, 255, 0.08);
   --pwc-state-container-pressed: rgba(255, 255, 255, 0.12);
+
+  // 深色主题下用 300 档保证对比度
+  --pwc-up:                    #{$pwc-error-300};
+  --pwc-down:                  #{$pwc-success-300};
 }
 
 // ---------- SCSS 变量（用于组件内 @use 引用） ----------

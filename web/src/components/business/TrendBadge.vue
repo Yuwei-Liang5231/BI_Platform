@@ -1,8 +1,9 @@
 <!-- pwc-regime: product-ui -->
 <script setup>
 /**
- * D19 涨跌语义徽章：状态色（绿=向好 / 红=恶化）+ 箭头 + 文字，不单靠颜色。
+ * D19 涨跌徽章（2026-09-15 约定：红涨绿跌）：三角 + 文字，不单靠颜色。
  * change 为小数变化率（0.05 = +5%）；null 显示 "—"。
+ * 颜色编码变化方向：涨=红（▲）/ 跌=绿（▼）；goodWhenUp 保留参数兼容，不再影响配色。
  */
 import { computed } from "vue";
 
@@ -15,6 +16,10 @@ const props = defineProps({
 
 const direction = computed(() => trendDirection(props.change, props.goodWhenUp));
 const hasChange = computed(() => props.change !== null && props.change !== undefined);
+const kind = computed(() => {
+  if (!hasChange.value || direction.value === "flat") return "flat";
+  return props.change > 0 ? "up" : "down";
+});
 const text = computed(() => {
   if (!hasChange.value) return "—";
   const pct = `${Math.abs(props.change * 100).toFixed(1)}%`;
@@ -24,8 +29,7 @@ const text = computed(() => {
 </script>
 
 <template>
-  <span class="trend-badge" :class="`trend-badge--${direction}`">
-    <span v-if="hasChange" aria-hidden="true">{{ direction === "good" ? "↑" : direction === "bad" ? "↓" : "=" }}</span>
+  <span class="trend-badge" :class="`trend-badge--${kind}`">
     <span class="trend-badge__text">{{ text }}</span>
   </span>
 </template>
@@ -43,7 +47,7 @@ const text = computed(() => {
   white-space: nowrap;
 }
 
-.trend-badge--good { color: #059669; }
-.trend-badge--bad { color: #DC2626; }
-.trend-badge--flat, .trend-badge--none { color: var(--pwc-text-secondary); }
+.trend-badge--up { color: var(--pwc-up, #D62222); }
+.trend-badge--down { color: var(--pwc-down, #059669); }
+.trend-badge--flat { color: var(--pwc-text-secondary); }
 </style>
