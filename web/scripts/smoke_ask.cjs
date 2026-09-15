@@ -78,6 +78,14 @@ async function api(path, { method = "GET", token, body, form } = {}) {
   });
   step("setup 指标创建", mk.code === 0, mk.message || "");
 
+  // S0 中文数字 TopN（用户实测 bug：「前五」曾落空显示默认 10）
+  const q5 = await api("/query/ask", {
+    method: "POST",
+    token,
+    body: { question: "上个月按地区拆解销售额，跌幅最厉害的前五" },
+  });
+  step("S0 中文数字TopN「前五」=5", q5.data?.top_n === 5, `top_n=${q5.data?.top_n}`);
+
   // ---- UI 走查 ----
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await (await browser.newContext()).newPage();
@@ -150,7 +158,7 @@ async function api(path, { method = "GET", token, body, form } = {}) {
 
   console.log(`\n结果: ${passed} passed`);
   await browser.close();
-  process.exit(passed >= 12 ? 0 : 1);
+  process.exit(passed >= 13 ? 0 : 1);
 })().catch((e) => {
   console.error("FATAL:", e.message);
   process.exit(1);

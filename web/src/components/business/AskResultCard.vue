@@ -97,3 +97,51 @@ const displayName = computed(() => props.data?.name || props.label || "");
     <p v-else class="ask__hint">无对比基期数据</p>
   </section>
 </template>
+
+<style scoped>
+/* 涨跌配色（红涨绿跌，B9.2-4 抽组件后必须在本组件内声明——父组件 scoped 样式穿不进来） */
+.up {
+  color: var(--pwc-up, #D62222);
+}
+
+.down {
+  color: var(--pwc-down, #059669);
+}
+
+.ask__result {
+  margin-top: var(--pwc-space-5);
+}
+
+.ask__result-head {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-3);
+  flex-wrap: wrap;
+}
+
+.ask__result-metric {
+  font-weight: 600;
+}
+
+.ask__table {
+  margin-top: var(--pwc-space-3);
+}
+
+.ask__result-value {
+  font-size: 40px;
+  font-weight: 700;
+  margin: var(--pwc-space-3) 0;
+  font-family: var(--pwc-font-sans);
+}
+
+.ask__result-compare {
+  color: var(--pwc-text-secondary);
+}
+
+.ask__hint {
+  display: block;
+  color: var(--pwc-text-secondary);
+  font-size: 12px;
+  margin-top: var(--pwc-space-1);
+}
+</style>

@@ -7,7 +7,7 @@
  * - 拆解结果表格（组值/基期/变化，点击表头切换排序）；单值结果卡
  * - 逃生舱（mode=help）：意图解析不出可执行结构时纯对话引导，绝不含数字
  */
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 
 import {
@@ -42,6 +42,22 @@ const shownSuggestions = computed(() =>
 // B9.2-4 多轮会话：session_id 后端生成每轮携带；messages 记录历史轮（问句+只读结果）
 const sessionId = ref(null);
 const messages = ref([]); // {role:'user', text} | {role:'assistant', question, card, results}
+// 理解卡折叠：确认计算后自动收起（结果上移可见），点「展开调整」可再改——新问题自动展开
+const cardCollapsed = ref(false);
+const resultsAnchor = ref(null); // 计算完成后滚动到此，避免用户手动下滑找结果
+
+const cardSummary = computed(() => {
+  if (!card.value?.metric) return "";
+  const parts = [
+    `${card.value.metric.name}（${card.value.metric.code}）`,
+    `${cardEdit.range?.[0] ?? card.value.start} ~ ${cardEdit.range?.[1] ?? card.value.end}`,
+  ];
+  const cmp = compareOptions.find((o) => o.value === cardEdit.compare);
+  if (cmp && cmp.value !== "none") parts.push(cmp.label.split("（")[0]);
+  if (cardEdit.dimension) parts.push(`按「${cardEdit.dimension}」拆解`);
+  if (cardEdit.top_n) parts.push(`前 ${cardEdit.top_n} 组`);
+  return parts.join(" · ");
+});
 
 function resetChat() {
   sessionId.value = null;
@@ -137,6 +153,7 @@ async function submit(questionOverride) {
     // B9.2-4：session_id 由后端生成，每轮携带实现多轮追问
     if (res.session_id) sessionId.value = res.session_id;
     messages.value.push({ role: "assistant", question: q, card: res, results: [] });
+    cardCollapsed.value = false; // 新一轮理解卡默认展开
   } finally {
     asking.value = false;
   }
@@ -239,6 +256,10 @@ async function execute() {
     const datas = await Promise.all(jobs.map((j) => askExecuteApi(j.payload)));
     results.value = jobs.map((j, i) => ({ label: j.label, data: datas[i] }));
     syncResultsToLastMessage();
+    // 计算完成：理解卡自动收起（可展开再调），滚动到结果区
+    cardCollapsed.value = true;
+    await nextTick();
+    resultsAnchor.value?.scrollIntoView({ behavior: "smooth", block: "start" });
   } finally {
     executing.value = false;
   }
@@ -286,7 +307,8 @@ onMounted(fetchSuggestions);
       </div>
     </div>
 
-    <section class="pwc-card">
+    <!-- 输入区 sticky 固定在页首（导航栏下方）：长会话滑到任意位置都能直接输入 -->
+    <section class="pwc-card ask__input-card">
       <div class="ask__input-row">
         <el-input
           v-model="question"
@@ -365,18 +387,29 @@ onMounted(fetchSuggestions);
       </p>
     </section>
 
-    <!-- 理解卡 -->
+    <!-- 理解卡：计算后自动收起，仅保留摘要行；点「展开调整」恢复完整表单 -->
     <section v-if="card && card.mode === 'analysis'" class="pwc-card ask__card">
       <div class="ask__card-head">
         <h4>理解卡</h4>
-        <el-tag
-          :type="card.source === 'llm' ? 'success' : (card.llm_configured ? 'warning' : 'info')"
-          effect="light"
-        >
-          {{ card.source === "llm" ? "AI 语义解析" : (card.llm_configured ? "规则解析（AI 降级）" : "规则解析（未配置 AI）") }}
-        </el-tag>
+        <div class="ask__card-head-right">
+          <el-tag
+            :type="card.source === 'llm' ? 'success' : (card.llm_configured ? 'warning' : 'info')"
+            effect="light"
+          >
+            {{ card.source === "llm" ? "AI 语义解析" : (card.llm_configured ? "规则解析（AI 降级）" : "规则解析（未配置 AI）") }}
+          </el-tag>
+          <el-button v-if="results.length" text type="primary" @click="cardCollapsed = !cardCollapsed">
+            {{ cardCollapsed ? "展开调整" : "收起" }}
+          </el-button>
+        </div>
+      </div>
+      <div v-if="cardCollapsed" class="ask__card-summary" @click="cardCollapsed = false">
+        <span class="ask__card-summary-arrow">▾</span>
+        <span>{{ cardSummary }}</span>
+        <span class="ask__card-summary-hint">已按以上口径计算，点击展开调整</span>
       </div>
 
+      <template v-if="!cardCollapsed">
       <!-- 解析来源提示：成功/降级/未配置都必须给用户明确反馈 -->
       <el-alert
         v-if="card.inherited"
@@ -611,20 +644,31 @@ onMounted(fetchSuggestions);
           </el-button>
         </div>
       </template>
+      </template>
       <el-alert v-else :title="card.no_metric_reason" type="warning" :closable="false" show-icon />
     </section>
 
     <!-- 结果：多指标并列渲染（B9.2-3），AskResultCard 与历史轮共用（B9.2-4 抽取） -->
-    <AskResultCard
-      v-for="(r, ri) in results"
-      :key="ri"
-      :data="r.data"
-      :label="r.label"
-    />
+    <div ref="resultsAnchor">
+      <AskResultCard
+        v-for="(r, ri) in results"
+        :key="ri"
+        :data="r.data"
+        :label="r.label"
+      />
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* 输入区 sticky：长会话滚动到任意位置都能直接提问（72px = 顶部导航栏高度） */
+.ask__input-card {
+  position: sticky;
+  top: 72px;
+  z-index: 10;
+  box-shadow: var(--pwc-shadow-1, 0 1px 3px rgba(0, 0, 0, 0.08));
+}
+
 .ask__input-row {
   display: flex;
   align-items: center;
@@ -681,6 +725,40 @@ onMounted(fetchSuggestions);
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.ask__card-head-right {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+}
+
+/* 折叠态摘要行：计算口径一目了然，点击展开 */
+.ask__card-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+  margin-top: var(--pwc-space-3);
+  padding: var(--pwc-space-2) var(--pwc-space-3);
+  background: var(--pwc-state-container-hover, rgba(0, 0, 0, 0.04));
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+
+.ask__card-summary:hover {
+  background: var(--pwc-state-container-pressed, rgba(0, 0, 0, 0.08));
+}
+
+.ask__card-summary-arrow {
+  color: var(--pwc-text-secondary);
+}
+
+.ask__card-summary-hint {
+  margin-left: auto;
+  color: var(--pwc-text-secondary);
+  font-size: 12px;
 }
 
 .ask__amb {

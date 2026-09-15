@@ -114,12 +114,35 @@ def parse_dimensions(question: str, dim_candidates: list[dict]) -> list[str]:
     return hits[:3]
 
 
+_CN_DIGIT = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_num_to_int(text: str) -> int | None:
+    """中文数字 → 整数（支持 一~九十九，如「五」=5、「二十」=20）。"""
+    if not text:
+        return None
+    if text == "十":
+        return 10
+    if "十" in text:
+        head, _, tail = text.partition("十")
+        tens = _CN_DIGIT.get(head, 1) if head else 1
+        ones = _CN_DIGIT.get(tail, 0) if tail else 0
+        return tens * 10 + ones
+    return _CN_DIGIT.get(text)
+
+
 def parse_topn_order(question: str) -> dict:
-    """从问句解析 TopN 与排序倾向（规则通道的确定性映射）。"""
+    """从问句解析 TopN 与排序倾向（规则通道的确定性映射；支持中文数字「前五」）。"""
     out: dict = {}
     topn = re.search(r"前\s*(\d{1,2})\s*[名个位]?", question)
     if topn:
         out["top_n"] = min(int(topn.group(1)), 50)
+    else:
+        cn = re.search(r"前\s*([一两二三四五六七八九十]{1,3})\s*[名个位条]?", question)
+        if cn:
+            n = _cn_num_to_int(cn.group(1))
+            if n:
+                out["top_n"] = min(n, 50)
     if re.search(r"(掉|跌|降)[得的最]{1,2}(厉害|最多|最狠|最大)|跌幅最大|下滑最", question):
         out["order_by"], out["order"] = "change_pct", "asc"   # 跌幅最深在前
     elif re.search(r"(涨|增|升)[得的最]{1,2}(厉害|最多|最快|最大)|增幅最大|增长最快", question):

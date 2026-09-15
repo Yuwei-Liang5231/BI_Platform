@@ -137,6 +137,18 @@ def _ask_card(client, question: str, session_id: str | None = None):
     return client.post("/api/query/ask", json=body).json()["data"]
 
 
+def test_parse_topn_chinese_numerals():
+    """中文数字 TopN（用户实测 bug：说「前五」但显示条数默认 10）。"""
+    from app.domain.ask.service import parse_topn_order
+
+    assert parse_topn_order("跌幅最厉害的前五列出来")["top_n"] == 5
+    assert parse_topn_order("按地区拆解，前二十名")["top_n"] == 20
+    assert parse_topn_order("前十")["top_n"] == 10
+    assert parse_topn_order("前3")["top_n"] == 3
+    assert parse_topn_order("前两名的销售额")["top_n"] == 2
+    assert "top_n" not in parse_topn_order("销售额环比如何")
+
+
 def test_ask_testset_regression(client, ask_env):
     """问数测试集（tests/ask_testset.json）：通过率必须 100%（M3 标准 ≥95%）。
 
