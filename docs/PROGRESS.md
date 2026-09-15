@@ -97,7 +97,8 @@
 
 - **B7 验收**：按《AI原生BI平台_B7验收报告.md》第七节走查清单操作（一键 smoke + 浏览器端到端约 5 分钟）；B6 视觉走查项继续有效。
 - 已知偏差（有意为之）：主键 ID 后端为 int，前端直接透传未转 string（规范"与后端不一致时须先确认"——沿用后端契约）。
-- **阶段 2（B8 质检/增量导入 + B9 问数）已完成**（2026-09-14）。**B9 LLM 已配置 + 模型管理上线**（2026-09-14）：① `backend/env/.env.dev` 已填入工作区 env 文件的 DeepSeek 凭据（兜底默认）；② 新增「模型管理」页（admin 专享，`/llm-models`）+ `llm_models` 表 + `/api/llm/models` CRUD/启用切换/连通性测试接口——用户可自行登记多个 OpenAI 兼容模型、一键切换，**DB 启用记录 > env 兜底**，删除启用记录自动回退；api_key 全程脱敏返回。测试：pytest 224 passed（+10）；本地 Mock LLM 端到端 9/9 PASS（`backend/scripts/verify_llm_admin.py` + `mock_llm_server.py`，因公司网络屏蔽外网 LLM 用 Mock 验证全链路）。下一步方向：阶段 3（B10 异动检测、B11 预警触达、B12 归因与报告）、扩展算子（4a）、行级权限（4b）。
+- **阶段 2（B8 质检/增量导入 + B9 问数）已完成**（2026-09-14）。**B9 LLM 已配置 + 模型管理上线**（2026-09-14）：① 真实凭据放 `backend/env/.env.dev.local`（本地覆盖层，gitignore，不进 git）；② 新增「模型管理」页（admin 专享，`/llm-models`）+ `llm_models` 表 + `/api/llm/models` CRUD/启用切换/连通性测试接口——用户可自行登记多个 OpenAI 兼容模型、一键切换，**DB 启用记录 > env 兜底**，删除启用记录自动回退；api_key 全程脱敏返回。测试：pytest 224 passed（+10）；本地 Mock LLM 端到端 9/9 PASS（`backend/scripts/verify_llm_admin.py` + `mock_llm_server.py`，因公司网络屏蔽外网 LLM 用 Mock 验证全链路）。
+- **执行方案 V1.3（第十一节）已定稿待用户确认**（2026-09-15）：对标 BI佐罗文章将剩余阶段全部细化为 MVP 颗粒度批次——B9.2 问数 2.0（维度拆解/筛选/排序/TopN）→ B10 异动检测（三道判断+周期基准+单层归因）→ B12 报告中心（**算写分离**：平台先算结论，LLM 只组织文字、数字占位符回填）→ B11 触达 → B13 自动建模 → B14 多层归因 → B15 企业化；7 条设计红线贯穿（数值单点出口/LLM 永不产数字/无 LLM 可用降级/行业无关/权限同源/缓存纪律/每批收尾）。下一步：等用户确认后从 B9.2-1 开工。
 
 ## 五、运行与验证（三种方式，任选）
 
