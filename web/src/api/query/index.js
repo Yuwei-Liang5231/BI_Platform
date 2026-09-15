@@ -29,6 +29,10 @@ export const askConversationMessages = (conversationId) =>
 export const askConversationDelete = (conversationId) =>
   request.delete(`/query/ask/conversations/${conversationId}`);
 
+/** 重命名会话（B9.2-6）。 */
+export const askConversationRename = (conversationId, title) =>
+  request.patch(`/query/ask/conversations/${conversationId}`, { title });
+
 /** 理解卡确认后执行（与看板同一计算出口，口径同源）。
  *  B9.2-2：带 dimension 时走拆解出口（filters/order_by/order/top_n 生效）。 */
 export const askExecute = (data) => request.post("/query/ask/execute", data);

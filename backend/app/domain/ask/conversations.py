@@ -133,6 +133,16 @@ def get_messages(db: Session, user, conversation_id: int) -> list[dict]:
     return out
 
 
+def rename_conversation(db: Session, user, conversation_id: int, title: str) -> None:
+    """重命名会话（B9.2-6）：标题截断至 TITLE_MAX，空标题拒绝。"""
+    conv = _owned_conversation(db, user, conversation_id)
+    clean = (title or "").strip()
+    if not clean:
+        raise BusinessError("标题不能为空", 40000)
+    conv.title = clean[:TITLE_MAX]
+    db.commit()
+
+
 def delete_conversation(db: Session, user, conversation_id: int) -> None:
     """删除会话及其消息（物理删除；历史快照无审计价值）。"""
     conv = _owned_conversation(db, user, conversation_id)

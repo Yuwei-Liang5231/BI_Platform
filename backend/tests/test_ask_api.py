@@ -364,6 +364,22 @@ def test_conversation_persistence_lifecycle(client, ask_env):
     assert "label" in msgs[1]["results"][0]
     assert msgs[1]["card"]["metric"]["code"] == METRIC_CODE
 
+    # 重命名：列表标题更新；空标题拒绝；他人改报「会话不存在」
+    assert client.patch(
+        f"/api/query/ask/conversations/{conv_id}", json={"title": "华东GMV环比分析"}
+    ).json()["code"] == 0
+    convs2 = client.get("/api/query/ask/conversations").json()["data"]
+    assert any(c["id"] == conv_id and c["title"] == "华东GMV环比分析" for c in convs2)
+    r_empty = client.patch(f"/api/query/ask/conversations/{conv_id}", json={"title": "   "})
+    assert r_empty.json()["code"] != 0
+    from tests.conftest import create_test_user
+
+    other = create_test_user(client, "ask_rename_other", role="analyst")
+    r_other = client.patch(
+        f"/api/query/ask/conversations/{conv_id}", json={"title": "偷改"}, headers=other
+    )
+    assert "会话不存在" in r_other.json()["message"]
+
     # 删除 → 列表与消息均不可见（他人/不存在同报错）
     assert client.delete(f"/api/query/ask/conversations/{conv_id}").json()["code"] == 0
     assert all(c["id"] != conv_id for c in client.get("/api/query/ask/conversations").json()["data"])

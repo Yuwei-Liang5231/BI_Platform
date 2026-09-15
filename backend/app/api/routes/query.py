@@ -149,6 +149,19 @@ def ask_conversation_delete(conversation_id: int, db: DbDep, user: CurrentUser):
     return ok_response({"deleted": conversation_id})
 
 
+class ConversationRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+
+
+@router.patch("/ask/conversations/{conversation_id}")
+def ask_conversation_rename(conversation_id: int, body: ConversationRenameRequest, db: DbDep, user: CurrentUser):
+    """重命名会话（B9.2-6）：仅会话归属人可改。"""
+    ask_conversations.rename_conversation(db, user, conversation_id, body.title)
+    return ok_response({"id": conversation_id, "title": body.title.strip()})
+
+
 @router.get("/ask/suggestions")
 def ask_suggestions(db: DbDep, user: CurrentUser):
     """空态推荐问题（B9.2-3）：登录用户可见指标自动生成的示例问法（≤5 条）。"""

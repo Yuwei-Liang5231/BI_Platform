@@ -27,6 +27,56 @@ const changePct = computed(() => {
 });
 
 const displayName = computed(() => props.data?.name || props.label || "");
+
+// ---------------------------------------------------------------- 导出 CSV（B9.2-6）
+// 数据已在手上（后端单点出口算好），纯前端生成 CSV——口径与展示完全一致。
+
+function _csvCell(v) {
+  const s = v === null || v === undefined ? "" : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function _downloadCsv(filename, header, rows) {
+  const lines = [header, ...rows].map((r) => r.map(_csvCell).join(","));
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename.replace(/[\\/:*?"<>|]/g, "_") + ".csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportResult() {
+  const d = props.data;
+  if (isBreakdown.value) {
+    _downloadCsv(
+      `${displayName.value}-拆解-${d.start}~${d.end}`,
+      ["维度值", "当期值", "绝对变化", "变化率%", "查询区间", "基期区间"],
+      d.rows.map((r) => [
+        r.dimension,
+        r.value,
+        r.change_abs,
+        r.change_pct === null || r.change_pct === undefined ? "" : (r.change_pct / 100).toFixed(4),
+        `${d.start}~${d.end}`,
+        d.compare ? `${d.compare.start}~${d.compare.end}` : "",
+      ]),
+    );
+    return;
+  }
+  _downloadCsv(
+    `${displayName.value}-${d.start}~${d.end}`,
+    ["指标", "查询区间", "值", "对比类型", "基期区间", "变化率%"],
+    [[
+      displayName.value,
+      `${d.start}~${d.end}`,
+      d.value,
+      d.compare?.type === "yoy" ? "同比" : d.compare?.type === "mom" ? "环比" : "",
+      d.compare ? `${d.compare.start}~${d.compare.end}` : "",
+      changePct.value === null ? "" : (changePct.value / 100).toFixed(4),
+    ]],
+  );
+}
 </script>
 
 <template>
@@ -41,6 +91,7 @@ const displayName = computed(() => props.data?.name || props.label || "");
         </template>
         · 共 {{ data.total_groups }} 组，显示前 {{ data.rows.length }} 组
       </span>
+      <el-button text type="primary" class="ask__export" @click="exportResult">⬇ 导出 CSV</el-button>
     </div>
     <el-table :data="data.rows" size="default" class="ask__table">
       <el-table-column prop="dimension" label="维度值" min-width="140" />
@@ -88,6 +139,7 @@ const displayName = computed(() => props.data?.name || props.label || "");
           · 数据截至 {{ data.data_through }}
         </template>
       </span>
+      <el-button text type="primary" class="ask__export" @click="exportResult">⬇ 导出 CSV</el-button>
     </div>
     <div class="ask__result-value">{{ formatMetricValue(data.value) }}</div>
     <div v-if="changePct !== null" class="ask__result-compare">
@@ -123,6 +175,10 @@ const displayName = computed(() => props.data?.name || props.label || "");
 
 .ask__result-metric {
   font-weight: 600;
+}
+
+.ask__export {
+  margin-left: auto;
 }
 
 .ask__table {

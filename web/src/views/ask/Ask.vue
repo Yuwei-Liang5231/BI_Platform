@@ -18,6 +18,7 @@ import {
   askConversations,
   askConversationMessages,
   askConversationDelete,
+  askConversationRename,
   metricValue,
 } from "@/api/query";
 import { useMetricStore } from "@/stores/metric";
@@ -127,6 +128,25 @@ async function removeConversation(id) {
   await askConversationDelete(id);
   if (activeConvId.value === id) newConversation();
   ElMessage.success("已删除");
+  fetchConversations();
+}
+
+async function renameConversation(conv) {
+  let title;
+  try {
+    const res = await ElMessageBox.prompt("修改对话标题", "重命名", {
+      inputValue: conv.title,
+      inputPattern: /\S+/,
+      inputErrorMessage: "标题不能为空",
+      confirmButtonText: "保存",
+      cancelButtonText: "取消",
+    });
+    title = (res.value ?? "").trim();
+  } catch {
+    return;
+  }
+  await askConversationRename(conv.id, title);
+  ElMessage.success("已重命名");
   fetchConversations();
 }
 
@@ -393,7 +413,10 @@ onMounted(() => {
           <span class="ask__conv-title" :title="c.title">{{ c.title }}</span>
           <span class="ask__conv-meta">
             <span>{{ shortTime(c.updated_at) }}</span>
-            <span class="ask__conv-del" title="删除对话" @click.stop="removeConversation(c.id)">✕</span>
+            <span class="ask__conv-ops">
+              <span class="ask__conv-op" title="重命名" @click.stop="renameConversation(c)">✎</span>
+              <span class="ask__conv-del" title="删除对话" @click.stop="removeConversation(c.id)">✕</span>
+            </span>
           </span>
         </div>
         <p v-if="!conversations.length" class="ask__hint ask__conv-empty">
@@ -861,6 +884,12 @@ onMounted(() => {
   color: var(--pwc-text-secondary);
 }
 
+.ask__conv-ops {
+  display: flex;
+  gap: 4px;
+}
+
+.ask__conv-op,
 .ask__conv-del {
   visibility: hidden;
   cursor: pointer;
@@ -871,6 +900,7 @@ onMounted(() => {
   color: var(--pwc-danger, #D62222);
 }
 
+.ask__conv-item:hover .ask__conv-op,
 .ask__conv-item:hover .ask__conv-del {
   visibility: visible;
 }
