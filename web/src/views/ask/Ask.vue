@@ -252,9 +252,9 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
     <section v-if="card && card.mode === 'help'" class="pwc-card ask__card">
       <div class="ask__card-head">
         <h4>没能理解您的问题</h4>
-        <span class="pwc-badge pwc-badge--grey">
-          {{ card.llm_configured ? `意图解析：${card.source === "llm" ? "LLM" : "规则兜底"}` : "未配置 LLM · 规则解析" }}
-        </span>
+        <el-tag :type="card.llm_configured ? 'warning' : 'info'" effect="light">
+          {{ card.llm_configured ? (card.source === "llm" ? "AI 语义解析" : "规则解析（AI 降级）") : "规则解析（未配置 AI）" }}
+        </el-tag>
       </div>
       <el-alert type="info" :closable="false" show-icon class="ask__amb">
         <template #title>{{ card.help_reply }}</template>
@@ -268,10 +268,39 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
     <section v-if="card && card.mode === 'analysis'" class="pwc-card ask__card">
       <div class="ask__card-head">
         <h4>理解卡</h4>
-        <span class="pwc-badge pwc-badge--grey">
-          {{ card.llm_configured ? `意图解析：${card.source === "llm" ? "LLM" : "规则兜底"}` : "未配置 LLM · 规则解析" }}
-        </span>
+        <el-tag
+          :type="card.source === 'llm' ? 'success' : (card.llm_configured ? 'warning' : 'info')"
+          effect="light"
+        >
+          {{ card.source === "llm" ? "AI 语义解析" : (card.llm_configured ? "规则解析（AI 降级）" : "规则解析（未配置 AI）") }}
+        </el-tag>
       </div>
+
+      <!-- 解析来源提示：成功/降级/未配置都必须给用户明确反馈 -->
+      <el-alert
+        v-if="card.source === 'llm'"
+        type="success"
+        :closable="false"
+        show-icon
+        class="ask__amb"
+        title="AI 语义解析成功，以下理解已自动填入；如有偏差可直接修改后计算"
+      />
+      <el-alert
+        v-else-if="card.llm_configured"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="ask__amb"
+        :title="`AI 语义解析未成功，已用规则解析兜底${card.source_note ? '：' + card.source_note : ''}`"
+      />
+      <el-alert
+        v-else
+        type="info"
+        :closable="false"
+        show-icon
+        class="ask__amb"
+        title="当前使用规则解析（未配置 AI 模型）；配置后可理解更口语化的问法"
+      />
 
       <template v-if="card.can_compute">
         <!-- 歧义黄提示 -->
@@ -310,7 +339,8 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
               </template>
               <template v-else>
                 <span v-for="opt in amb.options" :key="opt.scenario" class="ask__amb-opt">
-                  「{{ opt.scenario }}」默认按 {{ opt.default }}
+                  「{{ opt.scenario }}」默认按 {{ opt.default?.name ?? opt.default }}
+                  <template v-if="opt.default?.description">（{{ opt.default.description }}）</template>
                 </span>
               </template>
             </div>
@@ -509,7 +539,7 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
       </div>
       <div class="ask__result-value">{{ formatMetricValue(result.value) }}</div>
       <div v-if="changePct !== null" class="ask__result-compare">
-        {{ result.compare === "yoy" ? "同比" : "环比" }}
+        {{ result.compare?.type === "yoy" ? "同比" : "环比" }}
         <span :class="changePct >= 0 ? 'up' : 'down'">
           {{ changePct >= 0 ? "↑" : "↓" }} {{ Math.abs(changePct).toFixed(2) }}%
         </span>

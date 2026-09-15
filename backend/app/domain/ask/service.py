@@ -165,10 +165,15 @@ def match_metrics(question: str, metrics: list[Metric]) -> list[Metric]:
 # ---------------------------------------------------------------- LLM 意图
 
 
-def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date,
-                dim_candidates: list[dict]) -> dict | None:
+def _llm_intent(
+    config: dict, question: str, metrics: list[Metric], today: date,
+    dim_candidates: list[dict],
+) -> tuple[dict | None, str | None]:
     """LLM 意图解析。输出经严格校验：指标必须在候选清单内、维度列/筛选值必须在
-    真实数据候选内、枚举字段在白名单内——任何越纲/非法字段一律丢弃（宁缺毋滥，防幻觉）。"""
+    真实数据候选内、枚举字段在白名单内——任何越纲/非法字段一律丢弃（宁缺毋滥，防幻觉）。
+
+    返回 (意图, 失败原因)：意图为 None 时失败原因非空，供理解卡向用户解释降级。
+    """
     metric_list = "\n".join(
         f"- code={m.code} | name={m.name} | aliases={json.dumps(_metric_candidates(m)[2:], ensure_ascii=False)}"
         for m in metrics[:200]
@@ -178,14 +183,16 @@ def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date,
         for c in dim_candidates[:30]
     ) or "（无可用维度列）"
     system = (
-        "你是 BI 平台的问数意图解析器。只输出一个 JSON 对象，禁止计算任何数值。字段：\n"
-        "metric_code（必须原样取自候选清单的 code，找不到填 null）、\n"
-        "start、end（YYYY-MM-DD 日期字符串）、compare（none/mom/yoy）、\n"
-        "dimension（按某维度拆解时填候选维度列之一，否则填 null）、\n"
-        "filters（数组 [{column, op, value}]，op 仅 =/!=，column 必须是候选维度列，"
-        "value 尽量取该维度列的真实取值；没有筛选填 []）、\n"
-        "order_by（value/change_abs/change_pct 或 null）、order（asc/desc 或 null）、\n"
-        "top_n（1~50 整数或 null）。\n"
+        "你是 BI 平台的问数意图解析器。只输出一个 JSON 对象，禁止计算任何数值。\n"
+        "字段名必须与下面完全一致（禁止自创字段名或换名字）：\n"
+        '{"metric_code": "指标code或null", "start": "YYYY-MM-DD或null", "end": "YYYY-MM-DD或null", '
+        '"compare": "none|mom|yoy", "dimension": "维度列名或null", '
+        '"filters": [{"column": "维度列名", "op": "=或!=", "value": "筛选值"}]或[], '
+        '"order_by": "value|change_abs|change_pct或null", "order": "asc|desc或null", "top_n": 整数或null}\n'
+        "示例输出：{\"metric_code\": \"gmv_paid\", \"start\": \"2026-08-01\", \"end\": \"2026-08-31\", "
+        "\"compare\": \"mom\", \"dimension\": \"channel\", \"filters\": [], "
+        "\"order_by\": \"change_pct\", \"order\": \"asc\", \"top_n\": 5}\n"
+        "metric_code 必须原样取自候选清单的 code，找不到填 null；"
         "禁止编造候选清单之外的指标、维度列或筛选值；用户问题与指标数据无关时不要硬套字段。"
     )
     user = (
@@ -196,7 +203,7 @@ def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date,
     intent = chat_json(config, system, user)
     if not isinstance(intent, dict):
         logger.info("LLM 意图解析：模型未返回有效 JSON（降级规则解析器），question=%r", question[:80])
-        return None
+        return None, "模型返回格式异常（可能为推理型模型输出被截断），已用规则解析兜底"
 
     valid_cols = {c["column"] for c in dim_candidates}
     validated: dict = {}
@@ -249,7 +256,9 @@ def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date,
         "LLM 意图解析结果: question=%r, validated=%s",
         question[:80], json.dumps(validated, ensure_ascii=False),
     )
-    return validated or None
+    if not validated:
+        return None, "模型返回的意图字段均不在候选范围内（防幻觉机制拦截），已用规则解析兜底"
+    return validated, None
 
 
 def _llm_help_reply(config: dict, question: str, metric_names: list[str]) -> str | None:
@@ -397,10 +406,12 @@ def build_card(db: Session, user, question: str) -> dict:
 
     # LLM 通道：在候选清单内改选指标/时间/比较/维度/筛选，越纲字段丢弃
     source = "fallback"
+    source_note: str | None = None
     if llm_cfg:
-        intent = _llm_intent(llm_cfg, question, visible, today, dim_candidates)
+        intent, source_note = _llm_intent(llm_cfg, question, visible, today, dim_candidates)
         if intent:
             source = "llm"
+            source_note = None
             if intent.get("metric_code"):
                 metric = next(m for m in visible if m.code == intent["metric_code"])
                 # 指标被 LLM 改选后维度候选需跟随（列名匹配保持真实锚点）
@@ -450,6 +461,8 @@ def build_card(db: Session, user, question: str) -> dict:
         "question": question,
         "llm_configured": llm_cfg is not None,
         "source": source,
+        # LLM 降级原因（source=fallback 且已配置 LLM 时非空，供前端向用户解释）
+        "source_note": source_note if (source == "fallback" and llm_cfg is not None) else None,
         "metric": ({"id": metric.id, "code": metric.code, "name": metric.name} if metric else None),
         "start": start.isoformat(),
         "end": end.isoformat(),

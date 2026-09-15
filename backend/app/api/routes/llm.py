@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import AdminUser, DbDep, SettingsDep
 from app.core.response import BusinessError, ok_response
-from app.infra.llm import mask_llm_config, resolve_llm_config, test_connection
+from app.infra.llm import _parse_extra_body, mask_llm_config, resolve_llm_config, test_connection
 from app.infra.models import LlmModel
 from app.infra.repository import Repository
 
@@ -176,7 +176,11 @@ def test_model(body: LlmTestIn, db: DbDep, settings: SettingsDep, user: AdminUse
     SSL 校验策略与运行时一致（全局 settings：企业内网自签证书可关闭或指定 CA 包）。
     """
     _ = user
-    verify = {"verify_ssl": settings.llm_verify_ssl, "ca_bundle": settings.llm_ca_bundle}
+    verify = {
+        "verify_ssl": settings.llm_verify_ssl,
+        "ca_bundle": settings.llm_ca_bundle,
+        "extra_body": _parse_extra_body(settings.llm_extra_body),
+    }
     if body.model_id is not None:
         m = _get_model(db, body.model_id)
         config = {"base_url": m.base_url, "api_key": m.api_key, "model": m.model, **verify}

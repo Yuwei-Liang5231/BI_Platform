@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # 或 llm_ca_bundle 指向公司 CA 证书包（优先级高于 verify_ssl 开关）
     llm_verify_ssl: bool = True
     llm_ca_bundle: str = ""
+    # 请求体附加字段（JSON 字符串，逐键并入 chat/completions 请求）：
+    # 如 '{"enable_thinking": false}' 关闭推理型模型的思考过程（省时省钱）
+    llm_extra_body: str = ""
 
     model_config = SettingsConfigDict(extra="ignore")
 

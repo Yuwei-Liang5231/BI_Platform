@@ -25,15 +25,31 @@ from app.infra.models import LlmModel
 logger = logging.getLogger("app.infra.llm")
 
 
+def _parse_extra_body(raw: str) -> dict | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        logger.warning("LLM_EXTRA_BODY 不是合法 JSON 对象，已忽略: %.100r", raw)
+        return None
+
+
 def resolve_llm_config(db: Session | None, settings: Settings) -> dict | None:
     """解析当前生效的 LLM 配置。
 
-    返回 {"base_url","api_key","model","source","model_id","verify_ssl","ca_bundle"} 或 None（未配置）。
+    返回 {"base_url","api_key","model","source","model_id","verify_ssl","ca_bundle","extra_body"} 或 None（未配置）。
     source: "db"（模型管理页启用的记录）| "env"（env 文件兜底）。
-    SSL 校验策略取全局 settings（企业内网自签证书场景：verify_ssl=false 或
-    ca_bundle 指向公司 CA 包），对 db/env 两种来源一视同仁。
+    SSL 校验与请求体附加字段取全局 settings（企业内网自签证书：verify_ssl=false 或
+    ca_bundle 指向公司 CA 包；extra_body 如关闭思考模式），对 db/env 两来源一视同仁。
     """
-    verify = {"verify_ssl": settings.llm_verify_ssl, "ca_bundle": settings.llm_ca_bundle}
+    verify = {
+        "verify_ssl": settings.llm_verify_ssl,
+        "ca_bundle": settings.llm_ca_bundle,
+        "extra_body": _parse_extra_body(settings.llm_extra_body),
+    }
     if db is not None:
         active = db.query(LlmModel).filter(LlmModel.is_active == 1).first()
         if active is not None:
@@ -85,6 +101,51 @@ def mask_llm_config(config: dict | None) -> dict | None:
     return {**config, "api_key": _mask_key(config.get("api_key", ""))}
 
 
+def _extract_json_object(content: str) -> dict | None:
+    """从模型返回文本中稳健提取 JSON 对象。
+
+    依次尝试：直接解析 → 去代码围栏 → 花括号配平截取首个 {...}（部分模型
+    会在 JSON 前后夹杂说明文字或 <think> 块）。全部失败返回 None。
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    if text.startswith("```"):
+        candidates.append(text.strip("`").removeprefix("json").strip())
+    start = text.find("{")
+    if start >= 0:
+        depth, in_str, esc = 0, False, False
+        for i, ch in enumerate(text[start:], start):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start : i + 1])
+                    break
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            obj = json.loads(cand)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
 def chat_json(
     config: dict | None,
     system_prompt: str,
@@ -95,6 +156,10 @@ def chat_json(
 
     config 为 resolve_llm_config 的产物（或路由层临时拼装的等价 dict）；
     None / 缺字段直接返回 None。
+    max_tokens 留足 2000：推理型模型（如 deepseek-v4）思考过程也计入 token，
+    余量不足会被思考耗尽（finish_reason=length）导致 content 为空。
+    config.extra_body（dict）逐键并入请求体（如 {"enable_thinking": false}
+    关闭思考模式，省时省钱——是否生效取决于网关/模型）。
     """
     if not config or not (config.get("base_url") and config.get("api_key") and config.get("model")):
         return None
@@ -107,20 +172,28 @@ def chat_json(
         ],
         "temperature": 0,
         "response_format": {"type": "json_object"},
-        "max_tokens": 500,
+        "max_tokens": 2000,
     }
+    extra = config.get("extra_body")
+    if isinstance(extra, dict):
+        payload.update(extra)
     headers = {"Authorization": f"Bearer {config['api_key']}"}
     # 连接 5s 快速失败（外网不可达时尽快降级关键词解析器），生成读取给足 30s
     timeout_policy = httpx.Timeout(timeout, connect=5.0)
     try:
         resp = httpx.post(url, json=payload, headers=headers, timeout=timeout_policy, verify=_http_verify(config))
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        # 兼容个别模型无视 json_object 模式包裹代码围栏
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.strip("`").removeprefix("json").strip()
-        return json.loads(content)
+        message = resp.json()["choices"][0]["message"]
+        obj = _extract_json_object(message.get("content") or "")
+        if obj is None:
+            # content 为空/非 JSON：推理型模型 token 耗尽或输出夹带说明文字
+            logger.warning(
+                "LLM 返回无法解析为 JSON 对象（降级）: finish=%s content=%.200r reasoning_len=%s",
+                resp.json()["choices"][0].get("finish_reason"),
+                message.get("content"),
+                len(message.get("reasoning_content") or ""),
+            )
+        return obj
     except Exception as exc:  # 网络/超时/JSON/结构任一失败都降级
         logger.warning("LLM 意图解析失败（降级到关键词解析器）: %s", exc)
         return None
