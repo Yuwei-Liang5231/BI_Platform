@@ -224,31 +224,32 @@
   color: #8E95A2 !important;
 }
 
-// Button Danger (Tonal Filled): Error 300 → Error 500 → Error 300
-// 静止/按下黑字（7.4:1）；悬停切白字（Black on Error 500 = 4.1:1 不达标，White = 5.1:1）
+// Button Danger (Solid): Error 500 → Error 700 → Error 500(深)
+// V1.3.2 用户确认改「红底白字」：静止/悬停/按下均白字——White on Error 500 #D62222 = 5.1:1 达 AA，
+// Error 300 #F66F6F 底白字仅 2.9:1 不达标，故实心底色由 300 升 500。
 .el-button--danger {
-  --el-button-bg-color: #F66F6F;
-  --el-button-border-color: #F66F6F;
-  --el-button-text-color: #000000;
-  --el-button-hover-bg-color: #D62222;
-  --el-button-hover-border-color: #D62222;
+  --el-button-bg-color: #D62222;
+  --el-button-border-color: #D62222;
+  --el-button-text-color: #FFFFFF;
+  --el-button-hover-bg-color: #B6000F;
+  --el-button-hover-border-color: #B6000F;
   --el-button-hover-text-color: #FFFFFF;
-  --el-button-active-bg-color: #F66F6F;
-  --el-button-active-border-color: #F66F6F;
-  --el-button-active-text-color: #000000;
-  background-color: #F66F6F !important;
-  border-color: #F66F6F !important;
-  color: #000000 !important;
-}
-.el-button--danger:hover {
+  --el-button-active-bg-color: #D12121;
+  --el-button-active-border-color: #D12121;
+  --el-button-active-text-color: #FFFFFF;
   background-color: #D62222 !important;
   border-color: #D62222 !important;
   color: #FFFFFF !important;
 }
+.el-button--danger:hover {
+  background-color: #B6000F !important;
+  border-color: #B6000F !important;
+  color: #FFFFFF !important;
+}
 .el-button--danger:active {
-  background-color: #F66F6F !important;
-  border-color: #F66F6F !important;
-  color: #000000 !important;
+  background-color: #D12121 !important;
+  border-color: #D12121 !important;
+  color: #FFFFFF !important;
 }
 .el-button--danger.is-disabled,
 .el-button--danger.is-disabled:hover {

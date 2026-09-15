@@ -32,8 +32,13 @@ const results = ref([]);
 const executing = ref(false);
 // 问句同时命中的其他指标勾选区（B9.2-3 多指标并列）
 const multiSelected = ref([]);
-// 空态推荐问题（B9.2-3）：后端按可见指标生成；接口失败时回落到静态示例
+// 空态推荐问题（B9.2-3）：后端按可见指标生成（非固定内容，随指标/权限变化）
 const suggestions = ref([]);
+const suggestionsLoading = ref(true);
+// 推荐为空/接口失败时回落静态示例
+const shownSuggestions = computed(() =>
+  suggestions.value.length ? suggestions.value : EXAMPLES,
+);
 
 // 可编辑理解卡的本地状态（B9.2-2：拆解维度/筛选/排序/TopN 同样可改）
 const cardEdit = reactive({
@@ -89,6 +94,8 @@ async function fetchSuggestions() {
     suggestions.value = Array.isArray(res) ? res : [];
   } catch {
     suggestions.value = [];
+  } finally {
+    suggestionsLoading.value = false;
   }
 }
 
@@ -271,20 +278,19 @@ onMounted(fetchSuggestions);
           clearable
           :disabled="asking"
           @keyup.enter="submit()"
-        >
-          <template #append>
-            <el-button type="danger" :loading="asking" @click="submit()">理解问题</el-button>
-          </template>
-        </el-input>
+        />
+        <el-button type="danger" size="large" :loading="asking" @click="submit()">
+          理解问题
+        </el-button>
       </div>
     </section>
 
-    <!-- 空态推荐问题（B9.2-3）：优先后端按可见指标生成，接口为空回落静态示例；点击即问 -->
-    <section v-if="!card" class="pwc-card ask__card">
+    <!-- 空态推荐问题（B9.2-3）：后端按可见指标生成；加载中不渲染（避免静态示例→推荐的跳动），空/失败回落静态示例；点击即问 -->
+    <section v-if="!card && !suggestionsLoading" class="pwc-card ask__card">
       <h4>试试这样问</h4>
       <div class="ask__examples">
         <el-tag
-          v-for="s in suggestions.length ? suggestions : EXAMPLES"
+          v-for="s in shownSuggestions"
           :key="s"
           class="ask__example"
           effect="plain"
@@ -614,7 +620,14 @@ onMounted(fetchSuggestions);
 
 <style scoped>
 .ask__input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-3);
   margin-top: var(--pwc-space-3);
+}
+
+.ask__input-row .el-input {
+  flex: 1;
 }
 
 .ask__examples {
