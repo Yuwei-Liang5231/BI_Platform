@@ -50,6 +50,13 @@ async function api(path, { method = "GET", token, body, form } = {}) {
     body: { username: "admin", password: "admin123" },
   });
   const token = login.data.token;
+  // 自清理：历次运行残留的 ask_smoke_gmv_* 指标会挤占歧义候选前 5 名，导致 S1 断言失真
+  const old = await api("/metrics?search=ask_smoke_gmv", { token });
+  for (const m of old.data ?? []) {
+    if (String(m.code).startsWith("ask_smoke_gmv_")) {
+      await api(`/metrics/${m.id}`, { method: "DELETE", token });
+    }
+  }
   const csv = "sale_date,amount,status\n2026-01-10,400,paid\n2026-01-20,600,paid\n";
   const fd = new FormData();
   fd.append("file", new Blob([csv], { type: "text/csv" }), `${DS_NAME}.csv`);
