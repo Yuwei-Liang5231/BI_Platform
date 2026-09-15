@@ -47,10 +47,14 @@ class Settings(BaseSettings):
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = "admin123"
 
-    # LLM（阶段 2 起启用；来自工作区 env 文件的 DeepSeek 兼容接口）
+    # LLM（阶段 2 起启用；OpenAI 兼容接口：PwC 共享生成式 AI 服务 / DeepSeek 等）
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
+    # 企业内网网关常为自签/公司 CA 证书：llm_verify_ssl=false 跳过校验，
+    # 或 llm_ca_bundle 指向公司 CA 证书包（优先级高于 verify_ssl 开关）
+    llm_verify_ssl: bool = True
+    llm_ca_bundle: str = ""
 
     model_config = SettingsConfigDict(extra="ignore")
 

@@ -28,9 +28,12 @@ logger = logging.getLogger("app.infra.llm")
 def resolve_llm_config(db: Session | None, settings: Settings) -> dict | None:
     """解析当前生效的 LLM 配置。
 
-    返回 {"base_url","api_key","model","source","model_id"} 或 None（未配置）。
+    返回 {"base_url","api_key","model","source","model_id","verify_ssl","ca_bundle"} 或 None（未配置）。
     source: "db"（模型管理页启用的记录）| "env"（env 文件兜底）。
+    SSL 校验策略取全局 settings（企业内网自签证书场景：verify_ssl=false 或
+    ca_bundle 指向公司 CA 包），对 db/env 两种来源一视同仁。
     """
+    verify = {"verify_ssl": settings.llm_verify_ssl, "ca_bundle": settings.llm_ca_bundle}
     if db is not None:
         active = db.query(LlmModel).filter(LlmModel.is_active == 1).first()
         if active is not None:
@@ -40,6 +43,7 @@ def resolve_llm_config(db: Session | None, settings: Settings) -> dict | None:
                 "model": active.model,
                 "source": "db",
                 "model_id": active.id,
+                **verify,
             }
     if settings.llm_base_url and settings.llm_api_key and settings.llm_model:
         return {
@@ -48,6 +52,7 @@ def resolve_llm_config(db: Session | None, settings: Settings) -> dict | None:
             "model": settings.llm_model,
             "source": "env",
             "model_id": None,
+            **verify,
         }
     return None
 
@@ -63,6 +68,14 @@ def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return "*" * len(key)
     return key[:4] + "*" * (len(key) - 8) + key[-4:]
+
+
+def _http_verify(config: dict):
+    """httpx 的 verify 参数：ca_bundle 优先，其次 verify_ssl 开关（默认校验）。"""
+    bundle = (config.get("ca_bundle") or "").strip()
+    if bundle:
+        return bundle
+    return bool(config.get("verify_ssl", True))
 
 
 def mask_llm_config(config: dict | None) -> dict | None:
@@ -100,7 +113,7 @@ def chat_json(
     # 连接 5s 快速失败（外网不可达时尽快降级关键词解析器），生成读取给足 30s
     timeout_policy = httpx.Timeout(timeout, connect=5.0)
     try:
-        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout_policy)
+        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout_policy, verify=_http_verify(config))
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
         # 兼容个别模型无视 json_object 模式包裹代码围栏
@@ -130,7 +143,10 @@ def test_connection(config: dict | None, timeout: float = 15.0) -> tuple[bool, s
     }
     headers = {"Authorization": f"Bearer {config['api_key']}"}
     try:
-        resp = httpx.post(url, json=payload, headers=headers, timeout=httpx.Timeout(timeout, connect=5.0))
+        resp = httpx.post(
+            url, json=payload, headers=headers,
+            timeout=httpx.Timeout(timeout, connect=5.0), verify=_http_verify(config),
+        )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
         return True, f"连接成功，模型已响应：{(content or '').strip()[:50]}"

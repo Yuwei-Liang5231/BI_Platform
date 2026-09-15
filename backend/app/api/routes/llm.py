@@ -170,13 +170,17 @@ def _activate(db, model_id: int) -> None:
 
 
 @router.post("/models/test")
-def test_model(body: LlmTestIn, db: DbDep, user: AdminUser):
-    """连通性测试（admin）。model_id 优先（测试已存记录），否则测表单值。"""
+def test_model(body: LlmTestIn, db: DbDep, settings: SettingsDep, user: AdminUser):
+    """连通性测试（admin）。model_id 优先（测试已存记录），否则测表单值。
+
+    SSL 校验策略与运行时一致（全局 settings：企业内网自签证书可关闭或指定 CA 包）。
+    """
     _ = user
+    verify = {"verify_ssl": settings.llm_verify_ssl, "ca_bundle": settings.llm_ca_bundle}
     if body.model_id is not None:
         m = _get_model(db, body.model_id)
-        config = {"base_url": m.base_url, "api_key": m.api_key, "model": m.model}
+        config = {"base_url": m.base_url, "api_key": m.api_key, "model": m.model, **verify}
     else:
-        config = {"base_url": body.base_url, "api_key": body.api_key, "model": body.model}
+        config = {"base_url": body.base_url, "api_key": body.api_key, "model": body.model, **verify}
     ok, message = test_connection(config)
     return ok_response({"ok": ok, "message": message})
