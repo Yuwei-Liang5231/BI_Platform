@@ -8,13 +8,16 @@
  * - 逃生舱（mode=help）：意图解析不出可执行结构时纯对话引导，绝不含数字
  */
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
   ask as askApi,
   askExecute as askExecuteApi,
   askDimensionValues,
   askSuggestions,
+  askConversations,
+  askConversationMessages,
+  askConversationDelete,
   metricValue,
 } from "@/api/query";
 import { useMetricStore } from "@/stores/metric";
@@ -39,12 +42,15 @@ const suggestionsLoading = ref(true);
 const shownSuggestions = computed(() =>
   suggestions.value.length ? suggestions.value : EXAMPLES,
 );
-// B9.2-4 多轮会话：session_id 后端生成每轮携带；messages 记录历史轮（问句+只读结果）
-const sessionId = ref(null);
-const messages = ref([]); // {role:'user', text} | {role:'assistant', question, card, results}
+// B9.2-6 会话持久化：activeConvId 标识当前对话（首问 null，后端自动建）；
+// messages 记录消息流（问句+理解卡/结果）；conversations 为左侧历史列表
+const activeConvId = ref(null);
+const messages = ref([]); // {role:'user', text} | {role:'assistant', question, card, results, readonly?}
+const conversations = ref([]);
+const sidebarCollapsed = ref(false);
+const scrollRef = ref(null);
 // 理解卡折叠：确认计算后自动收起（结果上移可见），点「展开调整」可再改——新问题自动展开
 const cardCollapsed = ref(false);
-const resultsAnchor = ref(null); // 计算完成后滚动到此，避免用户手动下滑找结果
 
 const cardSummary = computed(() => {
   if (!card.value?.metric) return "";
@@ -59,16 +65,74 @@ const cardSummary = computed(() => {
   return parts.join(" · ");
 });
 
-function resetChat() {
-  sessionId.value = null;
+function newConversation() {
+  activeConvId.value = null;
   card.value = null;
   results.value = [];
   multiSelected.value = [];
   messages.value = [];
+  cardCollapsed.value = false;
   Object.assign(cardEdit, {
     metricCode: "", range: [], compare: "none", dimension: "",
     filters: [], order_by: "value", order: "desc", top_n: null,
   });
+}
+
+async function fetchConversations() {
+  try {
+    const res = await askConversations();
+    conversations.value = Array.isArray(res) ? res : [];
+  } catch {
+    conversations.value = [];
+  }
+}
+
+function shortTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return hm;
+  return `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
+}
+
+async function openConversation(id) {
+  if (asking.value || executing.value) return;
+  if (id === activeConvId.value && messages.value.length) return;
+  try {
+    const list = await askConversationMessages(id);
+    newConversation();
+    activeConvId.value = id;
+    messages.value = Array.isArray(list) ? list : [];
+    await nextTick();
+    scrollToBottom(true);
+  } catch {
+    /* 错误由请求拦截器统一提示（如会话已被删除） */
+    fetchConversations();
+  }
+}
+
+async function removeConversation(id) {
+  try {
+    await ElMessageBox.confirm("删除后该对话的历史记录不可恢复，确定删除？", "删除对话", {
+      type: "warning",
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+    });
+  } catch {
+    return;
+  }
+  await askConversationDelete(id);
+  if (activeConvId.value === id) newConversation();
+  ElMessage.success("已删除");
+  fetchConversations();
+}
+
+function scrollToBottom(instant = false) {
+  const el = scrollRef.value;
+  if (!el) return;
+  el.scrollTo({ top: el.scrollHeight, behavior: instant ? "auto" : "smooth" });
 }
 
 function syncResultsToLastMessage() {
@@ -145,15 +209,18 @@ async function submit(questionOverride) {
   results.value = [];
   messages.value.push({ role: "user", text: q });
   try {
-    const res = await askApi(q, sessionId.value);
+    const res = await askApi(q, activeConvId.value);
     card.value = res;
     // 多指标并列默认全选（问句本来就在问它们），用户可取消
     multiSelected.value = (res.multi_metrics ?? []).map((m) => m.code);
     applyCard(res);
-    // B9.2-4：session_id 由后端生成，每轮携带实现多轮追问
-    if (res.session_id) sessionId.value = res.session_id;
+    // B9.2-6：首问由后端建会话，理解卡返回 conversation_id 供后续轮携带
+    if (res.conversation_id) activeConvId.value = res.conversation_id;
     messages.value.push({ role: "assistant", question: q, card: res, results: [] });
     cardCollapsed.value = false; // 新一轮理解卡默认展开
+    await nextTick();
+    scrollToBottom();
+    fetchConversations(); // 首问生成标题 / 追问刷新最近使用排序
   } finally {
     asking.value = false;
   }
@@ -239,8 +306,10 @@ async function execute() {
   executing.value = true;
   try {
     // 主指标走完整理解卡参数（含拆解）；并列指标只共享时间/对比方式，
-    // 逐指标独立调用同一 execute 出口——数值仍全部由后端单点计算
-    const jobs = [{ payload: buildPayload(), label: metricName.value }];
+    // 逐指标独立调用同一 execute 出口——数值仍全部由后端单点计算；
+    // conversation_id 让后端把结果快照回写当前会话（历史恢复可看当时真值）
+    const convId = activeConvId.value ?? null;
+    const jobs = [{ payload: { ...buildPayload(), conversation_id: convId }, label: metricName.value }];
     for (const m of card.value?.multi_metrics ?? []) {
       if (!multiSelected.value.includes(m.code)) continue;
       jobs.push({
@@ -249,6 +318,7 @@ async function execute() {
           start: cardEdit.range[0],
           end: cardEdit.range[1],
           compare: cardEdit.compare,
+          conversation_id: convId,
         },
         label: m.name,
       });
@@ -256,10 +326,11 @@ async function execute() {
     const datas = await Promise.all(jobs.map((j) => askExecuteApi(j.payload)));
     results.value = jobs.map((j, i) => ({ label: j.label, data: datas[i] }));
     syncResultsToLastMessage();
-    // 计算完成：理解卡自动收起（可展开再调），滚动到结果区
+    // 计算完成：理解卡自动收起（可展开再调），滚动到最新结果；结果快照已由后端回写会话
     cardCollapsed.value = true;
     await nextTick();
-    resultsAnchor.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToBottom();
+    fetchConversations();
   } finally {
     executing.value = false;
   }
@@ -293,102 +364,118 @@ const metricName = computed(() => {
   return metricOptions.value.find((m) => m.code === code)?.name ?? code;
 });
 
-onMounted(fetchSuggestions);
+onMounted(() => {
+  fetchSuggestions();
+  fetchConversations();
+});
 </script>
 
 <template>
-  <div class="page-container ask">
-    <div class="page-header">
-      <div>
-        <h1 class="page-header__title">AI 问数</h1>
-        <p class="page-header__subtitle">
-          先摊开理解、再给答案 · 数值由指标中心统一计算，与看板口径完全一致
+  <div class="ask">
+    <!-- 左侧：历史会话列表（B9.2-6 持久化，按最近使用排序，可折叠） -->
+    <aside v-show="!sidebarCollapsed" class="ask__sidebar">
+      <div class="ask__sidebar-head">
+        <el-button type="primary" class="ask__new-btn" @click="newConversation">＋ 新对话</el-button>
+        <el-button text size="small" title="收起列表" @click="sidebarCollapsed = true">«</el-button>
+      </div>
+      <div class="ask__conv-list">
+        <div
+          v-for="c in conversations"
+          :key="c.id"
+          class="ask__conv-item"
+          :class="{ 'is-active': c.id === activeConvId }"
+          @click="openConversation(c.id)"
+        >
+          <span class="ask__conv-title" :title="c.title">{{ c.title }}</span>
+          <span class="ask__conv-meta">
+            <span>{{ shortTime(c.updated_at) }}</span>
+            <span class="ask__conv-del" title="删除对话" @click.stop="removeConversation(c.id)">✕</span>
+          </span>
+        </div>
+        <p v-if="!conversations.length" class="ask__hint ask__conv-empty">
+          这里将展示你的历史对话
         </p>
       </div>
-    </div>
+    </aside>
+    <el-button
+      v-if="sidebarCollapsed"
+      class="ask__sidebar-expand"
+      text
+      title="展开历史列表"
+      @click="sidebarCollapsed = false"
+    >»</el-button>
 
-    <!-- 输入区 sticky 固定在页首（导航栏下方）：长会话滑到任意位置都能直接输入 -->
-    <section class="pwc-card ask__input-card">
-      <div class="ask__input-row">
-        <el-input
-          v-model="question"
-          size="large"
-          placeholder="试着问：上个月按地区拆解销售额的环比，跌幅最厉害的前5"
-          clearable
-          :disabled="asking"
-          @keyup.enter="submit()"
-        />
-        <el-button type="danger" size="large" :loading="asking" @click="submit()">
-          理解问题
-        </el-button>
-        <el-button v-if="messages.length" size="large" :disabled="asking" @click="resetChat">
-          新话题
-        </el-button>
-      </div>
-    </section>
+    <!-- 右侧：消息流（滚动）+ 底部固定输入 -->
+    <main class="ask__main">
+      <header class="ask__pagehead">
+        <h1>AI 问数</h1>
+        <p>先摊开理解、再给答案 · 数值由指标中心统一计算，与看板口径完全一致</p>
+      </header>
 
-    <!-- 空态推荐问题（B9.2-3）：后端按可见指标生成；加载中不渲染（避免静态示例→推荐的跳动），空/失败回落静态示例；点击即问 -->
-    <section v-if="!card && !suggestionsLoading" class="pwc-card ask__card">
-      <h4>试试这样问</h4>
-      <div class="ask__examples">
-        <el-tag
-          v-for="s in shownSuggestions"
-          :key="s"
-          class="ask__example"
-          effect="plain"
-          @click="question = s; submit(s)"
-        >
-          {{ s }}
-        </el-tag>
-      </div>
-    </section>
-
-    <!-- B9.2-4 会话消息流：历史轮问句气泡 + 只读结果；当前轮在下方完整可交互 -->
-    <template v-for="(msg, mi) in messages" :key="mi">
-      <div v-if="msg.role === 'user'" class="ask__bubble">{{ msg.text }}</div>
-      <template v-else-if="mi < messages.length - 1">
-        <AskResultCard
-          v-for="(r, ri) in msg.results"
-          :key="ri"
-          :data="r.data"
-          :label="r.label"
-          class="ask__history-result"
-        />
-        <el-alert
-          v-if="msg.card?.mode === 'help'"
-          type="info"
-          :closable="false"
-          show-icon
-          class="ask__history-help"
-          :title="msg.card.help_reply"
-        />
-        <div
-          v-else-if="msg.card?.mode === 'analysis' && !msg.results.length"
-          class="ask__hint ask__uncomputed"
-        >
-          该轮已理解（{{ msg.card.metric?.name ?? "—" }}），未计算
+      <div ref="scrollRef" class="ask__scroll">
+        <!-- 空态欢迎 + 推荐问题（B9.2-3）：后端按可见指标生成；点击即问 -->
+        <div v-if="!card && !messages.length && !suggestionsLoading" class="ask__welcome">
+          <h2>问我任何指标问题</h2>
+          <p class="ask__hint">支持数值查询、按维度拆解、环比/同比对比；可连续追问（如「那上个月呢」）</p>
+          <div class="ask__examples">
+            <el-tag
+              v-for="s in shownSuggestions"
+              :key="s"
+              class="ask__example"
+              effect="plain"
+              @click="question = s; submit(s)"
+            >
+              {{ s }}
+            </el-tag>
+          </div>
         </div>
-      </template>
-    </template>
 
-    <!-- 逃生舱：意图解析不出可执行结构 → 纯对话引导（无数字） -->
-    <section v-if="card && card.mode === 'help'" class="pwc-card ask__card">
-      <div class="ask__card-head">
-        <h4>没能理解您的问题</h4>
-        <el-tag :type="card.llm_configured ? 'warning' : 'info'" effect="light">
-          {{ card.llm_configured ? (card.source === "llm" ? "AI 语义解析" : "规则解析（AI 降级）") : "规则解析（未配置 AI）" }}
-        </el-tag>
-      </div>
-      <el-alert type="info" :closable="false" show-icon class="ask__amb">
-        <template #title>{{ card.help_reply }}</template>
-      </el-alert>
-      <p class="ask__hint">
-        平台当前支持：已有指标的数值查询、按维度拆解、时间环比/同比对比。点击上方示例可快速体验。
-      </p>
-    </section>
+        <!-- 会话消息流：历史轮问句气泡 + 只读结果；当前轮在下方完整可交互 -->
+        <template v-for="(msg, mi) in messages" :key="mi">
+          <div v-if="msg.role === 'user'" class="ask__bubble">{{ msg.text }}</div>
+          <template v-else-if="msg.readonly || mi < messages.length - 1">
+            <AskResultCard
+              v-for="(r, ri) in msg.results"
+              :key="ri"
+              :data="r.data"
+              :label="r.label"
+              class="ask__history-result"
+            />
+            <el-alert
+              v-if="msg.card?.mode === 'help'"
+              type="info"
+              :closable="false"
+              show-icon
+              class="ask__history-help"
+              :title="msg.card.help_reply"
+            />
+            <div
+              v-else-if="msg.card?.mode === 'analysis' && !msg.results.length"
+              class="ask__hint ask__uncomputed"
+            >
+              该轮已理解（{{ msg.card.metric?.name ?? "—" }}），未计算
+            </div>
+          </template>
+        </template>
 
-    <!-- 理解卡：计算后自动收起，仅保留摘要行；点「展开调整」恢复完整表单 -->
-    <section v-if="card && card.mode === 'analysis'" class="pwc-card ask__card">
+        <!-- 逃生舱：意图解析不出可执行结构 → 纯对话引导（无数字） -->
+        <section v-if="card && card.mode === 'help'" class="pwc-card ask__card">
+          <div class="ask__card-head">
+            <h4>没能理解您的问题</h4>
+            <el-tag :type="card.llm_configured ? 'warning' : 'info'" effect="light">
+              {{ card.llm_configured ? (card.source === "llm" ? "AI 语义解析" : "规则解析（AI 降级）") : "规则解析（未配置 AI）" }}
+            </el-tag>
+          </div>
+          <el-alert type="info" :closable="false" show-icon class="ask__amb">
+            <template #title>{{ card.help_reply }}</template>
+          </el-alert>
+          <p class="ask__hint">
+            平台当前支持：已有指标的数值查询、按维度拆解、时间环比/同比对比。点击上方示例可快速体验。
+          </p>
+        </section>
+
+        <!-- 理解卡：计算后自动收起，仅保留摘要行；点「展开调整」恢复完整表单 -->
+        <section v-if="card && card.mode === 'analysis'" class="pwc-card ask__card">
       <div class="ask__card-head">
         <h4>理解卡</h4>
         <div class="ask__card-head-right">
@@ -648,32 +735,197 @@ onMounted(fetchSuggestions);
       <el-alert v-else :title="card.no_metric_reason" type="warning" :closable="false" show-icon />
     </section>
 
-    <!-- 结果：多指标并列渲染（B9.2-3），AskResultCard 与历史轮共用（B9.2-4 抽取） -->
-    <div ref="resultsAnchor">
-      <AskResultCard
-        v-for="(r, ri) in results"
-        :key="ri"
-        :data="r.data"
-        :label="r.label"
-      />
-    </div>
+        <!-- 结果：多指标并列渲染（B9.2-3），AskResultCard 与历史轮共用（B9.2-4 抽取） -->
+        <AskResultCard
+          v-for="(r, ri) in results"
+          :key="ri"
+          :data="r.data"
+          :label="r.label"
+        />
+      </div>
+
+      <!-- 底部固定输入条：会话滚动到任何位置都能直接提问 -->
+      <div class="ask__composer">
+        <div class="ask__input-row">
+          <el-input
+            v-model="question"
+            size="large"
+            placeholder="试着问：上个月按地区拆解销售额的环比，跌幅最厉害的前5"
+            clearable
+            :disabled="asking"
+            @keyup.enter="submit()"
+          />
+          <el-button type="danger" size="large" :loading="asking" @click="submit()">
+            理解问题
+          </el-button>
+          <el-button v-if="messages.length" size="large" :disabled="asking" @click="newConversation">
+            新对话
+          </el-button>
+        </div>
+      </div>
+    </main>
   </div>
 </template>
 
 <style scoped>
-/* 输入区 sticky：长会话滚动到任意位置都能直接提问（72px = 顶部导航栏高度） */
-.ask__input-card {
-  position: sticky;
-  top: 72px;
-  z-index: 10;
-  box-shadow: var(--pwc-shadow-1, 0 1px 3px rgba(0, 0, 0, 0.08));
+/* 三栏会话布局（B9.2-6）：左侧历史列表 + 右侧消息流 + 底部固定输入（72px = 顶部导航栏高度） */
+.ask {
+  display: flex;
+  gap: var(--pwc-space-3);
+  height: calc(100vh - 72px);
+  padding: var(--pwc-space-4);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* 左侧历史会话列表 */
+.ask__sidebar {
+  width: 236px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--pwc-surface, #fff);
+  border: 1px solid var(--pwc-border, rgba(0, 0, 0, 0.08));
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ask__sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-1);
+  padding: var(--pwc-space-3);
+  border-bottom: 1px solid var(--pwc-border, rgba(0, 0, 0, 0.06));
+}
+
+.ask__new-btn {
+  flex: 1;
+}
+
+.ask__conv-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--pwc-space-2);
+}
+
+.ask__conv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--pwc-space-2) var(--pwc-space-2);
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 2px;
+}
+
+.ask__conv-item:hover {
+  background: var(--pwc-state-container-hover, rgba(0, 0, 0, 0.05));
+}
+
+.ask__conv-item.is-active {
+  background: rgba(253, 81, 8, 0.1);
+}
+
+.ask__conv-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ask__conv-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--pwc-text-secondary);
+}
+
+.ask__conv-del {
+  visibility: hidden;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.ask__conv-del:hover {
+  color: var(--pwc-danger, #D62222);
+}
+
+.ask__conv-item:hover .ask__conv-del {
+  visibility: visible;
+}
+
+.ask__conv-empty {
+  padding: var(--pwc-space-3);
+}
+
+.ask__sidebar-expand {
+  align-self: flex-start;
+  margin-top: var(--pwc-space-2);
+}
+
+/* 右侧主区：页头 + 滚动消息流 + 底部输入条 */
+.ask__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ask__pagehead {
+  padding: 0 var(--pwc-space-2) var(--pwc-space-2);
+}
+
+.ask__pagehead h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.ask__pagehead p {
+  margin: 4px 0 0;
+  color: var(--pwc-text-secondary);
+  font-size: 13px;
+}
+
+.ask__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--pwc-space-2) var(--pwc-space-2) var(--pwc-space-3);
+}
+
+/* 空态欢迎屏 */
+.ask__welcome {
+  text-align: center;
+  padding: 12vh var(--pwc-space-4) 0;
+}
+
+.ask__welcome h2 {
+  margin: 0 0 var(--pwc-space-2);
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.ask__welcome .ask__examples {
+  justify-content: center;
+  margin-top: var(--pwc-space-4);
+}
+
+/* 底部固定输入条 */
+.ask__composer {
+  margin-top: var(--pwc-space-3);
+  padding: var(--pwc-space-3);
+  background: var(--pwc-surface, #fff);
+  border: 1px solid var(--pwc-border, rgba(0, 0, 0, 0.06));
+  border-radius: 12px;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.05);
 }
 
 .ask__input-row {
   display: flex;
   align-items: center;
   gap: var(--pwc-space-3);
-  margin-top: var(--pwc-space-3);
 }
 
 .ask__input-row .el-input {

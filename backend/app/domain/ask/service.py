@@ -334,7 +334,7 @@ def _llm_help_reply(config: dict, question: str, metric_names: list[str]) -> str
 # ---------------------------------------------------------------- 理解卡
 
 
-def build_card(db: Session, user, question: str, session_id: str | None = None) -> dict:
+def build_card(db: Session, user, question: str, conversation_id: int | None = None) -> dict:
     """问句 → 理解卡（只解析意图，不计算数值）。
 
     B9.2-2 扩展：拆解维度/筛选/排序/TopN 进意图（全部锚定真实数据候选）；
@@ -349,6 +349,7 @@ def build_card(db: Session, user, question: str, session_id: str | None = None) 
 
     from app.core.config import get_settings
     from app.domain.ask import session as ask_session
+    from app.domain.ask import conversations as ask_conversations
     from app.domain.query.service import BREAKDOWN_MAX_CARDINALITY
 
     settings = get_settings()
@@ -356,13 +357,17 @@ def build_card(db: Session, user, question: str, session_id: str | None = None) 
     llm_cfg = resolve_llm_config(db, settings)
     today = date.today()
 
+    # B9.2-6 会话持久化：首问自动建会话；意图继承键 = 会话 id（TTL 语义不变）
+    conv = ask_conversations.get_or_create_conversation(db, user, conversation_id)
+    session_key = f"conv-{conv.id}"
+
     hidden = restricted_metric_ids(db, user)
     all_active = db.query(Metric).filter(Metric.status == "active").all()
     # 权限继承：候选只含登录用户可见的指标（与看板同一套判定）
     visible = [m for m in all_active if m.id not in hidden]
     restricted_named = [m for m in all_active if m.id in hidden]
 
-    prev_intent = ask_session.get_intent(session_id)
+    prev_intent = ask_session.get_intent(session_key)
     hits = match_metrics(question, visible)
     restricted_hits = match_metrics(question, restricted_named)
 
@@ -581,8 +586,9 @@ def build_card(db: Session, user, question: str, session_id: str | None = None) 
 
     card = {
         "question": question,
-        # B9.2-4 会话：首问由后端生成 session_id，前端每轮携带实现多轮追问
-        "session_id": session_id or ask_session.new_session_id(),
+        # B9.2-6 会话持久化：conversation_id 标识多轮对话（首问自动建会话），
+        # 前端每轮携带；历史列表/恢复走 conversations API
+        "conversation_id": conv.id,
         "inherited": inherited,
         "time_inherited": time_inherited,
         "llm_configured": llm_cfg is not None,
@@ -622,7 +628,7 @@ def build_card(db: Session, user, question: str, session_id: str | None = None) 
     card["mode"] = "analysis" if metric is not None else "help"
     if metric is not None:
         # 会话意图留存（B9.2-4）：仅存意图，数值每轮由 compute 单点出口现算
-        ask_session.save_intent(card["session_id"], {
+        ask_session.save_intent(session_key, {
             "metric_code": metric.code,
             "dimension": dimension,
             "filters": rule_filters,
@@ -650,6 +656,8 @@ def build_card(db: Session, user, question: str, session_id: str | None = None) 
         card["metric"]["code"] if card["metric"] else None,
         card["start"], card["end"], compare, dimension, rule_filters,
     )
+    # B9.2-6：本轮对话落库（问句 + 理解卡快照），历史列表/恢复可查
+    ask_conversations.append_turn(db, conv, question, card)
     return card
 
 
@@ -669,11 +677,13 @@ def execute_card(
     order_by: str = "value",
     order: str = "desc",
     top_n: int | None = None,
+    conversation_id: int | None = None,
 ) -> dict:
     """理解卡确认后执行。与看板完全同一计算出口（query.service），权限同源。
 
     B9.2-2：带 dimension 时走拆解出口（compute_metric_breakdown），
     否则单值出口（compute_metric_value）——两者共用同一编译器与缓存纪律。
+    B9.2-6：conversation_id 非空时把结果快照回写会话最新一轮（历史恢复可看当时真值）。
     """
     from app.domain.query import service as query_service
 
@@ -684,12 +694,30 @@ def execute_card(
             order_by=order_by, order=order, top_n=top_n, user=user,
         )
         data["kind"] = "breakdown"
+        _persist_results(db, user, conversation_id, data)
         return data
     data = query_service.compute_metric_value(
         db, metric_ref=metric, start=start, end=end, compare=compare, user=user
     )
     data["kind"] = "value"
+    _persist_results(db, user, conversation_id, data)
     return data
+
+
+def _persist_results(db: Session, user, conversation_id: int | None, data: dict) -> None:
+    """结果快照回写会话（B9.2-6）：失败不阻塞计算返回（留档尽力而为）。
+
+    存储形态与前端渲染约定一致：[{label, data}]。
+    """
+    if conversation_id is None:
+        return
+    try:
+        from app.domain.ask import conversations as ask_conversations
+
+        snapshot = [{"label": data.get("name") or "", "data": data}]
+        ask_conversations.attach_results(db, user, conversation_id, snapshot)
+    except Exception:  # noqa: BLE001 - 留档失败不影响计算结果返回
+        logger.warning("问数结果回写会话失败: conversation_id=%s", conversation_id, exc_info=True)
 
 
 # ---------------------------------------------------------------- 空态推荐问题（B9.2-3）

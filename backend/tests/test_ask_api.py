@@ -130,10 +130,10 @@ def _assert_card(card: dict, exp: dict) -> bool:
     return ok
 
 
-def _ask_card(client, question: str, session_id: str | None = None):
+def _ask_card(client, question: str, conversation_id: int | None = None):
     body = {"question": question}
-    if session_id:
-        body["session_id"] = session_id
+    if conversation_id:
+        body["conversation_id"] = conversation_id
     return client.post("/api/query/ask", json=body).json()["data"]
 
 
@@ -166,7 +166,7 @@ def test_ask_testset_regression(client, ask_env):
         if not ok:
             failed.append(f"{case['id']}: got {json.dumps(card, ensure_ascii=False)[:200]}")
         for fi, fu in enumerate(case.get("followups") or []):
-            fu_card = _ask_card(client, fu["question"], card.get("session_id"))
+            fu_card = _ask_card(client, fu["question"], card.get("conversation_id"))
             if not _assert_card(fu_card, fu["expect"]):
                 failed.append(
                     f"{case['id']}#followup{fi} ({fu['question']}): "
@@ -306,8 +306,8 @@ def test_help_mode_reply_without_numbers(client, ask_env):
 def test_followup_inherits_metric_and_time(client, ask_env):
     """追问「那上个月呢」：继承指标与对比方式，时间按新词重算。"""
     first = _ask(client, "2026年1月销售额")
-    assert first["session_id"]
-    fu = _ask_card(client, "那上个月呢", first["session_id"])
+    assert first["conversation_id"]
+    fu = _ask_card(client, "那上个月呢", first["conversation_id"])
     assert fu["inherited"] is True
     assert fu["metric"]["code"] == METRIC_CODE
     s, e = _relative_range("prev_month", date.today())
@@ -318,36 +318,103 @@ def test_followup_inherits_dimension(client, ask_env):
     """追问继承拆解维度：「按status拆解2026年1月销售额」→「那上个月呢」。"""
     first = _ask(client, "按status拆解2026年1月销售额")
     assert first["dimension"] == "status"
-    fu = _ask_card(client, "那上个月呢", first["session_id"])
+    fu = _ask_card(client, "那上个月呢", first["conversation_id"])
     assert fu["inherited"] is True
     assert fu["dimension"] == "status"
     s, e = _relative_range("prev_month", date.today())
     assert fu["start"] == s and fu["end"] == e
 
 
-def test_followup_bogus_session_degrades_to_first_turn(client, ask_env):
-    """伪造/过期 session_id：降级为首问——无指标匹配走逃生舱，绝不继承。"""
-    card = _ask_card(client, "那上个月呢", "bogus-session-id")
-    assert card["mode"] == "help"
-    assert card["inherited"] is False
+def test_followup_bogus_conversation_rejected(client, ask_env):
+    """伪造 conversation_id（不存在/他人会话）：明确报「会话不存在」，绝不降级继承。"""
+    r = client.post("/api/query/ask", json={"question": "那上个月呢", "conversation_id": 999999})
+    assert r.json()["code"] != 0
+    assert "会话不存在" in r.json()["message"]
+
+
+def test_conversation_persistence_lifecycle(client, ask_env):
+    """B9.2-6 会话持久化：首问自动建会话 → 落库 → 列表可见 → 恢复消息 → 执行回写结果快照。"""
+    card = _ask(client, "2026年1月销售额按status拆解")
+    conv_id = card["conversation_id"]
+    assert conv_id
+
+    # 列表可见且标题取首问前缀
+    convs = client.get("/api/query/ask/conversations").json()["data"]
+    target = next(c for c in convs if c["id"] == conv_id)
+    assert target["title"].startswith("2026年1月销售额")
+
+    # 执行 → 结果快照回写最新 assistant 消息
+    exec_resp = client.post(
+        "/api/query/ask/execute",
+        json={
+            "metric": METRIC_CODE, "start": "2026-01-01", "end": "2026-01-31",
+            "dimension": "status", "conversation_id": conv_id,
+        },
+    )
+    assert exec_resp.status_code == 200, exec_resp.text
+
+    # 恢复消息：user/assistant 成对，assistant 结果快照非空
+    msgs = client.get(f"/api/query/ask/conversations/{conv_id}/messages").json()["data"]
+    roles = [m["role"] for m in msgs]
+    assert roles == ["user", "assistant"]
+    assert msgs[0]["text"] == "2026年1月销售额按status拆解"
+    assert msgs[1]["readonly"] is True
+    assert isinstance(msgs[1]["results"], list) and len(msgs[1]["results"]) == 1
+    assert msgs[1]["results"][0]["data"]["kind"] == "breakdown"
+    assert "label" in msgs[1]["results"][0]
+    assert msgs[1]["card"]["metric"]["code"] == METRIC_CODE
+
+    # 删除 → 列表与消息均不可见（他人/不存在同报错）
+    assert client.delete(f"/api/query/ask/conversations/{conv_id}").json()["code"] == 0
+    assert all(c["id"] != conv_id for c in client.get("/api/query/ask/conversations").json()["data"])
+    r = client.get(f"/api/query/ask/conversations/{conv_id}/messages")
+    assert r.json()["code"] != 0
+
+
+def test_conversation_isolated_per_user(client, ask_env):
+    """会话按用户隔离：B 用户读/删 A 用户会话 → 「会话不存在」（不泄露存在性）。"""
+    from tests.conftest import create_test_user
+
+    card = _ask(client, "2026年1月销售额")
+    other = create_test_user(client, "ask_conv_other", role="analyst")
+    r1 = client.get(
+        f"/api/query/ask/conversations/{card['conversation_id']}/messages", headers=other
+    )
+    assert "会话不存在" in r1.json()["message"]
+    r2 = client.delete(
+        f"/api/query/ask/conversations/{card['conversation_id']}", headers=other
+    )
+    assert "会话不存在" in r2.json()["message"]
+    # 归属人仍可读
+    r3 = client.get(f"/api/query/ask/conversations/{card['conversation_id']}/messages")
+    assert r3.json()["code"] == 0
 
 
 def test_followup_with_metric_word_is_new_question(client, ask_env):
     """追问句含指标词面 → 按新问题解析（重置话题），不继承。"""
     first = _ask(client, "2026年1月销售额")
-    fu = _ask_card(client, "2026年2月营业额是多少", first["session_id"])
+    fu = _ask_card(client, "2026年2月营业额是多少", first["conversation_id"])
     assert fu["inherited"] is False
     assert fu["metric"]["code"] == METRIC_CODE
     assert fu["start"] == "2026-02-01" and fu["end"] == "2026-02-28"
 
 
 def test_followup_permission_rechecked_per_turn(client, ask_env):
-    """权限每轮重校验：admin 首问建立会话，受限用户携同一 session 追问 → 无权限（不泄露名称）。"""
+    """权限每轮重校验：viewer 首问建会话（指标未受限）→ 中途受限 → 追问继承时提示无权限。
+
+    跨用户直接续他人会话已被会话隔离拦截（见 test_conversation_isolated_per_user）。
+    """
     from tests.conftest import create_test_user
 
-    first = _ask(client, "2026年1月销售额")
-    metric_id = client.get("/api/metrics", params={"search": METRIC_CODE}).json()["data"][0]["id"]
     viewer = create_test_user(client, "ask_fu_viewer", role="viewer")
+    first = _ask_card(client, "2026年1月销售额")
+    # 用 viewer 身份重问一轮建立 viewer 自己的会话
+    first = client.post(
+        "/api/query/ask", json={"question": "2026年1月销售额"}, headers=viewer
+    ).json()["data"]
+    assert first["can_compute"] is True
+
+    metric_id = client.get("/api/metrics", params={"search": METRIC_CODE}).json()["data"][0]["id"]
     resp = client.put(
         f"/api/auth/metrics/{metric_id}/restrictions",
         json={"items": [{"subject_type": "role", "subject_value": "viewer"}]},
@@ -355,7 +422,7 @@ def test_followup_permission_rechecked_per_turn(client, ask_env):
     assert resp.status_code == 200, resp.text
 
     fu = client.post(
-        "/api/query/ask", json={"question": "那上个月呢", "session_id": first["session_id"]},
+        "/api/query/ask", json={"question": "那上个月呢", "conversation_id": first["conversation_id"]},
         headers=viewer,
     ).json()["data"]
     assert fu["can_compute"] is False

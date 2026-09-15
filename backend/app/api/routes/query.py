@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.api.deps import CurrentUser, DbDep
 from app.core.response import ok_response
+from app.domain.ask import conversations as ask_conversations
 from app.domain.ask import service as ask_service
 from app.domain.query import service
 
@@ -82,8 +83,8 @@ class AskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str
-    # B9.2-4 多轮追问：上一轮理解卡返回的 session_id；缺省=首问（后端生成新会话）
-    session_id: str | None = None
+    # B9.2-6 会话持久化：会话 id（首问缺省自动建会话，理解卡返回 id 供后续轮携带）
+    conversation_id: int | None = None
 
 
 class AskExecuteRequest(BaseModel):
@@ -104,6 +105,8 @@ class AskExecuteRequest(BaseModel):
     order_by: str = "value"
     order: str = "desc"
     top_n: int | None = None
+    # B9.2-6：非空时结果快照回写该会话最新一轮（历史恢复可看当时真值）
+    conversation_id: int | None = None
 
 
 class AskDimensionValuesRequest(BaseModel):
@@ -122,7 +125,28 @@ def ask(db: DbDep, body: AskRequest, user: CurrentUser):
     明确返回"算不了"原因，不现场拼装查询。
     B9.2-3：问句命中多个可见指标时附 multi_metrics 并列清单（前端可勾选同时计算）。
     """
-    return ok_response(ask_service.build_card(db, user, body.question, session_id=body.session_id))
+    return ok_response(
+        ask_service.build_card(db, user, body.question, conversation_id=body.conversation_id)
+    )
+
+
+@router.get("/ask/conversations")
+def list_ask_conversations(db: DbDep, user: CurrentUser):
+    """历史会话列表（B9.2-6）：当前用户最近 50 次对话，按最近使用排序。"""
+    return ok_response(ask_conversations.list_conversations(db, user))
+
+
+@router.get("/ask/conversations/{conversation_id}/messages")
+def ask_conversation_messages(conversation_id: int, db: DbDep, user: CurrentUser):
+    """恢复会话消息（B9.2-6）：问句 + 理解卡/结果快照按序返回（只读历史）。"""
+    return ok_response(ask_conversations.get_messages(db, user, conversation_id))
+
+
+@router.delete("/ask/conversations/{conversation_id}")
+def ask_conversation_delete(conversation_id: int, db: DbDep, user: CurrentUser):
+    """删除会话及消息（B9.2-6）：仅会话归属人可删。"""
+    ask_conversations.delete_conversation(db, user, conversation_id)
+    return ok_response({"deleted": conversation_id})
 
 
 @router.get("/ask/suggestions")
@@ -150,6 +174,7 @@ def ask_execute(db: DbDep, body: AskExecuteRequest, user: CurrentUser):
         order_by=body.order_by,
         order=body.order,
         top_n=body.top_n,
+        conversation_id=body.conversation_id,
     )
     return ok_response(data)
 

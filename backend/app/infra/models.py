@@ -208,3 +208,40 @@ class LlmModel(Base):
     remark: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
+
+
+# ---------------------------------------------------------------- 问数会话持久化（B9.2-6）
+
+
+class AskConversation(Base):
+    """问数会话（B9.2-6）：一次多轮对话 = 一条会话；标题取首问前缀。
+
+    意图继承（追问）仍走内存 session（TTL 30 分钟），本表只持久化
+    消息记录（问句 + 理解卡快照 + 结果快照）供历史查看与恢复续聊。
+    """
+
+    __tablename__ = "ask_conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(60), default="")   # 首问前 24 字
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
+
+
+class AskMessage(Base):
+    """问数消息（B9.2-6）：user 存问句原文；assistant 存理解卡/结果快照 JSON。
+
+    结果快照是历史留档（当时算出的真实值），恢复查看不重算——续聊后的
+    新一轮仍由 compute 单点出口现算，红线不变。
+    """
+
+    __tablename__ = "ask_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("ask_conversations.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20))                     # user / assistant
+    question: Mapped[str] = mapped_column(Text, default="")           # 该轮问句原文
+    card_json: Mapped[str] = mapped_column(Text, default="{}")        # assistant：理解卡快照
+    results_json: Mapped[str] = mapped_column(Text, default="[]")     # assistant：结果数组 [{label,data}]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
