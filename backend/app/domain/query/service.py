@@ -26,8 +26,14 @@ from sqlalchemy.orm import Session
 
 from app.core.response import BusinessError
 from app.domain.ingestion.service import view_target
-from app.domain.metric.compiler import CompiledQuery, compile_metric
-from app.domain.metric.schema import CalcRuleError
+from app.domain.metric.compiler import (
+    CompiledBreakdown,
+    CompiledQuery,
+    compile_metric,
+    compile_metric_breakdown,
+)
+from app.domain.metric.compiler import _q as _quote_ident
+from app.domain.metric.schema import CalcRuleError, FilterCondition
 from app.infra.cache import metric_cache
 from app.infra.duckdb_session import duckdb_views
 from app.infra.models import Dataset, Metric, User
@@ -369,3 +375,316 @@ def export_metric_csv(
     csv_text = "\ufeff" + "\n".join(lines) + "\n"
     filename = f"{metric.code}_{start}_{end}.csv"
     return csv_text, filename
+
+
+# ---------------------------------------------------------------- 维度拆解（B9.2-1）
+
+VALID_ORDER_BY = ("value", "change_abs", "change_pct")
+VALID_ORDER = ("asc", "desc")
+VALID_BREAKDOWN_FILTER_OPS = ("<=", ">=", "!=", "=", ">", "<", "is_null", "is_not_null")
+DEFAULT_BREAKDOWN_TOP_N = 10
+MAX_BREAKDOWN_TOP_N = 50
+MAX_BREAKDOWN_ROWS = 2000        # SQL 端拉回上限：防高基数列把结果集拖爆
+LOW_CARDINALITY_THRESHOLD = 50   # 候选维度列「低基数」判定线（前端展示用）
+
+
+def _parse_breakdown_filters(raw) -> list[FilterCondition]:
+    """请求级拆解过滤解析：[{column, op, value}]。op 白名单与口径 filter 文法
+    一致；列越纲（不在数据集/无显式关系）由编译器按 operand 逐个判定（400）。"""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise BusinessError("filters 必须是数组", 40000)
+    conds: list[FilterCondition] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict) or not str(item.get("column") or "").strip():
+            raise BusinessError(f"filters[{i}] 必须是含 column 的对象", 40000)
+        column = str(item["column"]).strip()
+        op = item.get("op")
+        if op not in VALID_BREAKDOWN_FILTER_OPS:
+            raise BusinessError(
+                f"filters[{i}].op 仅支持 {' / '.join(VALID_BREAKDOWN_FILTER_OPS)}，收到 {op!r}",
+                40000,
+            )
+        if op in ("is_null", "is_not_null"):
+            conds.append(FilterCondition(column=column, op=op))
+            continue
+        if "value" not in item or item["value"] is None:
+            raise BusinessError(f"filters[{i}]（{column}）缺少比较值 value", 40000)
+        conds.append(FilterCondition(column=column, op=op, literal=item["value"]))
+    return conds
+
+
+def _compile_breakdown(
+    db: Session, metric: Metric, dimension: str, extra_filters: list[FilterCondition]
+) -> CompiledBreakdown:
+    try:
+        return compile_metric_breakdown(
+            json.loads(metric.calc_rule_json),
+            _load_datasets_for_query(db),
+            load_relations(db),
+            dimension,
+            extra_filters=extra_filters,
+        )
+    except (CalcRuleError, ValueError) as exc:
+        # CalcRuleError 是 ValueError 子类，统一给出 400 可行动报错
+        raise BusinessError(f"指标 {metric.code} 拆解编译失败：{exc}", 40000) from exc
+
+
+def _breakdown_cache_key(
+    metric: Metric,
+    compiled: CompiledBreakdown,
+    runtime: dict,
+    start: date,
+    end: date,
+    cov_start: date | None,
+    cov_end: date | None,
+    compare: str,
+    filters: list[FilterCondition],
+) -> str:
+    dataset_vers = ",".join(f"{n}:{runtime[n]['ver']}" for n in sorted(runtime))
+    sql_digest = hashlib.sha1(compiled.sql.encode("utf-8")).hexdigest()[:12]
+    filt_json = json.dumps(
+        [{"column": c.column, "op": c.op, "literal": c.literal} for c in filters],
+        ensure_ascii=False, sort_keys=True,
+    )
+    filt_digest = hashlib.sha1(filt_json.encode("utf-8")).hexdigest()[:12]
+    cov_tag = f"{cov_start.isoformat()}~{cov_end.isoformat()}" if cov_start and cov_end else "nocov"
+    # compare 必须参与键：缓存内容含基期组值，none/mom/yoy 三种请求互不串值
+    return metric_cache.make_key(
+        "brkdwn", metric.id, metric.ver, dataset_vers,
+        start.isoformat(), end.isoformat(), sql_digest, compare, filt_digest, cov_tag,
+    )
+
+
+def _exec_breakdown(
+    db: Session, compiled: CompiledBreakdown, runtime: dict, start: date, end: date
+) -> dict[str, object]:
+    """执行拆解 SQL → {维度值(str): 组值}。SQL 端 LIMIT 防高基数拖爆内存。"""
+    views = {name: view_target(info["parquet_path"]) for name, info in runtime.items()}
+    params: dict = {} if compiled.is_constant else {"__start__": start, "__end__": end}
+    with duckdb_views(views) as con:
+        rows = con.execute(compiled.sql + f" LIMIT {MAX_BREAKDOWN_ROWS}", params).fetchall()
+    # 统一列序：dimension, value（flat 与 expression 两种形态均如此）
+    return {str(r[0]): _coerce_value(r[1]) for r in rows}
+
+
+def compute_metric_breakdown(
+    db: Session,
+    *,
+    metric_ref,
+    start: str,
+    end: str,
+    compare: str = "none",
+    dimension: str,
+    filters: list | None = None,
+    order_by: str = "value",
+    order: str = "desc",
+    top_n: int | None = None,
+    user: User,
+) -> dict:
+    """维度拆解计算（B9.2-1）：按维度列分组聚合 + 请求级过滤 + 排序 + TopN。
+
+    - 与 metric-value 完全同源：同一编译器/权限判定/周期完整性契约 v2/缓存失效机制；
+    - 比率类指标按组重算分子分母（编译器 expression 形态天然保证，禁止对率求平均）；
+    - compare 的组内环比/同比 = 该组基期值对比（基期区间与单值口径一致，
+      不完整周期同样按「有效数据窗口」对齐）；全期常数指标 compare=null；
+    - 排序字段 value / change_abs / change_pct；空值组恒排末尾（与方向无关）。
+    """
+    if compare not in VALID_COMPARE:
+        raise BusinessError(f"compare 只支持 {' / '.join(VALID_COMPARE)}，收到 {compare!r}", 40000)
+    if order_by not in VALID_ORDER_BY:
+        raise BusinessError(f"order_by 只支持 {' / '.join(VALID_ORDER_BY)}，收到 {order_by!r}", 40000)
+    if order not in VALID_ORDER:
+        raise BusinessError(f"order 只支持 {' / '.join(VALID_ORDER)}，收到 {order!r}", 40000)
+    if top_n is None:
+        top_n = DEFAULT_BREAKDOWN_TOP_N
+    if not isinstance(top_n, int) or not 1 <= top_n <= MAX_BREAKDOWN_TOP_N:
+        raise BusinessError(f"top_n 须在 1~{MAX_BREAKDOWN_TOP_N} 之间", 40000)
+    if not isinstance(dimension, str) or not dimension.strip():
+        raise BusinessError("dimension（拆解维度列）必填", 40000)
+    dimension = dimension.strip()
+    conds = _parse_breakdown_filters(filters)
+
+    start_d, end_d = parse_range(start, end)
+    metric = _resolve_metric(db, metric_ref)
+    _ensure_visible(db, user, metric)
+    compiled = _compile_breakdown(db, metric, dimension, conds)
+    runtime = _dataset_runtime(db, compiled)
+    is_constant = compiled.is_constant
+
+    cov_start, cov_end = compiled.coverage_start, compiled.coverage_end
+    if not is_constant and (
+        cov_start is None or cov_end is None or start_d > cov_end or end_d < cov_start
+    ):
+        return {
+            "metric_id": metric.id, "metric_code": metric.code, "name": metric.name,
+            "ver": metric.ver, "dimension": dimension, "start": start_d.isoformat(),
+            "end": end_d.isoformat(), "constant": False, "coverage": {"start": None, "end": None},
+            "rows": [], "total_groups": 0, "period_complete": False, "data_through": None,
+            "compare": None, "order_by": order_by, "order": order, "top_n": top_n,
+            "cache": "bypass",
+        }
+
+    key = _breakdown_cache_key(metric, compiled, runtime, start_d, end_d, cov_start, cov_end, compare, conds)
+    cached = metric_cache.get(key)
+    if cached is not None:
+        payload = _build_breakdown_payload(
+            metric, dimension, start_d, end_d, compiled, order_by, order, top_n,
+            cached["current"], cached["prev_map"], cached["prev_meta"],
+            cached["period_complete"], cached["data_through"],
+        )
+        payload["cache"] = "hit"
+        return payload
+
+    current: dict[str, object] = _exec_breakdown(db, compiled, runtime, start_d, end_d)
+    period_complete = True if is_constant else (start_d >= cov_start and end_d <= cov_end)
+    data_through = None if is_constant else min(end_d, cov_end).isoformat()
+
+    prev_map: dict[str, object] | None = None
+    prev_meta: dict | None = None
+    if compare != "none" and not is_constant:
+        eff_end_d = end_d
+        if not period_complete and data_through:
+            eff_end_d = date.fromisoformat(data_through)
+        prev_start, prev_end = _previous_range(start_d, eff_end_d, compare)
+        prev_map = _exec_breakdown(db, compiled, runtime, prev_start, prev_end)
+        prev_meta = {
+            "type": compare,
+            "start": prev_start.isoformat(),
+            "end": prev_end.isoformat(),
+            "period_complete": prev_start >= cov_start and prev_end <= cov_end,
+            "data_through": min(prev_end, cov_end).isoformat(),
+        }
+
+    metric_cache.put(key, {
+        "current": current, "prev_map": prev_map, "prev_meta": prev_meta,
+        "period_complete": period_complete, "data_through": data_through,
+    })
+    payload = _build_breakdown_payload(
+        metric, dimension, start_d, end_d, compiled, order_by, order, top_n,
+        current, prev_map, prev_meta, period_complete, data_through,
+    )
+    payload["cache"] = "miss"
+    return payload
+
+
+def _build_breakdown_payload(
+    metric: Metric,
+    dimension: str,
+    start_d: date,
+    end_d: date,
+    compiled: CompiledBreakdown,
+    order_by: str,
+    order: str,
+    top_n: int,
+    current: dict[str, object],
+    prev_map: dict[str, object] | None,
+    prev_meta: dict | None,
+    period_complete: bool,
+    data_through: str | None,
+) -> dict:
+    """组内对比计算 + 排序 + TopN（缓存命中路径同样走这里，纯内存计算）。"""
+    rows = []
+    for dim, value in current.items():
+        prev_value = prev_map.get(dim) if prev_map is not None else None
+        if value is None or prev_value is None:
+            change_abs = None
+        else:
+            change_abs = round(value - prev_value, 6)
+        rows.append({
+            "dimension": dim,
+            "value": value,
+            "prev_value": prev_value,
+            "change_abs": change_abs,
+            "change_pct": _change_pct(value, prev_value),
+        })
+    total_groups = len(rows)
+    # 空值组恒排末尾（与方向无关），其余按所选字段升/降序
+    nonnull = [r for r in rows if r[order_by] is not None]
+    nulls = [r for r in rows if r[order_by] is None]
+    nonnull.sort(key=lambda r: r[order_by], reverse=(order == "desc"))
+    rows = (nonnull + nulls)[:top_n]
+    return {
+        "metric_id": metric.id,
+        "metric_code": metric.code,
+        "name": metric.name,
+        "ver": metric.ver,
+        "dimension": dimension,
+        "start": start_d.isoformat(),
+        "end": end_d.isoformat(),
+        "constant": compiled.is_constant,
+        "coverage": {
+            "start": compiled.coverage_start.isoformat() if compiled.coverage_start else None,
+            "end": compiled.coverage_end.isoformat() if compiled.coverage_end else None,
+        },
+        "period_complete": period_complete,
+        "data_through": data_through,
+        "compare": prev_meta,
+        "order_by": order_by,
+        "order": order,
+        "top_n": top_n,
+        "total_groups": total_groups,
+        "rows": rows,
+    }
+
+
+def list_breakdown_dimensions(db: Session, *, metric_ref, user: User) -> dict:
+    """候选拆解维度列（B9.2-1）：主数据集与一跳可达维度表的文本列（string/mixed），
+    类型驱动、行业无关；基数经 DuckDB 现算 COUNT(DISTINCT) 供前端判定「低基数」。"""
+    metric = _resolve_metric(db, metric_ref)
+    _ensure_visible(db, user, metric)
+    compiled = _compile_metric(db, metric)
+    # load_datasets 返回 {name: DatasetInfo}（编译器同款装载路径）
+    datasets = _load_datasets_for_query(db)
+    primary = datasets[compiled.primary_dataset]
+    relations = load_relations(db)
+
+    involved: dict[str, set[str]] = {primary.name: set()}
+    for col, typ in primary.columns.items():
+        if typ in ("string", "mixed"):
+            involved[primary.name].add(col)
+    for rel in relations:
+        if rel.from_dataset != primary.name:
+            continue
+        dim = datasets.get(rel.to_dataset)
+        if dim is None:
+            continue
+        cols = involved.setdefault(dim.name, set())
+        for col, typ in dim.columns.items():
+            if typ in ("string", "mixed"):
+                cols.add(col)
+
+    involved = {name: cols for name, cols in involved.items() if cols}
+    if not involved:
+        return {
+            "metric_id": metric.id, "metric_code": metric.code,
+            "primary_dataset": primary.name, "dimensions": [],
+        }
+
+    rows = db.query(Dataset).filter(Dataset.name.in_(involved)).all()
+    by_name = {r.name: r for r in rows}
+    views = {name: view_target(by_name[name].parquet_path) for name in involved if name in by_name}
+    out: list[dict] = []
+    with duckdb_views(views) as con:
+        for name, cols in involved.items():
+            if name not in by_name:
+                continue  # 关系指向的数据集已被删除：跳过该候选，不阻塞整表
+            ordered = sorted(cols)
+            sel = ", ".join(f"COUNT(DISTINCT {_quote_ident(c)})" for c in ordered)
+            counts = con.execute(f"SELECT {sel} FROM {_quote_ident(name)}").fetchone()
+            for col, cnt in zip(ordered, counts):
+                cnt = int(cnt or 0)
+                out.append({
+                    "dataset": name,
+                    "column": col,
+                    "distinct_count": cnt,
+                    "low_cardinality": cnt <= LOW_CARDINALITY_THRESHOLD,
+                })
+    out.sort(key=lambda d: (d["dataset"] != primary.name, d["distinct_count"], d["column"]))
+    return {
+        "metric_id": metric.id,
+        "metric_code": metric.code,
+        "primary_dataset": primary.name,
+        "dimensions": out,
+    }

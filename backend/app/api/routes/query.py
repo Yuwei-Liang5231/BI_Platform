@@ -118,3 +118,62 @@ def ask_execute(db: DbDep, body: AskExecuteRequest, user: CurrentUser):
         compare=body.compare,
     )
     return ok_response(data)
+
+
+# ---------------------------------------------------------------- 维度拆解（B9.2-1）
+
+
+class BreakdownFilterItem(BaseModel):
+    """请求级拆解过滤：op 白名单与口径 filter 文法一致（越纲由编译器判定 400）。"""
+
+    column: str
+    op: str
+    value: str | int | float | bool | None = None
+
+
+class BreakdownRequest(BaseModel):
+    """维度拆解请求：dimension 为列名（主表直取或经显式表关系一跳解析）。"""
+
+    metric: str | int
+    start: str
+    end: str
+    compare: str = "none"
+    dimension: str
+    filters: list[BreakdownFilterItem] = []
+    order_by: str = "value"   # value / change_abs / change_pct
+    order: str = "desc"       # asc / desc（空值组恒排末尾）
+    top_n: int | None = None  # 缺省 10，上限 50
+
+
+class BreakdownDimensionsRequest(BaseModel):
+    metric: str | int
+
+
+@router.post("/breakdown")
+def breakdown(db: DbDep, body: BreakdownRequest, user: CurrentUser):
+    """维度拆解计算（B9.2-1）。
+
+    与 metric-value 完全同源：同一编译器/权限/周期完整性契约/缓存失效机制。
+    比率类指标按组重算分子分母（编译器保证，禁止对率求平均）；加性指标的
+    各组值合计 ≈ 同口径单值（golden 测试守恒）。
+    """
+    return ok_response(service.compute_metric_breakdown(
+        db,
+        metric_ref=body.metric,
+        start=body.start,
+        end=body.end,
+        compare=body.compare,
+        dimension=body.dimension,
+        filters=[item.model_dump() for item in body.filters],
+        order_by=body.order_by,
+        order=body.order,
+        top_n=body.top_n,
+        user=user,
+    ))
+
+
+@router.post("/breakdown-dimensions")
+def breakdown_dimensions(db: DbDep, body: BreakdownDimensionsRequest, user: CurrentUser):
+    """候选拆解维度列：主数据集与一跳可达维度表的文本列 + 现算基数
+    （低基数判定线 50），供问数理解卡与前端下拉展示。"""
+    return ok_response(service.list_breakdown_dimensions(db, metric_ref=body.metric, user=user))

@@ -161,6 +161,50 @@ def _check_aggregation_type(operand: Operand, ds: DatasetInfo, context: str) -> 
             )
 
 
+def _resolve_condition_columns(
+    cond: FilterCondition,
+    ds: DatasetInfo,
+    datasets: dict[str, DatasetInfo],
+    relations: list[RelationInfo],
+    context: str,
+    joins: list[tuple[str, str, str]],
+    joined: set[str],
+    used_relations: list[dict],
+) -> str:
+    """单个过滤条件解析为全限定列引用；跨表列走显式一跳关系，必要时补 JOIN。
+    joined 为同一子查询内共享的已 JOIN 维度表集合（过滤列与拆解维度列共用，
+    防止同一维表被 JOIN 两次导致 SQL 表别名冲突）。"""
+    if cond.column in ds.columns:
+        return _condition_sql(f"{_q(ds.name)}.{_q(cond.column)}", cond)
+    # 一跳星型解析：本表(事实) → 维度表
+    candidates = [
+        r for r in relations
+        if r.from_dataset == ds.name
+        and r.to_dataset in datasets
+        and cond.column in datasets[r.to_dataset].columns
+    ]
+    if not candidates:
+        raise CompileError(
+            f"{context} 的过滤列 {cond.column!r} 不在数据集 {ds.name!r} 中，"
+            f"且找不到 {ds.name} → 维度表 的显式表关系。"
+            f"请先在数据集管理中登记表关系（编译器禁止隐式推断关联键）"
+        )
+    if len(candidates) > 1:
+        dup = ", ".join(sorted({r.to_dataset for r in candidates}))
+        raise CompileError(
+            f"{context} 的过滤列 {cond.column!r} 可通过多个表关系取得（{dup}），语义歧义，请拆分指标"
+        )
+    rel = candidates[0]
+    if rel.to_dataset not in joined:
+        joins.append((rel.to_dataset, rel.from_column, rel.to_column))
+        joined.add(rel.to_dataset)
+        used_relations.append(
+            {"from_dataset": rel.from_dataset, "from_column": rel.from_column,
+             "to_dataset": rel.to_dataset, "to_column": rel.to_column}
+        )
+    return _condition_sql(f"{_q(rel.to_dataset)}.{_q(cond.column)}", cond)
+
+
 def _resolve_filter_columns(
     operand: Operand,
     ds: DatasetInfo,
@@ -169,42 +213,16 @@ def _resolve_filter_columns(
     context: str,
     joins: list[tuple[str, str, str]],
     used_relations: list[dict],
+    joined: set[str] | None = None,
 ) -> list[str]:
-    """把 filter 条件解析为全限定列引用；跨表列走显式一跳关系，必要时补 JOIN。"""
-    clauses: list[str] = []
-    joined: set[str] = set()
-    for cond in operand.filter:
-        if cond.column in ds.columns:
-            clauses.append(_condition_sql(f"{_q(ds.name)}.{_q(cond.column)}", cond))
-            continue
-        # 一跳星型解析：本表(事实) → 维度表
-        candidates = [
-            r for r in relations
-            if r.from_dataset == ds.name
-            and r.to_dataset in datasets
-            and cond.column in datasets[r.to_dataset].columns
-        ]
-        if not candidates:
-            raise CompileError(
-                f"{context} 的过滤列 {cond.column!r} 不在数据集 {ds.name!r} 中，"
-                f"且找不到 {ds.name} → 维度表 的显式表关系。"
-                f"请先在数据集管理中登记表关系（编译器禁止隐式推断关联键）"
-            )
-        if len(candidates) > 1:
-            dup = ", ".join(sorted({r.to_dataset for r in candidates}))
-            raise CompileError(
-                f"{context} 的过滤列 {cond.column!r} 可通过多个表关系取得（{dup}），语义歧义，请拆分指标"
-            )
-        rel = candidates[0]
-        if rel.to_dataset not in joined:
-            joins.append((rel.to_dataset, rel.from_column, rel.to_column))
-            joined.add(rel.to_dataset)
-            used_relations.append(
-                {"from_dataset": rel.from_dataset, "from_column": rel.from_column,
-                 "to_dataset": rel.to_dataset, "to_column": rel.to_column}
-            )
-        clauses.append(_condition_sql(f"{_q(rel.to_dataset)}.{_q(cond.column)}", cond))
-    return clauses
+    """把 filter 条件解析为全限定列引用；跨表列走显式一跳关系，必要时补 JOIN。
+    joined 传入时与调用方共享（拆解子查询中维度列 JOIN 与过滤 JOIN 共用去重）。"""
+    if joined is None:
+        joined = set()
+    return [
+        _resolve_condition_columns(cond, ds, datasets, relations, context, joins, joined, used_relations)
+        for cond in operand.filter
+    ]
 
 
 def _resolve_time_field(
@@ -435,6 +453,251 @@ def compile_metric(
     )
 
 
+# ---------------------------------------------------------------- 拆解编译（B9.2-1）
+
+
+@dataclass
+class CompiledBreakdown:
+    """拆解编译产物：每组一行 (dimension, value)，供维度拆解计算出口消费。
+
+    与 CompiledQuery 同源（同一 parse/operand 解析/时间对齐/关系解析），
+    仅把"整表聚合"换成"按维度列分组聚合"。比率类指标外层按组组合
+    操作数值——每组 = 该组分子/该组分母（禁止对"率"求平均）。
+    """
+
+    sql: str
+    primary_dataset: str
+    primary_dataset_id: int
+    dataset_names: list[str]
+    time_fields: dict[str, str]
+    coverage_start: date | None
+    coverage_end: date | None
+    dimension_column: str
+    used_relations: list[dict] = field(default_factory=list)
+
+    @property
+    def is_constant(self) -> bool:
+        return not self.time_fields
+
+
+def _resolve_dimension_ref(
+    ds: DatasetInfo,
+    datasets: dict[str, DatasetInfo],
+    relations: list[RelationInfo],
+    dimension_column: str,
+    context: str,
+    joins: list[tuple[str, str, str]],
+    joined: set[str],
+    used_relations: list[dict],
+) -> str:
+    """拆解维度列解析：本表文本列直取；否则查「本表 → 维度表」一跳关系
+    （显式注册），必要时补 JOIN（与过滤 JOIN 共享 joined 去重）。
+    多路径命中即歧义拒绝；找不到给出可行动提示。"""
+    if dimension_column in ds.columns:
+        return f"{_q(ds.name)}.{_q(dimension_column)}"
+    candidates = [
+        r for r in relations
+        if r.from_dataset == ds.name
+        and r.to_dataset in datasets
+        and dimension_column in datasets[r.to_dataset].columns
+    ]
+    if not candidates:
+        raise CompileError(
+            f"{context} 的拆解维度列 {dimension_column!r} 不在数据集 {ds.name!r} 中，"
+            f"且找不到 {ds.name} → 维度表 的显式表关系。"
+            f"请先在数据集管理中登记表关系，或改用本表文本列作为维度"
+        )
+    if len(candidates) > 1:
+        dup = ", ".join(sorted({r.to_dataset for r in candidates}))
+        raise CompileError(
+            f"{context} 的拆解维度列 {dimension_column!r} 可通过多个表关系取得（{dup}），语义歧义"
+        )
+    rel = candidates[0]
+    if rel.to_dataset not in joined:
+        joins.append((rel.to_dataset, rel.from_column, rel.to_column))
+        joined.add(rel.to_dataset)
+        used_relations.append(
+            {"from_dataset": rel.from_dataset, "from_column": rel.from_column,
+             "to_dataset": rel.to_dataset, "to_column": rel.to_column}
+        )
+    return f"{_q(rel.to_dataset)}.{_q(dimension_column)}"
+
+
+def _operand_group_subquery(
+    operand: Operand,
+    datasets: dict[str, DatasetInfo],
+    relations: list[RelationInfo],
+    rule_time_field: str | None,
+    dimension_column: str,
+    extra_filters: list[FilterCondition],
+    context: str,
+    used_relations: list[dict],
+    force_no_time: bool = False,
+) -> tuple[str, str, str | None, tuple[date, date] | None, list[str]]:
+    """分组版 operand 子查询：SELECT <维度> AS dimension, <聚合> AS value
+    ... GROUP BY 维度。请求级过滤（extra_filters）与口径过滤同栈生效，且
+    必须能被本 operand 的数据集解析（解析不了 → 拒绝，防止比率分子分母
+    过滤口径漂移）。返回 (sql, dataset_name, time_field, coverage, joined_names)。"""
+    ds = _require_dataset(datasets, operand.table, context)
+    column = _require_column(ds, operand.column, context, required=operand.aggregation != "count")
+    _check_aggregation_type(operand, ds, context)
+
+    joins: list[tuple[str, str, str]] = []
+    joined: set[str] = set()
+    where_clauses = _resolve_filter_columns(
+        operand, ds, datasets, relations, context, joins, used_relations, joined
+    )
+    for cond in extra_filters:
+        where_clauses.append(
+            _resolve_condition_columns(
+                cond, ds, datasets, relations, context, joins, joined, used_relations
+            )
+        )
+
+    dim_ref = _resolve_dimension_ref(
+        ds, datasets, relations, dimension_column, context, joins, joined, used_relations
+    )
+
+    cov: tuple[date, date] | None = None
+    if force_no_time or operand.no_time:
+        time_field = None
+    else:
+        explicit = operand.time_field or (
+            rule_time_field if rule_time_field in ds.columns else None
+        )
+        time_field = _resolve_time_field(ds, explicit, context)
+    if time_field is not None:
+        start, end = ds.coverage[time_field]
+        cov = (start, end)
+        # 半开区间（B7-fix6 契约）：与 _operand_subquery 完全一致
+        where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} >= $__start__")
+        where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} < ($__end__ + INTERVAL 1 DAY)")
+
+    join_sql = "".join(
+        f" JOIN {_q(dim)} ON {_join_on_sql(ds, datasets, fk, dim, pk)}"
+        for dim, fk, pk in joins
+    )
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    sql = (
+        f"SELECT {dim_ref} AS dimension, "
+        f"{_agg_sql(operand, f'{_q(ds.name)}.{_q(column)}' if column else None)} AS value "
+        f"FROM {_q(ds.name)}{join_sql} {where_sql} GROUP BY {dim_ref}"
+    )
+    return sql, ds.name, time_field, cov, [dim for dim, _, _ in joins]
+
+
+def compile_metric_breakdown(
+    calc_rule: dict,
+    datasets: dict[str, DatasetInfo],
+    relations: list[RelationInfo],
+    dimension_column: str,
+    time_field: str | None = None,
+    extra_filters: list[FilterCondition] | None = None,
+) -> CompiledBreakdown:
+    """编译维度拆解查询。与 compile_metric 同一受限文法与语义校验，差别仅在：
+    operand 子查询按维度列分组聚合；表达式形态外层按组组合操作数值
+    （比率 = 每组分子/分母，天然规避"对率求平均"）。结构错误抛
+    CalcRuleError，语义错误抛 CompileError。"""
+    if not isinstance(dimension_column, str) or not dimension_column.strip():
+        raise CalcRuleError("拆解维度列 dimension 必须是非空字符串")
+    dimension_column = dimension_column.strip()
+    extra_filters = list(extra_filters or [])
+
+    calc = parse_calc_rule(calc_rule)
+    if time_field is not None and calc.time_field is not None:
+        raise CalcRuleError("time_field 在 calc_rule 内已指定，不要重复传入")
+    effective_time_field = calc.time_field or time_field
+    if calc.no_time:
+        offenders = (
+            [calc.source] if calc.mode == "flat" else list(calc.operands.values())
+        )
+        conflicting = [op for op in offenders if op.time_field]
+        if conflicting:
+            raise CalcRuleError(
+                "规则级 time_field 已置 null（全期常数，不按时间过滤），"
+                "与操作数级 time_field 冲突；请二选一"
+            )
+
+    used_relations: list[dict] = []
+    coverages: list[tuple[date, date]] = []
+    time_fields: dict[str, str] = {}
+    dataset_names: list[str] = []
+
+    def track(name: str, tf: str | None, cov: tuple[date, date] | None) -> None:
+        if name not in dataset_names:
+            dataset_names.append(name)
+        if tf is None:
+            return
+        prev = time_fields.get(name)
+        if prev is not None and prev != tf:
+            raise CompileError(
+                f"数据集 {name} 在同一指标中被要求使用两个时间字段（{prev} / {tf}），口径歧义"
+            )
+        time_fields[name] = tf
+        if cov is not None:
+            coverages.append(cov)
+
+    def track_joined(joined: list[str]) -> None:
+        for name in joined:
+            if name not in dataset_names:
+                dataset_names.append(name)
+
+    if calc.mode == "flat":
+        sql, ds_name, tf, cov, joined = _operand_group_subquery(
+            calc.source, datasets, relations, effective_time_field, dimension_column,
+            extra_filters, "source", used_relations, force_no_time=calc.no_time,
+        )
+        track(ds_name, tf, cov)
+        track_joined(joined)
+        final_sql = sql
+        primary = ds_name
+    else:
+        _validate_operand_names(calc, datasets)
+        ctes: list[str] = []
+        operand_sql: dict[str, str] = {}
+        first_name = next(iter(calc.operands))
+        for name, operand in calc.operands.items():
+            sub, ds_name, tf, cov, joined = _operand_group_subquery(
+                operand, datasets, relations, effective_time_field, dimension_column,
+                extra_filters, f"operands.{name}", used_relations,
+            )
+            track(ds_name, tf, cov)
+            track_joined(joined)
+            ctes.append(f"{_q(name)} AS ({sub})")
+            operand_sql[name] = f"{_q(name)}.value"
+        # 每组组合（NULL 安全连接：维度值为 NULL 的组也能正确配对）；
+        # 除法仍由 _render_expr 包 NULLIF——某组分母为 0 → 该组 value=null
+        null_safe_ons = " AND ".join(
+            f"{_q(first_name)}.dimension IS NOT DISTINCT FROM {_q(n)}.dimension"
+            for n in calc.operands
+            if n != first_name
+        )
+        final_sql = (
+            f"WITH {', '.join(ctes)} "
+            f"SELECT {_q(first_name)}.dimension AS dimension, "
+            f"{_render_expr(calc.expression, operand_sql)} AS value "
+            f"FROM {', '.join(_q(n) for n in calc.operands)}"
+            + (f" WHERE {null_safe_ons}" if null_safe_ons else "")
+        )
+        primary = next(iter(calc.operands.values())).table
+
+    primary_ds = datasets[primary]
+    coverage_start = min(c[0] for c in coverages) if coverages else None
+    coverage_end = max(c[1] for c in coverages) if coverages else None
+
+    return CompiledBreakdown(
+        sql=final_sql,
+        primary_dataset=primary,
+        primary_dataset_id=primary_ds.id,
+        dataset_names=dataset_names,
+        time_fields=time_fields,
+        coverage_start=coverage_start,
+        coverage_end=coverage_end,
+        dimension_column=dimension_column,
+        used_relations=used_relations,
+    )
+
+
 def calc_rule_signature(calc_rule: dict) -> str:
     """归一化签名校验辅助：去除空白差异，用于变更检测。"""
     import json
@@ -445,9 +708,11 @@ def calc_rule_signature(calc_rule: dict) -> str:
 __all__ = [
     "AGGREGATIONS",
     "CompileError",
+    "CompiledBreakdown",
     "CompiledQuery",
     "DatasetInfo",
     "RelationInfo",
     "calc_rule_signature",
     "compile_metric",
+    "compile_metric_breakdown",
 ]
