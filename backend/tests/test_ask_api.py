@@ -181,6 +181,15 @@ def test_fuzzy_stem_match_covers_colloquial_variant(client, ask_env):
     assert "近似" in approx["reason"]
 
 
+def test_dimension_value_semantic_match(client, ask_env):
+    """问句包含维度列真实取值（paid）且未指明拆解维度 → 自动按该列拆解并加筛选。"""
+    card = _ask(client, "paid的情况下2026年1月销售额是多少")
+    assert card["can_compute"] is True
+    assert card["dimension"] == "status"
+    assert card["filters"] == [{"column": "status", "op": "=", "value": "paid"}]
+    assert any(a["field"] == "dimension" and "拆解并筛选" in a["reason"] for a in card["ambiguous"])
+
+
 def test_parse_topn_chinese_numerals():
     """中文数字 TopN（用户实测 bug：说「前五」但显示条数默认 10）。"""
     from app.domain.ask.service import parse_topn_order

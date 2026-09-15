@@ -267,6 +267,7 @@ def _llm_intent(
         "\"order_by\": \"change_pct\", \"order\": \"asc\", \"top_n\": 5}\n"
         "metric_code 必须原样取自候选清单的 code，找不到填 null；"
         "禁止编造候选清单之外的指标、维度列或筛选值；用户问题与指标数据无关时不要硬套字段。"
+        "若问题提到某维度列的具体取值（如地区名、渠道名、状态词），dimension 填该列并在 filters 中加对应筛选（op=\"=\"）。"
     )
     user = (
         f"今天：{today.isoformat()}\n候选指标清单：\n{metric_list or '（无）'}\n"
@@ -576,6 +577,27 @@ def build_card(db: Session, user, question: str, conversation_id: int | None = N
             for k in ("order_by", "order", "top_n"):
                 if intent.get(k) is not None and k not in topn_intent:
                     topn_intent[k] = intent[k]
+
+    # 维度值语义匹配（2026-09-15 用户反馈：问句含「华南地区」却未选维度）：
+    # 未解析出拆解维度/筛选时，扫描维度列**真实取值**——问句包含某取值（长度≥2，
+    # 取最长命中）→ 自动按该列拆解并加筛选（值锚定真实数据，防幻觉红线不破）
+    if metric is not None and dimension is None and not rule_filters and dim_candidates:
+        vdim, vval = None, ""
+        for c in dim_candidates[:15]:
+            for v in (_dimension_values(c["column"]) or [])[:50]:
+                if isinstance(v, str) and len(v) >= 2 and v in question and len(v) > len(vval):
+                    vdim, vval = c["column"], v
+        if vdim:
+            dimension = vdim
+            rule_filters = [{"column": vdim, "op": "=", "value": vval}]
+            ambiguous.append(
+                {
+                    "field": "dimension",
+                    "options": [{"column": vdim, "is_default": True, "name": f"{vdim} = {vval}"}],
+                    "default": vdim,
+                    "reason": f"检测到问题中包含维度「{vdim}」的取值「{vval}」，已按 {vdim} 拆解并筛选；如不需要可在理解卡中取消",
+                }
+            )
 
     disambiguation_note = None
     if metric is not None:

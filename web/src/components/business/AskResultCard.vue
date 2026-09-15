@@ -71,18 +71,18 @@ function _downloadCsv(filename, header, rows) {
 function exportResult() {
   const d = props.data;
   if (isBreakdown.value) {
-    _downloadCsv(
-      `${displayName.value}-拆解-${d.start}~${d.end}`,
-      ["维度值", "当期值", "绝对变化", "变化率%", "查询区间", "基期区间"],
-      d.rows.map((r) => [
-        r.dimension,
-        r.value,
-        r.change_abs,
-        r.change_pct === null || r.change_pct === undefined ? "" : (r.change_pct / 100).toFixed(4),
-        `${d.start}~${d.end}`,
-        d.compare ? `${d.compare.start}~${d.compare.end}` : "",
-      ]),
-    );
+    // 导出列与表格渲染同源（breakdownCols 驱动）：后续新增列自动进 CSV
+    const header = ["维度值", ...breakdownCols.map((c) => c.label), "查询区间", "基期区间"];
+    const rows = d.rows.map((r) => {
+      const cells = breakdownCols.map((col) => {
+        const v = r[col.key];
+        if (col.key === "share") return v === null || v === undefined ? "" : v.toFixed(4);
+        if (col.key === "change_pct") return v === null || v === undefined ? "" : (v / 100).toFixed(4);
+        return v;
+      });
+      return [r.dimension, ...cells, `${d.start}~${d.end}`, d.compare ? `${d.compare.start}~${d.compare.end}` : ""];
+    });
+    _downloadCsv(`${displayName.value}-拆解-${d.start}~${d.end}`, header, rows);
     return;
   }
   _downloadCsv(
@@ -255,7 +255,7 @@ function exportResult() {
   line-height: 1.6;
 }
 
-/* 占比列：条形自适应剩余宽度，数值固定宽右对齐（不随列宽变化被截断） */
+/* 占比列：紧凑条形（固定 72px 上限，不再撑满整列）+ 固定宽数值 */
 .ask__share {
   display: flex;
   align-items: center;
@@ -265,8 +265,8 @@ function exportResult() {
 }
 
 .ask__share-track {
-  flex: 1;
-  min-width: 0;
+  flex: 0 1 72px;
+  min-width: 36px;
   height: 8px;
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.06);
