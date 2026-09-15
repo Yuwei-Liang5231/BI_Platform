@@ -283,3 +283,59 @@ def test_permission_inheritance(client, ask_env):
     # admin 不受影响
     admin_card = _ask(client, "2026年1月销售额")
     assert admin_card["can_compute"] is True
+
+
+# ---------------------------------------------------------------- 易用性三件套（B9.2-3）
+
+
+def test_alias_matching(client, ask_env):
+    """B9.2-3 ①：别名（GMV/营业额）与指标主名等价命中。"""
+    for alias in ("GMV", "营业额"):
+        card = _ask(client, f"2026年1月{alias}")
+        assert card["can_compute"] is True
+        assert card["metric"]["code"] == METRIC_CODE
+
+
+def test_multi_metric_parallel(client, ask_env):
+    """B9.2-3 ③：问句命中多个可见指标 → multi_metrics 并列清单 + 各指标独立执行。"""
+    resp = client.post("/api/metrics", json={
+        "code": "ask_profit",
+        "name": "问数毛利",
+        "aliases": ["毛利"],
+        "calc_rule": GMV_RULE,
+    })
+    assert resp.status_code == 200, resp.text
+
+    card = _ask(client, "2026年1月销售额和毛利")
+    assert card["can_compute"] is True
+    assert card["metric"]["code"] == METRIC_CODE  # 最具体命中为主指标
+    codes = {m["code"] for m in card["multi_metrics"]}
+    assert "ask_profit" in codes
+
+    # 并列指标独立走同一 execute 出口（口径同源）
+    data = client.post(
+        "/api/query/ask/execute",
+        json={"metric": "ask_profit", "start": "2026-01-01", "end": "2026-01-31", "compare": "none"},
+    ).json()["data"]
+    assert data["kind"] == "value"
+    assert data["value"] == pytest.approx(370.0)
+
+
+def test_ask_suggestions_visible_only(client, ask_env):
+    """B9.2-3 ②：空态推荐问题来自可见指标；受限指标不出现在受限用户建议中。"""
+    data = client.get("/api/query/ask/suggestions").json()["data"]
+    assert isinstance(data, list) and data
+    assert any("问数销售额" in s for s in data)
+    assert all(len(s) <= 60 for s in data)  # 模板句保持短句
+
+    from tests.conftest import create_test_user
+
+    viewer = create_test_user(client, "ask_sug_viewer", role="viewer")
+    metric_id = client.get("/api/metrics", params={"search": METRIC_CODE}).json()["data"][0]["id"]
+    resp = client.put(
+        f"/api/auth/metrics/{metric_id}/restrictions",
+        json={"items": [{"subject_type": "role", "subject_value": "viewer"}]},
+    )
+    assert resp.status_code == 200, resp.text
+    data_v = client.get("/api/query/ask/suggestions", headers=viewer).json()["data"]
+    assert all("问数销售额" not in s for s in data_v)  # 不泄露受限指标名称

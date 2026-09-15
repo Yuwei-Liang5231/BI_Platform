@@ -318,13 +318,13 @@ def build_card(db: Session, user, question: str) -> dict:
     if len(hits) == 1:
         metric = hits[0]
     elif len(hits) > 1:
-        metric = hits[0]  # 最具体匹配为默认，其余列为候选（理解卡可改）
+        metric = hits[0]  # 最具体匹配为默认主指标，其余可勾选「同时计算」（B9.2-3）
         ambiguous.append(
             {
                 "field": "metric",
                 "options": [{"code": m.code, "name": m.name} for m in hits[:5]],
                 "default": metric.code,
-                "reason": "问题命中多个指标，请确认要查询的指标",
+                "reason": "问题命中多个指标：已默认取最具体的一个，其余可在「同时计算」中勾选",
             }
         )
     elif restricted_hits:
@@ -464,6 +464,16 @@ def build_card(db: Session, user, question: str) -> dict:
         # LLM 降级原因（source=fallback 且已配置 LLM 时非空，供前端向用户解释）
         "source_note": source_note if (source == "fallback" and llm_cfg is not None) else None,
         "metric": ({"id": metric.id, "code": metric.code, "name": metric.name} if metric else None),
+        # B9.2-3 多指标并列：问句命中的其余可见指标（默认主指标之外，最多 2 个），
+        # 前端勾选后逐指标独立走 execute——数值仍全部由 compute 单点出口计算
+        "multi_metrics": (
+            [
+                {"code": m.code, "name": m.name}
+                for m in hits
+                if metric is not None and m.id != metric.id and m.code != metric.code
+            ][:2]
+            if metric is not None else []
+        ),
         "start": start.isoformat(),
         "end": end.isoformat(),
         "compare": compare,
@@ -541,3 +551,40 @@ def execute_card(
     )
     data["kind"] = "value"
     return data
+
+
+# ---------------------------------------------------------------- 空态推荐问题（B9.2-3）
+
+
+def build_suggestions(db: Session, user, limit: int = 5) -> list[str]:
+    """空态推荐问题：从登录用户可见的 active 指标自动生成示例问法。
+
+    行业无关：只用指标名 + 真实低基数维度列名拼模板（不硬编码任何业务词）；
+    权限同源（restricted_metric_ids）；维度候选获取失败仅少拆解示例，不阻塞。
+    """
+    hidden = restricted_metric_ids(db, user)
+    visible = [
+        m for m in db.query(Metric).filter(Metric.status == "active").all()
+        if m.id not in hidden
+    ]
+    if not visible:
+        return []
+    out: list[str] = []
+    for m in sorted(visible, key=lambda x: -x.id):  # 新建的指标排前面，建议随目录更新
+        name = m.name
+        out.append(f"上个月{name}是多少")
+        out.append(f"上个月{name}环比如何")
+        try:
+            from app.domain.query.service import list_breakdown_dimensions
+
+            dims = [
+                d for d in list_breakdown_dimensions(db, metric_ref=m.code, user=user)["dimensions"]
+                if d["low_cardinality"]
+            ]
+            if dims:
+                out.append(f"按{dims[0]['column']}拆解上个月{name}的环比")
+        except Exception:
+            pass  # 维度候选失败不阻塞推荐
+        if len(out) >= limit:
+            break
+    return out[:limit]

@@ -97,11 +97,13 @@ async function api(path, { method = "GET", token, body, form } = {}) {
   step("S1b 理解卡含时间区间控件", cardText.includes("时间区间"));
   step("S4 规则解析标注（LLM 未配置）", cardText.includes("规则解析") || cardText.includes("规则兜底"));
 
-  // S2 执行
+  // S2 执行（B9.2-3 多指标并列：结果可能有多张卡，主指标结果恒为第一张）
   await page.getByRole("button", { name: "确认计算" }).click();
   await page.waitForTimeout(2500);
-  const resultText = (await page.locator(".ask__result").innerText()).replace(/\s+/g, " ");
-  step("S2 结果卡 1,000 与区间/数据截至", resultText.includes("1,000"), resultText.slice(0, 100));
+  const resultCount = await page.locator(".ask__result").count();
+  step("S2b 并列结果卡数量与勾选一致（≥1）", resultCount >= 1, `count=${resultCount}`);
+  const resultText = (await page.locator(".ask__result").first().innerText()).replace(/\s+/g, " ");
+  step("S2 主指标结果卡 1,000 与区间/数据截至", resultText.includes("1,000"), resultText.slice(0, 100));
 
   // S3 逃生舱（B9.2-2）：解析不出可执行结构 → 纯对话引导卡
   await page.getByPlaceholder(/试着问/).fill("库存周转天数是多少");
@@ -119,7 +121,7 @@ async function api(path, { method = "GET", token, body, form } = {}) {
   step("S5a 理解卡含拆解维度区", cardText3.includes("拆解维度"), cardText3.slice(0, 120));
   await page.getByRole("button", { name: "确认计算" }).click();
   await page.waitForTimeout(2500);
-  const resultText2 = (await page.locator(".ask__result").innerText()).replace(/\s+/g, " ");
+  const resultText2 = (await page.locator(".ask__result").first().innerText()).replace(/\s+/g, " ");
   step("S5b 拆解表格 paid=1,000", resultText2.includes("拆解") && resultText2.includes("paid") && resultText2.includes("1,000"),
     resultText2.slice(0, 140));
 

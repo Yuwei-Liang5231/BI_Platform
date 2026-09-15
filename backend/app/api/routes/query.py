@@ -118,8 +118,15 @@ def ask(db: DbDep, body: AskRequest, user: CurrentUser):
     LLM 只产意图（在候选指标清单内选指标、解析时间），数值一律由指标中心
     统一计算；候选只含当前用户可见的 active 指标（权限继承）；无匹配指标时
     明确返回"算不了"原因，不现场拼装查询。
+    B9.2-3：问句命中多个可见指标时附 multi_metrics 并列清单（前端可勾选同时计算）。
     """
     return ok_response(ask_service.build_card(db, user, body.question))
+
+
+@router.get("/ask/suggestions")
+def ask_suggestions(db: DbDep, user: CurrentUser):
+    """空态推荐问题（B9.2-3）：登录用户可见指标自动生成的示例问法（≤5 条）。"""
+    return ok_response(ask_service.build_suggestions(db, user))
 
 
 @router.post("/ask/execute")

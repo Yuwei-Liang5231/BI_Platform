@@ -132,8 +132,14 @@ async function loadCards() {
       }
     }),
   );
-  if (seq === cardsSeq && !selectedId.value && visible.value.length) {
-    selectedId.value = visible.value[0].id;
+  if (seq === cardsSeq) {
+    if (!visible.value.length) {
+      selectedId.value = null;
+    } else if (!visible.value.some((m) => m.id === selectedId.value)) {
+      // 技术债清理（B7 登记）：选中指标已被删除（如在其他页面删除后回到看板），
+      // 残留的 selectedId 会让图表区永远消失且无法自动恢复——落回第一个指标
+      selectedId.value = visible.value[0].id;
+    }
   }
 }
 

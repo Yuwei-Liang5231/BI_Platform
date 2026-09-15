@@ -9,8 +9,12 @@ import request from "@/config/request";
  */
 export const metricValue = (data) => request.post("/query/metric-value", data);
 
-/** 问数（B9）：问句 → 理解卡（只解析意图，不产数值）。 */
+/** 问数（B9）：问句 → 理解卡（只解析意图，不产数值）。
+ *  B9.2-3：命中多个指标时返回 multi_metrics 并列清单。 */
 export const ask = (question) => request.post("/query/ask", { question });
+
+/** 空态推荐问题（B9.2-3）：可见指标自动生成的示例问法（≤5 条）。 */
+export const askSuggestions = () => request.get("/query/ask/suggestions");
 
 /** 理解卡确认后执行（与看板同一计算出口，口径同源）。
  *  B9.2-2：带 dimension 时走拆解出口（filters/order_by/order/top_n 生效）。 */

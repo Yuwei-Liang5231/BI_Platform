@@ -7,13 +7,14 @@
  * - 拆解结果表格（组值/基期/变化，点击表头切换排序）；单值结果卡
  * - 逃生舱（mode=help）：意图解析不出可执行结构时纯对话引导，绝不含数字
  */
-import { computed, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 
 import {
   ask as askApi,
   askExecute as askExecuteApi,
   askDimensionValues,
+  askSuggestions,
   metricValue,
 } from "@/api/query";
 import { formatMetricValue } from "@/utils/format";
@@ -26,8 +27,13 @@ const metricStore = useMetricStore();
 const question = ref("");
 const asking = ref(false);
 const card = ref(null);
-const result = ref(null);
+// B9.2-3：结果支持多指标并列——[{ label, data }]，data 与 ask/execute 返回同构
+const results = ref([]);
 const executing = ref(false);
+// 问句同时命中的其他指标勾选区（B9.2-3 多指标并列）
+const multiSelected = ref([]);
+// 空态推荐问题（B9.2-3）：后端按可见指标生成；接口失败时回落到静态示例
+const suggestions = ref([]);
 
 // 可编辑理解卡的本地状态（B9.2-2：拆解维度/筛选/排序/TopN 同样可改）
 const cardEdit = reactive({
@@ -71,11 +77,20 @@ const orderByOptions = [
 const dimValueOptions = reactive({});   // { column: [values] }
 const dimValueLoading = reactive({});   // { column: bool }
 
-const changePct = computed(() => {
-  const c = result.value?.compare;
+const changePctOf = (data) => {
+  const c = data?.compare;
   if (!c || c.change_pct === null || c.change_pct === undefined) return null;
   return c.change_pct;
-});
+};
+
+async function fetchSuggestions() {
+  try {
+    const res = await askSuggestions();
+    suggestions.value = Array.isArray(res) ? res : [];
+  } catch {
+    suggestions.value = [];
+  }
+}
 
 async function submit(questionOverride) {
   const q = (questionOverride ?? question.value).trim();
@@ -84,10 +99,12 @@ async function submit(questionOverride) {
     return;
   }
   asking.value = true;
-  result.value = null;
+  results.value = [];
   try {
     const res = await askApi(q);
     card.value = res;
+    // 多指标并列默认全选（问句本来就在问它们），用户可取消
+    multiSelected.value = (res.multi_metrics ?? []).map((m) => m.code);
     applyCard(res);
   } finally {
     asking.value = false;
@@ -173,7 +190,23 @@ async function execute() {
   }
   executing.value = true;
   try {
-    result.value = await askExecuteApi(buildPayload());
+    // 主指标走完整理解卡参数（含拆解）；并列指标只共享时间/对比方式，
+    // 逐指标独立调用同一 execute 出口——数值仍全部由后端单点计算
+    const jobs = [{ payload: buildPayload(), label: metricName.value }];
+    for (const m of card.value?.multi_metrics ?? []) {
+      if (!multiSelected.value.includes(m.code)) continue;
+      jobs.push({
+        payload: {
+          metric: m.code,
+          start: cardEdit.range[0],
+          end: cardEdit.range[1],
+          compare: cardEdit.compare,
+        },
+        label: m.name,
+      });
+    }
+    const datas = await Promise.all(jobs.map((j) => askExecuteApi(j.payload)));
+    results.value = jobs.map((j, i) => ({ label: j.label, data: datas[i] }));
   } finally {
     executing.value = false;
   }
@@ -183,13 +216,21 @@ async function execute() {
 async function recomputeWithDashboard() {
   // 校验当前卡与看板同口径（直接调用看板同一接口，数值应一致）
   if (!cardEdit.metricCode || cardEdit.dimension) return; // 拆解模式下与单值口径不同，不提供此按钮
-  const viaDash = await metricValue({
-    metric: cardEdit.metricCode,
-    start: cardEdit.range[0],
-    end: cardEdit.range[1],
-    compare: cardEdit.compare,
-  });
-  result.value = viaDash;
+  const targets = [
+    { code: cardEdit.metricCode, name: metricName.value },
+    ...(card.value?.multi_metrics ?? []).filter((m) => multiSelected.value.includes(m.code)),
+  ];
+  const datas = await Promise.all(
+    targets.map((t) =>
+      metricValue({
+        metric: t.code,
+        start: cardEdit.range[0],
+        end: cardEdit.range[1],
+        compare: cardEdit.compare,
+      }),
+    ),
+  );
+  results.value = targets.map((t, i) => ({ label: t.name, data: datas[i] }));
   ElMessage.success("已与看板同口径重算");
 }
 
@@ -205,7 +246,9 @@ const metricName = computed(() => {
   return metricOptions.value.find((m) => m.code === code)?.name ?? code;
 });
 
-const isBreakdown = computed(() => result.value?.kind === "breakdown");
+const isBreakdown = (data) => data?.kind === "breakdown";
+
+onMounted(fetchSuggestions);
 </script>
 
 <template>
@@ -244,6 +287,22 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
           @click="question = ex; submit(ex)"
         >
           {{ ex }}
+        </el-tag>
+      </div>
+    </section>
+
+    <!-- 空态推荐问题（B9.2-3）：按当前用户可见指标自动生成，点击即问 -->
+    <section v-if="!card && suggestions.length" class="pwc-card ask__card">
+      <h4>试试这样问</h4>
+      <div class="ask__examples">
+        <el-tag
+          v-for="s in suggestions"
+          :key="s"
+          class="ask__example"
+          effect="plain"
+          @click="question = s; submit(s)"
+        >
+          {{ s }}
         </el-tag>
       </div>
     </section>
@@ -363,6 +422,19 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
               />
             </el-select>
           </el-form-item>
+
+          <!-- B9.2-3 多指标并列：勾选后与主指标一并计算 -->
+          <el-form-item v-if="card.multi_metrics?.length" label="同时计算">
+            <div class="ask__multi">
+              <el-checkbox-group v-model="multiSelected">
+                <el-checkbox v-for="m in card.multi_metrics" :key="m.code" :value="m.code">
+                  {{ m.name }}（{{ m.code }}）
+                </el-checkbox>
+              </el-checkbox-group>
+              <span class="ask__hint">问句同时命中多个指标，勾选后一并出结果（各指标独立计算，口径同源）</span>
+            </div>
+          </el-form-item>
+
           <el-form-item label="时间区间">
             <el-date-picker
               v-model="cardEdit.range"
@@ -480,72 +552,75 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
       <el-alert v-else :title="card.no_metric_reason" type="warning" :closable="false" show-icon />
     </section>
 
-    <!-- 结果：拆解表格 -->
-    <section v-if="result && isBreakdown" class="pwc-card ask__result">
-      <div class="ask__result-head">
-        <span class="ask__result-metric">{{ result.name }} · 按「{{ result.dimension }}」拆解</span>
-        <span class="pwc-badge pwc-badge--grey">
-          {{ result.start }} ~ {{ result.end }}
-          <template v-if="!result.period_complete && result.data_through">
-            · 数据截至 {{ result.data_through }}
-          </template>
-          · 共 {{ result.total_groups }} 组，显示前 {{ result.rows.length }} 组
-        </span>
-      </div>
-      <el-table :data="result.rows" size="default" class="ask__table">
-        <el-table-column prop="dimension" label="维度值" min-width="140" />
-        <el-table-column
-          v-for="col in breakdownCols"
-          :key="col.key"
-          :prop="col.key"
-          :label="col.label"
-          min-width="130"
-          sortable
-        >
-          <template #default="{ row }">
-            <template v-if="col.key === 'value'">{{ formatMetricValue(row.value) }}</template>
-            <template v-else-if="col.key === 'change_abs'">
-              <span v-if="row.change_abs === null">—</span>
-              <span v-else :class="row.change_abs >= 0 ? 'up' : 'down'">
-                {{ row.change_abs >= 0 ? "+" : "" }}{{ formatMetricValue(row.change_abs) }}
-              </span>
+    <!-- 结果：多指标并列渲染（B9.2-3），每条与 ask/execute 返回同构 -->
+    <template v-for="(r, ri) in results" :key="ri">
+      <!-- 拆解表格 -->
+      <section v-if="isBreakdown(r.data)" class="pwc-card ask__result">
+        <div class="ask__result-head">
+          <span class="ask__result-metric">{{ r.data.name || r.label }} · 按「{{ r.data.dimension }}」拆解</span>
+          <span class="pwc-badge pwc-badge--grey">
+            {{ r.data.start }} ~ {{ r.data.end }}
+            <template v-if="!r.data.period_complete && r.data.data_through">
+              · 数据截至 {{ r.data.data_through }}
             </template>
-            <template v-else>
-              <span v-if="row.change_pct === null">—</span>
-              <span v-else :class="row.change_pct >= 0 ? 'up' : 'down'">
-                {{ row.change_pct >= 0 ? "↑" : "↓" }} {{ Math.abs(row.change_pct).toFixed(2) }}%
-              </span>
+            · 共 {{ r.data.total_groups }} 组，显示前 {{ r.data.rows.length }} 组
+          </span>
+        </div>
+        <el-table :data="r.data.rows" size="default" class="ask__table">
+          <el-table-column prop="dimension" label="维度值" min-width="140" />
+          <el-table-column
+            v-for="col in breakdownCols"
+            :key="col.key"
+            :prop="col.key"
+            :label="col.label"
+            min-width="130"
+            sortable
+          >
+            <template #default="{ row }">
+              <template v-if="col.key === 'value'">{{ formatMetricValue(row.value) }}</template>
+              <template v-else-if="col.key === 'change_abs'">
+                <span v-if="row.change_abs === null">—</span>
+                <span v-else :class="row.change_abs >= 0 ? 'up' : 'down'">
+                  {{ row.change_abs >= 0 ? "+" : "" }}{{ formatMetricValue(row.change_abs) }}
+                </span>
+              </template>
+              <template v-else>
+                <span v-if="row.change_pct === null">—</span>
+                <span v-else :class="row.change_pct >= 0 ? 'up' : 'down'">
+                  {{ row.change_pct >= 0 ? "↑" : "↓" }} {{ Math.abs(row.change_pct).toFixed(2) }}%
+                </span>
+              </template>
             </template>
-          </template>
-        </el-table-column>
-      </el-table>
-      <div v-if="result.compare" class="ask__hint">
-        基期：{{ result.compare.start }} ~ {{ result.compare.end }}
-        <template v-if="!result.compare.period_complete">（数据截至 {{ result.compare.data_through }}）</template>
-      </div>
-      <p v-else class="ask__hint">未启用对比或全期常数指标（无基期概念）</p>
-    </section>
+          </el-table-column>
+        </el-table>
+        <div v-if="r.data.compare" class="ask__hint">
+          基期：{{ r.data.compare.start }} ~ {{ r.data.compare.end }}
+          <template v-if="!r.data.compare.period_complete">（数据截至 {{ r.data.compare.data_through }}）</template>
+        </div>
+        <p v-else class="ask__hint">未启用对比或全期常数指标（无基期概念）</p>
+      </section>
 
-    <!-- 结果：单值卡 -->
-    <section v-if="result && !isBreakdown" class="pwc-card ask__result">
-      <div class="ask__result-head">
-        <span class="ask__result-metric">{{ metricName }}</span>
-        <span class="pwc-badge pwc-badge--grey">
-          {{ result.start }} ~ {{ result.end }}
-          <template v-if="!result.period_complete && result.data_through">
-            · 数据截至 {{ result.data_through }}
-          </template>
-        </span>
-      </div>
-      <div class="ask__result-value">{{ formatMetricValue(result.value) }}</div>
-      <div v-if="changePct !== null" class="ask__result-compare">
-        {{ result.compare?.type === "yoy" ? "同比" : "环比" }}
-        <span :class="changePct >= 0 ? 'up' : 'down'">
-          {{ changePct >= 0 ? "↑" : "↓" }} {{ Math.abs(changePct).toFixed(2) }}%
-        </span>
-      </div>
-      <p v-else class="ask__hint">无对比基期数据</p>
-    </section>
+      <!-- 单值卡 -->
+      <section v-else class="pwc-card ask__result">
+        <div class="ask__result-head">
+          <span class="ask__result-metric">{{ r.label }}</span>
+          <span class="pwc-badge pwc-badge--grey">
+            {{ r.data.start }} ~ {{ r.data.end }}
+            <template v-if="!r.data.period_complete && r.data.data_through">
+              · 数据截至 {{ r.data.data_through }}
+            </template>
+          </span>
+        </div>
+        <div class="ask__result-value">{{ formatMetricValue(r.data.value) }}</div>
+        <div v-if="changePctOf(r.data) !== null" class="ask__result-compare">
+          {{ r.data.compare?.type === "yoy" ? "同比" : "环比" }}
+          <span :class="changePctOf(r.data) >= 0 ? 'up' : 'down'">
+            {{ changePctOf(r.data) >= 0 ? "↑" : "↓" }} {{ Math.abs(changePctOf(r.data)).toFixed(2) }}%
+          </span>
+        </div>
+        <p v-else class="ask__hint">无对比基期数据</p>
+      </section>
+    </template>
   </div>
 </template>
 
@@ -614,6 +689,10 @@ const isBreakdown = computed(() => result.value?.kind === "breakdown");
 
 .ask__order {
   margin-left: var(--pwc-space-3);
+}
+
+.ask__multi {
+  width: 100%;
 }
 
 .ask__actions {

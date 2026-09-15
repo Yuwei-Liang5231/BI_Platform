@@ -94,8 +94,19 @@ function changeSummary(row) {
     .join("；");
 }
 
+const notFound = ref(false);
+
 async function loadAll() {
-  await metricStore.fetchDetail(metricId.value);
+  notFound.value = false;
+  try {
+    await metricStore.fetchDetail(metricId.value);
+  } catch {
+    // 技术债清理（B7 登记）：指标已删除时清掉残留详情并给出明确空态，
+    // 不再带着上一指标的详情继续渲染
+    notFound.value = true;
+    metricStore.detail = null;
+    return;
+  }
   await Promise.all([loadCurrent(), loadTrend(), loadSql(), metricStore.fetchChanges(metricId.value)]);
 }
 
@@ -249,7 +260,11 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-loading="metricStore.loading">
+    <el-empty v-if="notFound" description="该指标不存在或已被删除（可能已在指标目录中删除）">
+      <el-button type="primary" @click="router.push('/metrics')">返回指标目录</el-button>
+    </el-empty>
+
+    <div v-else v-loading="metricStore.loading">
       <div class="grid-12">
         <!-- 当前值卡 -->
         <section class="pwc-card col-span-4">
