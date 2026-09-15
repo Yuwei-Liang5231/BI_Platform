@@ -1,10 +1,14 @@
 {
-  "description": "问数测试集（B9）：问题 → 期望理解卡。pytest 以关键词兜底解析器离线回归（LLM 未配置时的确定性通道）；LLM 在线走查可复用本文件。",
+  "description": "问数测试集（B9 / B9.2-2）：问题 → 期望理解卡。pytest 以关键词兜底解析器离线回归（LLM 未配置时的确定性通道）；LLM 在线走查可复用本文件。",
   "convention": {
     "metric_code": "期望命中的指标 code；缺省不断言",
     "start/end": "显式日期期望（相对时间用 relative_time 表达）",
     "relative_time": "prev_month | this_month | this_year | last_year | last_n_days_{N}",
-    "compare": "none | mom | yoy"
+    "compare": "none | mom | yoy",
+    "dimension": "期望拆解维度列（B9.2-2）",
+    "filters": "期望筛选条件数组 [{column, op, value}]（B9.2-2）",
+    "top_n": "期望 TopN（B9.2-2）",
+    "mode": "analysis | help（help=逃生舱兜底，B9.2-2）"
   },
   "cases": [
     {
@@ -35,7 +39,33 @@
     {
       "id": "A6",
       "question": "库存周转率是多少",
-      "expect": { "can_compute": false }
+      "expect": { "can_compute": false, "mode": "help" }
+    },
+    {
+      "id": "B1",
+      "question": "按status拆解2026年1月销售额",
+      "expect": { "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-31", "dimension": "status" }
+    },
+    {
+      "id": "B2",
+      "question": "只看paid的上个月销售额环比",
+      "expect": {
+        "metric_code": "ask_gmv", "relative_time": "prev_month", "compare": "mom",
+        "filters": [{ "column": "status", "op": "=", "value": "paid" }]
+      }
+    },
+    {
+      "id": "B3",
+      "question": "2026年1月销售额各status环比，前1",
+      "expect": {
+        "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-31",
+        "compare": "mom", "dimension": "status", "top_n": 1
+      }
+    },
+    {
+      "id": "B4",
+      "question": "量子力学波函数坍缩是什么",
+      "expect": { "can_compute": false, "mode": "help" }
     }
   ]
 }

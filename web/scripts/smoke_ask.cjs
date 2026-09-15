@@ -10,8 +10,9 @@
  * 场景：
  *  S1 问「2026年1月销售额是多少」→ 理解卡命中 ask_smoke_gmv、区间 2026-01
  *  S2 确认计算 → 结果卡显示 1,000.00（夹具两行 400+600）
- *  S3 问「库存周转天数是多少」→ 算不了黄条（无匹配指标）
+ *  S3 问「库存周转天数是多少」→ 逃生舱 help 卡（B9.2-2：纯对话引导）
  *  S4 规则解析标注（LLM 未配置 → source=fallback）
+ *  S5 问「按status拆解2026年1月销售额」→ 理解卡含拆解维度，结果为拆解表格
  *  Z console 无页面错误
  */
 const { chromium } = require("playwright-core");
@@ -102,18 +103,31 @@ async function api(path, { method = "GET", token, body, form } = {}) {
   const resultText = (await page.locator(".ask__result").innerText()).replace(/\s+/g, " ");
   step("S2 结果卡 1,000 与区间/数据截至", resultText.includes("1,000"), resultText.slice(0, 100));
 
-  // S3 算不了
+  // S3 逃生舱（B9.2-2）：解析不出可执行结构 → 纯对话引导卡
   await page.getByPlaceholder(/试着问/).fill("库存周转天数是多少");
   await page.getByRole("button", { name: "理解问题" }).click();
   await page.waitForTimeout(1500);
   const cardText2 = (await page.locator(".ask__card").innerText()).replace(/\s+/g, " ");
-  step("S3 算不了明确提示", cardText2.includes("没有找到匹配的指标"));
+  step("S3 逃生舱引导卡（无数字）", cardText2.includes("没能理解您的问题") && cardText2.includes("改写"),
+    cardText2.slice(0, 120));
+
+  // S5 拆解意图（B9.2-2）：理解卡命中维度 → 确认计算 → 拆解表格
+  await page.getByPlaceholder(/试着问/).fill("按status拆解2026年1月销售额");
+  await page.getByRole("button", { name: "理解问题" }).click();
+  await page.waitForTimeout(2000);
+  const cardText3 = (await page.locator(".ask__card").innerText()).replace(/\s+/g, " ");
+  step("S5a 理解卡含拆解维度区", cardText3.includes("拆解维度"), cardText3.slice(0, 120));
+  await page.getByRole("button", { name: "确认计算" }).click();
+  await page.waitForTimeout(2500);
+  const resultText2 = (await page.locator(".ask__result").innerText()).replace(/\s+/g, " ");
+  step("S5b 拆解表格 paid=1,000", resultText2.includes("拆解") && resultText2.includes("paid") && resultText2.includes("1,000"),
+    resultText2.slice(0, 140));
 
   step("Z console 无页面错误", errors.length === 0, errors.join(" | ").slice(0, 200));
 
   console.log(`\n结果: ${passed} passed`);
   await browser.close();
-  process.exit(passed >= 7 ? 0 : 1);
+  process.exit(passed >= 9 ? 0 : 1);
 })().catch((e) => {
   console.error("FATAL:", e.message);
   process.exit(1);

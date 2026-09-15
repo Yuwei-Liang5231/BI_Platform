@@ -85,7 +85,11 @@ class AskRequest(BaseModel):
 
 
 class AskExecuteRequest(BaseModel):
-    """理解卡确认后的执行请求：字段与理解卡一一对应，用户可修改后重算。"""
+    """理解卡确认后的执行请求：字段与理解卡一一对应，用户可修改后重算。
+
+    B9.2-2：dimension 非空 → 拆解出口（filters/order_by/order/top_n 生效）；
+    否则单值出口。两条出口共用同一编译器/权限/缓存纪律（口径同源）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -93,6 +97,18 @@ class AskExecuteRequest(BaseModel):
     start: str
     end: str
     compare: str = "none"
+    dimension: str | None = None
+    filters: list[BreakdownFilterItem] = []
+    order_by: str = "value"
+    order: str = "desc"
+    top_n: int | None = None
+
+
+class AskDimensionValuesRequest(BaseModel):
+    """问数理解卡的筛选值候选：metric + 维度列 → 该列真实取值清单。"""
+
+    metric: str | int
+    column: str
 
 
 @router.post("/ask")
@@ -108,7 +124,11 @@ def ask(db: DbDep, body: AskRequest, user: CurrentUser):
 
 @router.post("/ask/execute")
 def ask_execute(db: DbDep, body: AskExecuteRequest, user: CurrentUser):
-    """理解卡确认后执行。与看板完全同一计算出口（含缓存/周期完整性/环比/权限）。"""
+    """理解卡确认后执行。与看板完全同一计算出口（含缓存/周期完整性/环比/权限）。
+
+    B9.2-2：dimension 非空时走维度拆解出口（GROUP BY + 筛选 + 排序 + TopN，
+    比率按组重算分子分母），数值仍由平台单点计算——AI 只产意图不产数值。
+    """
     data = ask_service.execute_card(
         db,
         user,
@@ -116,8 +136,21 @@ def ask_execute(db: DbDep, body: AskExecuteRequest, user: CurrentUser):
         start=body.start,
         end=body.end,
         compare=body.compare,
+        dimension=body.dimension,
+        filters=[item.model_dump() for item in body.filters],
+        order_by=body.order_by,
+        order=body.order,
+        top_n=body.top_n,
     )
     return ok_response(data)
+
+
+@router.post("/ask/dimension-values")
+def ask_dimension_values(db: DbDep, body: AskDimensionValuesRequest, user: CurrentUser):
+    """理解卡筛选值候选（B9.2-2）：维度列在真实数据中的去重取值（≤50）。"""
+    return ok_response(service.list_dimension_values(
+        db, metric_ref=body.metric, column=body.column, user=user
+    ))
 
 
 # ---------------------------------------------------------------- 维度拆解（B9.2-1）

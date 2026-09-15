@@ -688,3 +688,40 @@ def list_breakdown_dimensions(db: Session, *, metric_ref, user: User) -> dict:
         "primary_dataset": primary.name,
         "dimensions": out,
     }
+
+
+MAX_DIMENSION_VALUES = 50   # 筛选值候选上限（超出截断并置 truncated=true）
+
+
+def list_dimension_values(db: Session, *, metric_ref, column: str, user: User) -> dict:
+    """指定维度列的去重值候选（B9.2-2）：供问数理解卡筛选值下拉与 LLM 筛选值校验。
+
+    列越纲（不在数据集/无显式关系）由拆解编译器判定 400；值集合取自该指标
+    覆盖区间内的真实数据（与拆解同一条 SQL，天然过滤不可解析组合）。
+    """
+    metric = _resolve_metric(db, metric_ref)
+    _ensure_visible(db, user, metric)
+    column = (column or "").strip()
+    if not column:
+        raise BusinessError("column（维度列名）必填", 40000)
+    compiled = _compile_breakdown(db, metric, column, [])  # 兼作列合法性校验
+    base = {"metric_id": metric.id, "metric_code": metric.code, "column": column}
+    if compiled.is_constant or compiled.coverage_start is None or compiled.coverage_end is None:
+        return {**base, "values": [], "truncated": False}
+
+    runtime = _dataset_runtime(db, compiled)
+    views = {name: view_target(info["parquet_path"]) for name, info in runtime.items()}
+    params = {"__start__": compiled.coverage_start, "__end__": compiled.coverage_end}
+    values: list[str] = []
+    seen: set[str] = set()
+    with duckdb_views(views) as con:
+        rows = con.execute(compiled.sql + f" LIMIT {MAX_BREAKDOWN_ROWS}", params).fetchall()
+        for r in rows:
+            v = str(r[0])
+            if v not in seen:
+                seen.add(v)
+                values.append(v)
+                if len(values) > MAX_DIMENSION_VALUES:
+                    break
+    truncated = len(values) > MAX_DIMENSION_VALUES
+    return {**base, "values": values[:MAX_DIMENSION_VALUES], "truncated": truncated}

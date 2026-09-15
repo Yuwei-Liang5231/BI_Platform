@@ -82,6 +82,51 @@ def parse_compare(question: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- 拆解意图解析（B9.2-2）
+
+
+def parse_dimensions(question: str, dim_candidates: list[dict]) -> list[str]:
+    """从问句解析拆解维度：候选维度列名出现在问句中即命中（列名是锚点，
+    行业无关）。按列名长度降序（越具体越优先），最多取 3 个，多出的进歧义提示。"""
+    q = question.lower()
+    hits = [
+        c["column"] for c in sorted(dim_candidates, key=lambda d: -len(d["column"]))
+        if c["column"].lower() in q
+    ]
+    return hits[:3]
+
+
+def parse_topn_order(question: str) -> dict:
+    """从问句解析 TopN 与排序倾向（规则通道的确定性映射）。"""
+    out: dict = {}
+    topn = re.search(r"前\s*(\d{1,2})\s*[名个位]?", question)
+    if topn:
+        out["top_n"] = min(int(topn.group(1)), 50)
+    if re.search(r"(掉|跌|降)[得的最]{1,2}(厉害|最多|最狠|最大)|跌幅最大|下滑最", question):
+        out["order_by"], out["order"] = "change_pct", "asc"   # 跌幅最深在前
+    elif re.search(r"(涨|增|升)[得的最]{1,2}(厉害|最多|最快|最大)|增幅最大|增长最快", question):
+        out["order_by"], out["order"] = "change_pct", "desc"
+    elif re.search(r"(贡献|变化|差异|影响)(最大|最多|最明显)|波动最大", question):
+        out["order_by"], out["order"] = "change_abs", "desc"
+    elif re.search(r"(最高|最多|最大|卖得最好|排行)", question) and "top_n" not in out:
+        out["order_by"], out["order"] = "value", "desc"
+    elif re.search(r"(最低|最少|最小|卖得最差)", question):
+        out["order_by"], out["order"] = "value", "asc"
+    if "top_n" not in out and re.search(r"最[高低多大小厉害快差]", question):
+        out["top_n"] = 10
+    return out
+
+
+def parse_filter_words(question: str) -> list[dict]:
+    """从问句解析「只看X / 排除X」筛选意图（词面捕获，值合法性由维度值清单校验）。"""
+    out: list[dict] = []
+    for m in re.finditer(r"(只看|仅看|筛选)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9_\-]{1,20})", question):
+        out.append({"op": "=", "raw": m.group(2)})
+    for m in re.finditer(r"(排除|去掉|不含|剔除)\s*([\u4e00-\u9fa5A-Za-z0-9_\-]{1,20})", question):
+        out.append({"op": "!=", "raw": m.group(2)})
+    return out
+
+
 def _to_date(raw: str) -> date:
     y, m, d = re.split(r"[-/]", raw)
     return date(int(y), int(m), int(d))
@@ -117,27 +162,39 @@ def match_metrics(question: str, metrics: list[Metric]) -> list[Metric]:
 # ---------------------------------------------------------------- LLM 意图
 
 
-def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date) -> dict | None:
-    """LLM 意图解析。输出经严格校验：指标必须在候选清单内，日期必须合法——
-    任何越纲/非法字段一律丢弃（宁缺毋滥，防幻觉）。"""
+def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date,
+                dim_candidates: list[dict]) -> dict | None:
+    """LLM 意图解析。输出经严格校验：指标必须在候选清单内、维度列/筛选值必须在
+    真实数据候选内、枚举字段在白名单内——任何越纲/非法字段一律丢弃（宁缺毋滥，防幻觉）。"""
     metric_list = "\n".join(
         f"- code={m.code} | name={m.name} | aliases={json.dumps(_metric_candidates(m)[2:], ensure_ascii=False)}"
         for m in metrics[:200]
     )
+    dim_list = "\n".join(
+        f"- {c['column']}（数据集 {c['dataset']}，基数 {c['distinct_count']}）"
+        for c in dim_candidates[:30]
+    ) or "（无可用维度列）"
     system = (
-        "你是 BI 平台的问数意图解析器。只输出一个 JSON 对象，禁止计算任何数值。"
-        "字段：metric_code（必须原样取自候选清单的 code，找不到填 null）、"
-        "start、end（YYYY-MM-DD 日期字符串）、compare（none/mom/yoy）。"
-        "禁止编造候选清单之外的指标。"
+        "你是 BI 平台的问数意图解析器。只输出一个 JSON 对象，禁止计算任何数值。字段：\n"
+        "metric_code（必须原样取自候选清单的 code，找不到填 null）、\n"
+        "start、end（YYYY-MM-DD 日期字符串）、compare（none/mom/yoy）、\n"
+        "dimension（按某维度拆解时填候选维度列之一，否则填 null）、\n"
+        "filters（数组 [{column, op, value}]，op 仅 =/!=，column 必须是候选维度列，"
+        "value 尽量取该维度列的真实取值；没有筛选填 []）、\n"
+        "order_by（value/change_abs/change_pct 或 null）、order（asc/desc 或 null）、\n"
+        "top_n（1~50 整数或 null）。\n"
+        "禁止编造候选清单之外的指标、维度列或筛选值；用户问题与指标数据无关时不要硬套字段。"
     )
     user = (
         f"今天：{today.isoformat()}\n候选指标清单：\n{metric_list or '（无）'}\n"
+        f"候选维度列（当前用户可见、可拆解）：\n{dim_list}\n"
         f"用户问题：{question}"
     )
     intent = chat_json(config, system, user)
     if not isinstance(intent, dict):
         return None
 
+    valid_cols = {c["column"] for c in dim_candidates}
     validated: dict = {}
     code = intent.get("metric_code")
     if isinstance(code, str) and any(m.code == code for m in metrics):
@@ -151,14 +208,63 @@ def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date)
                 pass
     if intent.get("compare") in ("none", "mom", "yoy"):
         validated["compare"] = intent["compare"]
+    # 维度：单一列（编译器一次只支持一个拆解维度），越纲丢弃
+    dim = intent.get("dimension")
+    if isinstance(dim, str) and dim.strip() in valid_cols:
+        validated["dimension"] = dim.strip()
+    # 筛选：列必须在候选内、op 白名单、value 非空（值合法性由 build_card 对真实数据校验）
+    filters = intent.get("filters")
+    if isinstance(filters, list):
+        kept = []
+        for f in filters[:5]:
+            if not isinstance(f, dict):
+                continue
+            col, op = f.get("column"), f.get("op")
+            if isinstance(col, str) and col.strip() in valid_cols and op in ("=", "!=") \
+                    and f.get("value") not in (None, ""):
+                kept.append({"column": col.strip(), "op": op, "value": f["value"]})
+        if kept:
+            validated["filters"] = kept
+    if intent.get("order_by") in ("value", "change_abs", "change_pct"):
+        validated["order_by"] = intent["order_by"]
+    if intent.get("order") in ("asc", "desc"):
+        validated["order"] = intent["order"]
+    topn = intent.get("top_n")
+    if isinstance(topn, int) and 1 <= topn <= 50:
+        validated["top_n"] = topn
     return validated or None
+
+
+def _llm_help_reply(config: dict, question: str, metric_names: list[str]) -> str | None:
+    """逃生舱（B9.2-2）：意图解析不出可执行结构时，LLM 纯对话兜底——
+    只做引导与建议改写，禁止出现任何数值（含 % 的行一律拒收降级）。"""
+    system = (
+        "你是 BI 平台的问数助手。用户的问题超出了平台当前能力（平台只能回答："
+        "已有指标的数值、按维度拆解、时间环比/同比对比）。请用不超过 3 句中文回复："
+        "1) 说明无法直接回答该问题；2) 结合指标目录建议一个可执行的改写问法"
+        "（必须引用目录中的指标名称）。严禁编造任何数值、百分比或计算结果。"
+    )
+    user = f"指标目录：{json.dumps(metric_names[:50], ensure_ascii=False)}\n用户问题：{question}"
+    try:
+        reply = chat_json(config, system + '\n输出格式：{"reply": "中文回复"}', user)
+        if isinstance(reply, dict):
+            reply = reply.get("reply")
+        if isinstance(reply, str) and reply.strip() and not re.search(r"\d+(\.\d+)?%", reply):
+            return reply.strip()[:500]
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------- 理解卡
 
 
 def build_card(db: Session, user, question: str) -> dict:
-    """问句 → 理解卡（只解析意图，不计算数值）。"""
+    """问句 → 理解卡（只解析意图，不计算数值）。
+
+    B9.2-2 扩展：拆解维度/筛选/排序/TopN 进意图（全部锚定真实数据候选）；
+    意图解析不出可执行结构时走「逃生舱」纯对话兜底（mode=help，无数字）。
+    """
     question = (question or "").strip()
     if not question:
         raise BusinessError("请输入问题", 40000)
@@ -209,20 +315,98 @@ def build_card(db: Session, user, question: str) -> dict:
 
     compare = parse_compare(question) or "none"
 
-    # LLM 通道：在候选清单内改选指标/给出合法时间与比较方式，越纲字段丢弃
+    # 拆解意图（B9.2-2）：先取该指标的候选维度列（权限同源、真实数据锚点）
+    dimension: str | None = None
+    dim_candidates: list[dict] = []
+    dim_values_cache: dict[str, list[str]] = {}
+    if metric is not None:
+        from app.domain.query.service import list_breakdown_dimensions
+
+        try:
+            dim_ctx = list_breakdown_dimensions(db, metric_ref=metric.code, user=user)
+            dim_candidates = [d for d in dim_ctx["dimensions"] if d["low_cardinality"]]
+        except Exception:
+            dim_candidates = []  # 维度候选获取失败不阻塞理解卡，仅少拆解能力
+
+    def _dimension_values(col: str) -> list[str]:
+        """维度列真实取值（覆盖区间内），带会话内缓存——LLM/规则筛选值校验共用。"""
+        if col not in dim_values_cache:
+            try:
+                from app.domain.query.service import list_dimension_values
+
+                dim_values_cache[col] = list_dimension_values(
+                    db, metric_ref=metric.code, column=col, user=user
+                )["values"]
+            except Exception:
+                dim_values_cache[col] = []
+        return dim_values_cache[col]
+
+    def _ground_filters(raw_filters: list[dict]) -> list[dict]:
+        """筛选值落地校验：value 必须出现在该维度列真实取值中（防幻觉硬筛）。"""
+        grounded = []
+        for f in raw_filters[:3]:
+            val = str(f.get("value", "")).strip()
+            if not val:
+                continue
+            values = _dimension_values(f["column"])
+            exact = next((v for v in values if v == val), None)
+            if exact is None:
+                fuzzy = next((v for v in values if val in v or v in val), None)
+                exact = fuzzy
+            if exact is not None:
+                grounded.append({"column": f["column"], "op": f.get("op", "="), "value": exact})
+        return grounded
+
+    # 规则通道：维度/TopN/排序/「只看X」词面
+    dim_hits = parse_dimensions(question, dim_candidates)
+    if dim_hits:
+        dimension = dim_hits[0]
+        if len(dim_hits) > 1:
+            ambiguous.append({
+                "field": "dimension",
+                "options": [{"column": c} for c in dim_hits],
+                "default": dimension,
+                "reason": "命中多个维度列，一次仅支持按一个维度拆解，请确认",
+            })
+    topn_intent = parse_topn_order(question)
+    rule_filters: list[dict] = []
+    if dim_candidates:  # 「只看X / 排除X」不依赖已选维度：词面挂到任一候选列即可
+        for f in parse_filter_words(question):
+            for col in [dimension] + [c["column"] for c in dim_candidates if c["column"] != dimension]:
+                grounded = _ground_filters([{**f, "column": col, "value": f.get("raw")}])
+                if grounded:
+                    rule_filters.extend(grounded)
+                    break
+
+    # LLM 通道：在候选清单内改选指标/时间/比较/维度/筛选，越纲字段丢弃
     source = "fallback"
     if llm_cfg:
-        intent = _llm_intent(llm_cfg, question, visible, today)
+        intent = _llm_intent(llm_cfg, question, visible, today, dim_candidates)
         if intent:
             source = "llm"
             if intent.get("metric_code"):
                 metric = next(m for m in visible if m.code == intent["metric_code"])
+                # 指标被 LLM 改选后维度候选需跟随（列名匹配保持真实锚点）
+                try:
+                    from app.domain.query.service import list_breakdown_dimensions
+
+                    dim_ctx = list_breakdown_dimensions(db, metric_ref=metric.code, user=user)
+                    dim_candidates = [d for d in dim_ctx["dimensions"] if d["low_cardinality"]]
+                except Exception:
+                    dim_candidates = []
             if not time_is_explicit and intent.get("start") and intent.get("end"):
                 s, e = date.fromisoformat(intent["start"]), date.fromisoformat(intent["end"])
                 if s <= e:
                     start, end, time_is_explicit = s, e, True
             if intent.get("compare"):
                 compare = intent["compare"]
+            if not dimension and intent.get("dimension"):
+                dimension = intent["dimension"]
+            if not rule_filters and intent.get("filters"):
+                rule_filters = _ground_filters(intent["filters"])
+            for k in ("order_by", "order", "top_n"):
+                if intent.get(k) is not None and k not in topn_intent:
+                    topn_intent[k] = intent[k]
 
     disambiguation_note = None
     if metric is not None:
@@ -245,7 +429,7 @@ def build_card(db: Session, user, question: str) -> dict:
                 }
             )
 
-    return {
+    card = {
         "question": question,
         "llm_configured": llm_cfg is not None,
         "source": source,
@@ -254,20 +438,70 @@ def build_card(db: Session, user, question: str) -> dict:
         "end": end.isoformat(),
         "compare": compare,
         "time_is_explicit": time_is_explicit,
+        # B9.2-2 拆解意图
+        "dimension": dimension,
+        "dimension_options": [
+            {"dataset": c["dataset"], "column": c["column"], "distinct_count": c["distinct_count"]}
+            for c in dim_candidates[:10]
+        ],
+        "filters": rule_filters,
+        "order_by": topn_intent.get("order_by", "value"),
+        "order": topn_intent.get("order", "desc"),
+        "top_n": topn_intent.get("top_n"),
         "ambiguous": ambiguous,
         "disambiguation_note": disambiguation_note,
         "can_compute": metric is not None,
         "no_metric_reason": no_metric_reason,
     }
+    card["mode"] = "analysis" if metric is not None else "help"
+    if metric is None:
+        # 逃生舱：意图解析不出可执行结构 → 纯对话兜底（LLM 生成引导，规则通道给固定文案；都无数字）
+        help_reply = None
+        if llm_cfg:
+            help_reply = _llm_help_reply(
+                llm_cfg, question, [m.name for m in visible]
+            )
+        card["help_reply"] = help_reply or (
+            "我暂时理解不了这个问题。本平台可以回答已有指标的数值、按维度拆解和时间对比，"
+            "例如「上个月按地区拆解销售额的环比」——您可以参考指标目录改写一下问法。"
+        )
+    return card
 
 
 # ---------------------------------------------------------------- 执行（口径同源）
 
 
-def execute_card(db: Session, user, *, metric: str | int, start: str, end: str, compare: str = "none") -> dict:
-    """理解卡确认后执行。与看板完全同一计算出口（query.service），权限同源。"""
+def execute_card(
+    db: Session,
+    user,
+    *,
+    metric: str | int,
+    start: str,
+    end: str,
+    compare: str = "none",
+    dimension: str | None = None,
+    filters: list[dict] | None = None,
+    order_by: str = "value",
+    order: str = "desc",
+    top_n: int | None = None,
+) -> dict:
+    """理解卡确认后执行。与看板完全同一计算出口（query.service），权限同源。
+
+    B9.2-2：带 dimension 时走拆解出口（compute_metric_breakdown），
+    否则单值出口（compute_metric_value）——两者共用同一编译器与缓存纪律。
+    """
     from app.domain.query import service as query_service
 
-    return query_service.compute_metric_value(
+    if dimension:
+        data = query_service.compute_metric_breakdown(
+            db, metric_ref=metric, start=start, end=end, compare=compare,
+            dimension=dimension, filters=filters or [],
+            order_by=order_by, order=order, top_n=top_n, user=user,
+        )
+        data["kind"] = "breakdown"
+        return data
+    data = query_service.compute_metric_value(
         db, metric_ref=metric, start=start, end=end, compare=compare, user=user
     )
+    data["kind"] = "value"
+    return data

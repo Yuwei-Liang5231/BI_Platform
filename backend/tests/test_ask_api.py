@@ -103,10 +103,14 @@ def test_ask_testset_regression(client, ask_env):
         card = _ask(client, case["question"])
         exp = case["expect"]
         ok = True
-        if exp.get("can_compute") is False:
-            ok = ok and card["can_compute"] is False and bool(card["no_metric_reason"])
+        if exp.get("mode") == "help" or exp.get("can_compute") is False:
+            # 逃生舱（B9.2-2）：解析不出可执行结构 → help 模式 + 引导文案（无数字）
+            ok = ok and card["can_compute"] is False
+            ok = ok and card.get("mode") == "help"
+            ok = ok and bool(card.get("help_reply"))
         else:
             ok = ok and card["can_compute"] is True
+            ok = ok and card.get("mode") == "analysis"
             ok = ok and card["metric"]["code"] == exp["metric_code"]
             if exp.get("start"):
                 ok = ok and card["start"] == exp["start"]
@@ -117,6 +121,12 @@ def test_ask_testset_regression(client, ask_env):
                 ok = ok and card["start"] == s and card["end"] == e
             if exp.get("compare"):
                 ok = ok and card["compare"] == exp["compare"]
+            if exp.get("dimension"):
+                ok = ok and card["dimension"] == exp["dimension"]
+            if "filters" in exp:
+                ok = ok and card["filters"] == exp["filters"]
+            if "top_n" in exp:
+                ok = ok and card["top_n"] == exp["top_n"]
         if not ok:
             failed.append(f"{case['id']}: got {json.dumps(card, ensure_ascii=False)[:200]}")
 
@@ -140,6 +150,7 @@ def test_execute_matches_dashboard_metric_value(client, ask_env):
     via_dash = client.post("/api/query/metric-value", json=body).json()["data"]
     # 数值口径完全一致；且看板同参请求直接命中问数执行写入的同一缓存条目
     # （cache: miss → hit）——口径同源的最强证据
+    assert via_ask.pop("kind") == "value"  # B9.2-2：执行结果带出口类型标注
     via_ask.pop("cache"), via_dash.pop("cache")
     assert via_ask == via_dash
     assert via_ask["value"] == pytest.approx(370.0)
@@ -172,6 +183,71 @@ def test_no_metric_clear_reason(client, ask_env):
     card = _ask(client, " quantum_flux_vortex 是多少")
     assert card["can_compute"] is False
     assert "没有找到匹配的指标" in card["no_metric_reason"]
+
+
+# ---------------------------------------------------------------- 拆解意图（B9.2-2）
+
+
+def test_execute_breakdown_via_ask(client, ask_env):
+    """问数执行拆解：与直连 /query/breakdown 完全同一出口（逐字段一致）。"""
+    card = _ask(client, "按status拆解2026年1月销售额")
+    assert card["dimension"] == "status"
+    body = {
+        "metric": card["metric"]["code"], "start": card["start"], "end": card["end"],
+        "compare": "none", "dimension": "status",
+    }
+    via_ask = client.post("/api/query/ask/execute", json=body).json()["data"]
+    via_direct = client.post("/api/query/breakdown", json=body).json()["data"]
+    assert via_ask.pop("kind") == "breakdown"
+    via_direct.pop("cache"), via_ask.pop("cache")
+    assert via_ask == via_direct
+    rows = {r["dimension"]: r["value"] for r in via_ask["rows"]}
+    assert rows["paid"] == pytest.approx(370.0)
+
+
+def test_execute_breakdown_with_filter_and_topn(client, ask_env):
+    """筛选 + TopN + 同比基期：理解卡参数逐项生效（2025-01 基期 paid=100）。"""
+    body = {
+        "metric": METRIC_CODE, "start": "2026-01-01", "end": "2026-01-31",
+        "compare": "yoy", "dimension": "status",
+        "filters": [{"column": "status", "op": "=", "value": "paid"}],
+        "order_by": "value", "order": "desc", "top_n": 5,
+    }
+    resp = client.post("/api/query/ask/execute", json=body)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["kind"] == "breakdown"
+    assert data["top_n"] == 5
+    row = data["rows"][0]
+    assert row["dimension"] == "paid"
+    assert row["value"] == pytest.approx(370.0)
+    assert row["prev_value"] == pytest.approx(100.0)
+    assert row["change_pct"] == pytest.approx(270.0)
+
+
+def test_dimension_values_endpoint(client, ask_env):
+    """筛选值候选：真实取值清单；越纲列 400（编译器判定）。"""
+    resp = client.post(
+        "/api/query/ask/dimension-values", json={"metric": METRIC_CODE, "column": "status"}
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["values"] == ["paid"]
+    assert data["truncated"] is False
+
+    bad = client.post(
+        "/api/query/ask/dimension-values", json={"metric": METRIC_CODE, "column": "not_a_column"}
+    )
+    assert bad.status_code == 400
+
+
+def test_help_mode_reply_without_numbers(client, ask_env):
+    """逃生舱：解析不出可执行结构 → help 模式 + 引导文案；规则兜底文案不含数字。"""
+    card = _ask(client, "今天天气怎么样适合郊游吗")
+    assert card["mode"] == "help"
+    assert card["can_compute"] is False
+    assert card["help_reply"]
+    assert "%" not in card["help_reply"]  # 兜底文案绝不出现数值
 
 
 # ---------------------------------------------------------------- 权限继承
