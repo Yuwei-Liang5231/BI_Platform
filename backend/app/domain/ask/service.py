@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from calendar import monthrange
 from datetime import date, timedelta
@@ -25,6 +26,8 @@ from app.core.response import BusinessError
 from app.domain.auth.service import restricted_metric_ids
 from app.infra.llm import chat_json, resolve_llm_config
 from app.infra.models import Metric
+
+logger = logging.getLogger("app.domain.ask")
 
 
 # ---------------------------------------------------------------- 时间解析
@@ -192,26 +195,34 @@ def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date,
     )
     intent = chat_json(config, system, user)
     if not isinstance(intent, dict):
+        logger.info("LLM 意图解析：模型未返回有效 JSON（降级规则解析器），question=%r", question[:80])
         return None
 
     valid_cols = {c["column"] for c in dim_candidates}
     validated: dict = {}
+    dropped: list[str] = []
     code = intent.get("metric_code")
     if isinstance(code, str) and any(m.code == code for m in metrics):
         validated["metric_code"] = code
+    else:
+        dropped.append(f"metric_code={code!r}")
     for field in ("start", "end"):
         raw = intent.get(field)
         if isinstance(raw, str):
             try:
                 validated[field] = date.fromisoformat(raw.strip()).isoformat()
             except ValueError:
-                pass
+                dropped.append(f"{field}={raw!r}")
     if intent.get("compare") in ("none", "mom", "yoy"):
         validated["compare"] = intent["compare"]
+    else:
+        dropped.append(f"compare={intent.get('compare')!r}")
     # 维度：单一列（编译器一次只支持一个拆解维度），越纲丢弃
     dim = intent.get("dimension")
     if isinstance(dim, str) and dim.strip() in valid_cols:
         validated["dimension"] = dim.strip()
+    elif dim:
+        dropped.append(f"dimension={dim!r}")
     # 筛选：列必须在候选内、op 白名单、value 非空（值合法性由 build_card 对真实数据校验）
     filters = intent.get("filters")
     if isinstance(filters, list):
@@ -232,6 +243,12 @@ def _llm_intent(config: dict, question: str, metrics: list[Metric], today: date,
     topn = intent.get("top_n")
     if isinstance(topn, int) and 1 <= topn <= 50:
         validated["top_n"] = topn
+    if dropped:
+        logger.info("LLM 意图校验丢弃越纲字段（防幻觉降级）: %s", "; ".join(dropped))
+    logger.info(
+        "LLM 意图解析结果: question=%r, validated=%s",
+        question[:80], json.dumps(validated, ensure_ascii=False),
+    )
     return validated or None
 
 
@@ -465,6 +482,12 @@ def build_card(db: Session, user, question: str) -> dict:
             "我暂时理解不了这个问题。本平台可以回答已有指标的数值、按维度拆解和时间对比，"
             "例如「上个月按地区拆解销售额的环比」——您可以参考指标目录改写一下问法。"
         )
+    logger.info(
+        "理解卡生成: source=%s mode=%s metric=%s range=%s~%s compare=%s dimension=%s filters=%s",
+        source, card["mode"],
+        card["metric"]["code"] if card["metric"] else None,
+        card["start"], card["end"], compare, dimension, rule_filters,
+    )
     return card
 
 
