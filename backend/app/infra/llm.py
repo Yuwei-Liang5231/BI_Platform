@@ -146,6 +146,31 @@ def _extract_json_object(content: str) -> dict | None:
     return None
 
 
+def _post_chat(config: dict, payload: dict, timeout: float) -> dict | None:
+    """单次 chat 请求 + JSON 提取。失败返回 None（不抛异常）。"""
+    url = config["base_url"].rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {config['api_key']}"}
+    # 连接 5s 快速失败（外网不可达时尽快降级关键词解析器），生成读取给足 timeout
+    timeout_policy = httpx.Timeout(timeout, connect=5.0)
+    try:
+        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout_policy, verify=_http_verify(config))
+        resp.raise_for_status()
+        message = resp.json()["choices"][0]["message"]
+        obj = _extract_json_object(message.get("content") or "")
+        if obj is None:
+            # content 为空/非 JSON：推理型模型 token 耗尽或输出夹带说明文字
+            logger.warning(
+                "LLM 返回无法解析为 JSON 对象: finish=%s content=%.200r reasoning_len=%s",
+                resp.json()["choices"][0].get("finish_reason"),
+                message.get("content"),
+                len(message.get("reasoning_content") or ""),
+            )
+        return obj
+    except Exception as exc:  # 网络/超时/JSON/结构任一失败
+        logger.warning("LLM 请求失败: %s", exc)
+        return None
+
+
 def chat_json(
     config: dict | None,
     system_prompt: str,
@@ -160,10 +185,11 @@ def chat_json(
     余量不足会被思考耗尽（finish_reason=length）导致 content 为空。
     config.extra_body（dict）逐键并入请求体（如 {"enable_thinking": false}
     关闭思考模式，省时省钱——是否生效取决于网关/模型）。
+    **失败自动重试 1 次**（2026-09-15：网关偶发超时/限流导致意图识别"时好时坏"，
+    幂等请求重试可显著提升稳定性；temperature=0 输出确定性，重试安全）。
     """
     if not config or not (config.get("base_url") and config.get("api_key") and config.get("model")):
         return None
-    url = config["base_url"].rstrip("/") + "/chat/completions"
     payload = {
         "model": config["model"],
         "messages": [
@@ -177,26 +203,15 @@ def chat_json(
     extra = config.get("extra_body")
     if isinstance(extra, dict):
         payload.update(extra)
-    headers = {"Authorization": f"Bearer {config['api_key']}"}
-    # 连接 5s 快速失败（外网不可达时尽快降级关键词解析器），生成读取给足 30s
-    timeout_policy = httpx.Timeout(timeout, connect=5.0)
-    try:
-        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout_policy, verify=_http_verify(config))
-        resp.raise_for_status()
-        message = resp.json()["choices"][0]["message"]
-        obj = _extract_json_object(message.get("content") or "")
-        if obj is None:
-            # content 为空/非 JSON：推理型模型 token 耗尽或输出夹带说明文字
-            logger.warning(
-                "LLM 返回无法解析为 JSON 对象（降级）: finish=%s content=%.200r reasoning_len=%s",
-                resp.json()["choices"][0].get("finish_reason"),
-                message.get("content"),
-                len(message.get("reasoning_content") or ""),
-            )
-        return obj
-    except Exception as exc:  # 网络/超时/JSON/结构任一失败都降级
-        logger.warning("LLM 意图解析失败（降级到关键词解析器）: %s", exc)
-        return None
+
+    for attempt in (1, 2):
+        obj = _post_chat(config, payload, timeout)
+        if obj is not None:
+            if attempt > 1:
+                logger.info("LLM 请求第 %s 次重试成功", attempt)
+            return obj
+        logger.warning("LLM 意图解析第 %s/2 次尝试失败", attempt)
+    return None
 
 
 def test_connection(config: dict | None, timeout: float = 15.0) -> tuple[bool, str]:

@@ -130,7 +130,9 @@ function exportResult() {
           <template v-if="col.key === 'value'">{{ formatMetricValue(row.value) }}</template>
           <template v-else-if="col.key === 'share'">
             <div v-if="row.share !== null && row.share !== undefined" class="ask__share">
-              <span class="ask__share-bar" :style="{ width: `${Math.max(row.share * 100, 2)}%` }" />
+              <div class="ask__share-track">
+                <span class="ask__share-bar" :style="{ width: `${Math.max(row.share * 100, 3)}%` }" />
+              </div>
               <span class="ask__share-num">{{ (row.share * 100).toFixed(1) }}%</span>
             </div>
             <span v-else>—</span>
@@ -253,23 +255,36 @@ function exportResult() {
   line-height: 1.6;
 }
 
-/* 占比列：迷你条形 + 数值 */
+/* 占比列：条形自适应剩余宽度，数值固定宽右对齐（不随列宽变化被截断） */
 .ask__share {
   display: flex;
   align-items: center;
   gap: var(--pwc-space-2);
-  min-width: 110px;
+  width: 100%;
+  min-width: 130px;
+}
+
+.ask__share-track {
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  overflow: hidden;
 }
 
 .ask__share-bar {
-  height: 8px;
+  display: block;
+  height: 100%;
   border-radius: 4px;
   background: var(--pwc-brand, #FD5108);
   opacity: 0.55;
-  flex-shrink: 0;
 }
 
 .ask__share-num {
+  flex-shrink: 0;
+  min-width: 46px;
+  text-align: right;
   font-size: 12px;
   color: var(--pwc-text-secondary);
   white-space: nowrap;

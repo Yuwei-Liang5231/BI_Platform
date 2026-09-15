@@ -166,6 +166,21 @@ def test_execute_conclusion_and_profile(client, ask_env):
     assert sum(shares) == pytest.approx(1.0)
 
 
+def test_fuzzy_stem_match_covers_colloquial_variant(client, ask_env):
+    """口语变体「销售情况」不含别名全词「销售额」→ 词干「销售」近似命中，
+    理解卡可计算并带语义近似提示（用户实测：同会话上一问成功、此问曾走逃生舱）。
+
+    注意：client 是 session 级共享库，本测试不做 role 限制类写操作，
+    受限场景由 test_permission_inheritance / test_followup_permission_rechecked_per_turn 覆盖。
+    """
+    card = _ask(client, "华南地区5月的销售情况怎么样啊")
+    assert card["can_compute"] is True
+    assert card["mode"] == "analysis"
+    assert card["metric"]["code"] == METRIC_CODE
+    approx = next(a for a in card["ambiguous"] if a["field"] == "metric")
+    assert "近似" in approx["reason"]
+
+
 def test_parse_topn_chinese_numerals():
     """中文数字 TopN（用户实测 bug：说「前五」但显示条数默认 10）。"""
     from app.domain.ask.service import parse_topn_order

@@ -195,20 +195,44 @@ def _metric_candidates(metric: Metric) -> list[str]:
     return [metric.code, metric.name, *aliases]
 
 
-def match_metrics(question: str, metrics: list[Metric]) -> list[Metric]:
-    """按问句包含的候选文本匹配；按匹配文本长度降序（越具体越优先）。"""
+_FUZZY_TAIL_CHARS = "额量数值费金"  # 业务后缀：词干近似匹配时剥离（销售额→销售）
+
+
+def _candidate_stem(candidate: str) -> str:
+    """候选文本剥掉尾部业务后缀成词干（至少保留 2 字，避免过度泛化）。"""
+    stem = (candidate or "").strip()
+    while len(stem) > 2 and stem[-1] in _FUZZY_TAIL_CHARS:
+        stem = stem[:-1]
+    return stem if len(stem) >= 2 else ""
+
+
+def match_metrics(question: str, metrics: list[Metric]) -> tuple[list[Metric], dict[Metric, str]]:
+    """指标匹配：先精确（问句包含候选全名/别名），无精确命中再做**词干近似**。
+
+    返回 (精确命中列表, 近似命中 {指标: 命中词干})——精确命中优先，
+    近似仅作兜底（如「销售情况」词干「销售」≈「销售额」），调用方须在
+    理解卡标注"语义近似匹配"提示用户确认。各自按匹配长度降序（越具体越优先）。
+    """
     q = question.lower()
-    hits: list[tuple[int, Metric]] = []
+    exact: list[tuple[int, Metric]] = []
+    approx: dict[Metric, str] = {}
     for m in metrics:
         best = 0
+        stem_best = ""
         for cand in _metric_candidates(m):
             c = cand.lower().strip()
             if c and c in q and len(c) > best:
                 best = len(c)
+            if not stem_best:
+                stem = _candidate_stem(c)
+                if stem and stem in q:
+                    stem_best = stem
         if best:
-            hits.append((best, m))
-    hits.sort(key=lambda t: -t[0])
-    return [m for _, m in hits]
+            exact.append((best, m))
+        elif stem_best:
+            approx[m] = stem_best
+    exact.sort(key=lambda t: -t[0])
+    return [m for _, m in exact], approx
 
 
 # ---------------------------------------------------------------- LLM 意图
@@ -368,8 +392,8 @@ def build_card(db: Session, user, question: str, conversation_id: int | None = N
     restricted_named = [m for m in all_active if m.id in hidden]
 
     prev_intent = ask_session.get_intent(session_key)
-    hits = match_metrics(question, visible)
-    restricted_hits = match_metrics(question, restricted_named)
+    hits, approx_hits = match_metrics(question, visible)
+    restricted_hits, restricted_approx = match_metrics(question, restricted_named)
 
     metric: Metric | None = None
     ambiguous: list[dict] = []
@@ -388,8 +412,24 @@ def build_card(db: Session, user, question: str, conversation_id: int | None = N
                 "reason": "问题命中多个指标：已默认取最具体的一个，其余可在「同时计算」中勾选",
             }
         )
-    elif restricted_hits:
+    elif restricted_hits or restricted_approx:
+        # 精确/近似命中受限指标：与 exact 行为一致，提示无权限不泄露名称
         no_metric_reason = "该指标无权限"
+    elif approx_hits:
+        # 语义近似兜底（B9.2-5 后补）：口语变体如「销售情况」词干「销售」≈「销售额」
+        approx_sorted = sorted(approx_hits.items(), key=lambda t: -len(t[1]))
+        metric = approx_sorted[0][0]
+        ambiguous.append(
+            {
+                "field": "metric",
+                "options": [{"code": m.code, "name": m.name} for m, _ in approx_sorted[:5]],
+                "default": metric.code,
+                "reason": (
+                    f"未命中指标全名，已按语义近似匹配（「{approx_sorted[0][1]}」≈「{metric.name}」）；"
+                    "如不对请在理解卡中修改"
+                ),
+            }
+        )
     elif prev_intent is not None and _looks_like_followup(question):
         # 追问轮：继承上一轮指标；权限每轮重校验（继承指标已受限 → 提示无权限，不泄露名称）
         prev_code = prev_intent.get("metric_code")
