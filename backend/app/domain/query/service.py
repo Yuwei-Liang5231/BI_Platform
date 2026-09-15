@@ -385,7 +385,8 @@ VALID_BREAKDOWN_FILTER_OPS = ("<=", ">=", "!=", "=", ">", "<", "is_null", "is_no
 DEFAULT_BREAKDOWN_TOP_N = 10
 MAX_BREAKDOWN_TOP_N = 50
 MAX_BREAKDOWN_ROWS = 2000        # SQL 端拉回上限：防高基数列把结果集拖爆
-LOW_CARDINALITY_THRESHOLD = 200  # 候选维度列「低基数」判定线；200 组内 GROUP BY + TopN≤50 性能可控（V1.3.2 由 50 放宽：真实列如 ToolName 60+ 值被误挡）
+LOW_CARDINALITY_THRESHOLD = 200  # 「低基数」提示线：≤200 前端正常展示；超过标注「拆解较慢」（V1.3.2 由 50 放宽）
+BREAKDOWN_MAX_CARDINALITY = 5000  # 拆解硬上限：ID 类极端高基数列（每行一值、无洞察且拖垮聚合）不开放拆解
 
 
 def _parse_breakdown_filters(raw) -> list[FilterCondition]:

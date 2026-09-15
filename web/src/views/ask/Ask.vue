@@ -255,6 +255,12 @@ const metricName = computed(() => {
 
 const isBreakdown = (data) => data?.kind === "breakdown";
 
+// 维度候选标签：高基数列（>200 值，与后端 LOW_CARDINALITY_THRESHOLD 对齐）标注拆解较慢，由业务自行取舍
+const dimLabel = (d) =>
+  d.distinct_count > 200
+    ? `${d.column}（${d.dataset} · ${d.distinct_count} 值 · 拆解较慢）`
+    : `${d.column}（${d.dataset} · ${d.distinct_count} 值）`;
+
 onMounted(fetchSuggestions);
 </script>
 
@@ -472,7 +478,7 @@ onMounted(fetchSuggestions);
               <el-option
                 v-for="d in dimensionOptions"
                 :key="d.column"
-                :label="`${d.column}（${d.dataset} · ${d.distinct_count} 值）`"
+                :label="dimLabel(d)"
                 :value="d.column"
               />
             </el-select>

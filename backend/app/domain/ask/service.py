@@ -311,6 +311,7 @@ def build_card(db: Session, user, question: str) -> dict:
         raise BusinessError("请输入问题", 40000)
 
     from app.core.config import get_settings
+    from app.domain.query.service import BREAKDOWN_MAX_CARDINALITY
 
     settings = get_settings()
     # LLM 配置：模型管理页启用的记录优先，env 兜底；都无则走关键词解析器
@@ -365,7 +366,9 @@ def build_card(db: Session, user, question: str) -> dict:
 
         try:
             dim_ctx = list_breakdown_dimensions(db, metric_ref=metric.code, user=user)
-            dim_candidates = [d for d in dim_ctx["dimensions"] if d["low_cardinality"]]
+            # V1.3.2：候选不再限低基数——业务从哪个维度拆只有业务知道；
+            # 仅拦 ID 类极端高基数（>5000 值，拆解无洞察且拖垮聚合），高基数列由前端标注提示
+            dim_candidates = [d for d in dim_ctx["dimensions"] if d["distinct_count"] <= BREAKDOWN_MAX_CARDINALITY]
         except Exception:
             dim_candidates = []  # 维度候选获取失败不阻塞理解卡，仅少拆解能力
 
@@ -434,7 +437,10 @@ def build_card(db: Session, user, question: str) -> dict:
                     from app.domain.query.service import list_breakdown_dimensions
 
                     dim_ctx = list_breakdown_dimensions(db, metric_ref=metric.code, user=user)
-                    dim_candidates = [d for d in dim_ctx["dimensions"] if d["low_cardinality"]]
+                    dim_candidates = [
+                        d for d in dim_ctx["dimensions"]
+                        if d["distinct_count"] <= BREAKDOWN_MAX_CARDINALITY
+                    ]
                 except Exception:
                     dim_candidates = []
             if not time_is_explicit and intent.get("start") and intent.get("end"):
