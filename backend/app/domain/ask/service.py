@@ -664,6 +664,102 @@ def build_card(db: Session, user, question: str, conversation_id: int | None = N
 # ---------------------------------------------------------------- 执行（口径同源）
 
 
+def _metric_profile(metric: Metric) -> dict:
+    """指标口径摘要（B9.2-5 ⑥口径透明）：业务可读的 calc_rule 摘要，兼容 flat/expression 两形态。"""
+    try:
+        rule = json.loads(metric.calc_rule_json or "{}")
+    except json.JSONDecodeError:
+        rule = {}
+    profile: dict = {
+        "name": metric.name,
+        "definition": metric.definition or "",
+    }
+    if "base_aggregation" in rule and "source" in rule:
+        src = rule.get("source") or {}
+        profile.update(
+            {
+                "kind": "flat",
+                "aggregation": rule.get("base_aggregation", ""),
+                "source_table": src.get("table", ""),
+                "source_column": src.get("column", ""),
+                "filter": src.get("filter") or "",
+            }
+        )
+    else:
+        operands = rule.get("operands") or {}
+        profile.update(
+            {
+                "kind": "expression",
+                "expression": rule.get("expression", ""),
+                "operands": [
+                    {
+                        "name": k,
+                        "table": v.get("table", ""),
+                        "column": v.get("column") or "",
+                        "aggregation": v.get("aggregation", ""),
+                        "filter": v.get("filter") or "",
+                    }
+                    for k, v in operands.items()
+                ],
+            }
+        )
+    return profile
+
+
+_AGG_CN = {"sum": "求和", "avg": "平均", "count": "计数", "max": "最大", "min": "最小", "count_distinct": "去重计数"}
+
+
+def _fmt_num(v) -> str:
+    try:
+        return f"{float(v):,.2f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _build_conclusion(data: dict) -> str | None:
+    """一句话结论（B9.2-5 ④）：**纯模板拼装**，数字全部来自 compute 单点出口的返回值
+    —— LLM 不参与结论生成，算写分离红线不破。解析不出有效数字时返回 None。"""
+    kind = data.get("kind")
+    if kind == "breakdown":
+        rows = [r for r in data.get("rows") or [] if r.get("value") is not None]
+        if not rows:
+            return None
+        top, second = rows[0], rows[1] if len(rows) > 1 else None
+        parts = [f"按「{data['dimension']}」拆解共 {data.get('total_groups', len(rows))} 组"]
+        head = f"{top['dimension']} 以 {_fmt_num(top['value'])} 排名第一"
+        if top.get("share") is not None:
+            head += f"，占比 {top['share'] * 100:.1f}%"
+        parts.append(head)
+        if second is not None:
+            tail = f"其后为 {second['dimension']}（{_fmt_num(second['value'])}"
+            if second.get("share") is not None:
+                tail += f"，占比 {second['share'] * 100:.1f}%"
+            tail += "）"
+            parts.append(tail)
+        cmp = data.get("compare")
+        if cmp and top.get("change_pct") is not None:
+            arrow = "▲" if top["change_pct"] >= 0 else "▼"
+            parts.append(f"{top['dimension']} {cmp['type']}{arrow}{abs(top['change_pct']):.2f}%")
+        return "：".join([parts[0], "；".join(parts[1:])]) + "。"
+    if kind == "value":
+        value = data.get("value")
+        if value is None:
+            return None
+        if data.get("constant"):
+            base = f"「{data.get('name')}」为全期常数 {_fmt_num(value)}（与查询区间无关）"
+            return base
+        span = f"{data['start']} ~ {data['end']}"
+        base = f"{span} 「{data.get('name')}」为 {_fmt_num(value)}"
+        if not data.get("period_complete") and data.get("data_through"):
+            base += f"（数据截至 {data['data_through']}）"
+        cmp = data.get("compare")
+        if cmp and cmp.get("change_pct") is not None:
+            arrow = "▲" if cmp["change_pct"] >= 0 else "▼"
+            base += f"，{cmp['type']}{arrow}{abs(cmp['change_pct']):.2f}%（基期 {cmp['start']} ~ {cmp['end']}）"
+        return base + "。"
+    return None
+
+
 def execute_card(
     db: Session,
     user,
@@ -694,12 +790,14 @@ def execute_card(
             order_by=order_by, order=order, top_n=top_n, user=user,
         )
         data["kind"] = "breakdown"
-        _persist_results(db, user, conversation_id, data)
-        return data
-    data = query_service.compute_metric_value(
-        db, metric_ref=metric, start=start, end=end, compare=compare, user=user
-    )
-    data["kind"] = "value"
+    else:
+        data = query_service.compute_metric_value(
+            db, metric_ref=metric, start=start, end=end, compare=compare, user=user
+        )
+        data["kind"] = "value"
+    # B9.2-5：一句话结论（模板拼装，数字全部来自上方 compute 返回）+ 口径摘要
+    data["conclusion"] = _build_conclusion(data)
+    data["metric_profile"] = _metric_profile(query_service._resolve_metric(db, metric))
     _persist_results(db, user, conversation_id, data)
     return data
 

@@ -112,6 +112,16 @@ class TestAdditiveBreakdown:
         assert data["total_groups"] == 2
         assert data["period_complete"] is True
         assert data["cache"] == "miss"
+        # B9.2-5 占比：正值组 share 合计 = 100%
+        assert sum(r["share"] for r in data["rows"]) == pytest.approx(1.0)
+
+    def test_share_null_when_total_not_positive(self, client, br_env):
+        """B9.2-5：全体组值非正（如全 0）→ 占比无语义，share 恒为 None 不误报。"""
+        resp = _breakdown(client, br_env["gmv"], "2026-02-01", "2026-02-25")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        if data["rows"]:
+            assert all(r["share"] is None for r in data["rows"])
 
 
 class TestRatioBreakdown:

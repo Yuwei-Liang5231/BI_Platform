@@ -137,6 +137,35 @@ def _ask_card(client, question: str, conversation_id: int | None = None):
     return client.post("/api/query/ask", json=body).json()["data"]
 
 
+def test_execute_conclusion_and_profile(client, ask_env):
+    """B9.2-5：一句话结论（数字与 compute 返回对账）+ 口径摘要。"""
+    resp = client.post(
+        "/api/query/ask/execute",
+        json={"metric": METRIC_CODE, "start": "2026-01-01", "end": "2026-01-31"},
+    )
+    d = resp.json()["data"]
+    assert d["kind"] == "value"
+    assert d["conclusion"] and f"{d['value']:,.2f}" in d["conclusion"]
+    assert d["metric_profile"]["kind"] == "flat"
+    assert d["metric_profile"]["aggregation"] == "sum"
+    assert d["metric_profile"]["source_column"] == "amount"
+
+    # 拆解：结论含第一组维度值与占比；占比合计 = 100%
+    resp2 = client.post(
+        "/api/query/ask/execute",
+        json={
+            "metric": METRIC_CODE, "start": "2026-01-01", "end": "2026-01-31",
+            "dimension": "status",
+        },
+    )
+    d2 = resp2.json()["data"]
+    assert d2["kind"] == "breakdown"
+    assert d2["conclusion"] and d2["rows"][0]["dimension"] in d2["conclusion"]
+    assert f"{d2['rows'][0]['value']:,.2f}" in d2["conclusion"]
+    shares = [r["share"] for r in d2["rows"] if r["share"] is not None]
+    assert sum(shares) == pytest.approx(1.0)
+
+
 def test_parse_topn_chinese_numerals():
     """中文数字 TopN（用户实测 bug：说「前五」但显示条数默认 10）。"""
     from app.domain.ask.service import parse_topn_order
@@ -196,6 +225,8 @@ def test_execute_matches_dashboard_metric_value(client, ask_env):
     # （cache: miss → hit）——口径同源的最强证据
     assert via_ask.pop("kind") == "value"  # B9.2-2：执行结果带出口类型标注
     via_ask.pop("cache"), via_dash.pop("cache")
+    # B9.2-5：问数层附加结论/口径摘要（计算数值口径同源，不参与同源比对）
+    via_ask.pop("conclusion"), via_ask.pop("metric_profile")
     assert via_ask == via_dash
     assert via_ask["value"] == pytest.approx(370.0)
 
@@ -250,6 +281,8 @@ def test_execute_breakdown_via_ask(client, ask_env):
     via_direct = client.post("/api/query/breakdown", json=body).json()["data"]
     assert via_ask.pop("kind") == "breakdown"
     via_direct.pop("cache"), via_ask.pop("cache")
+    # B9.2-5：问数层附加结论/口径摘要（计算口径同源，不参与同源比对）
+    via_ask.pop("conclusion"), via_ask.pop("metric_profile")
     assert via_ask == via_direct
     rows = {r["dimension"]: r["value"] for r in via_ask["rows"]}
     assert rows["paid"] == pytest.approx(370.0)

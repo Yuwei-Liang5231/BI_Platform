@@ -16,9 +16,30 @@ const isBreakdown = computed(() => props.data?.kind === "breakdown");
 
 const breakdownCols = [
   { key: "value", label: "当期值" },
+  { key: "share", label: "占比" },
   { key: "change_abs", label: "绝对变化" },
   { key: "change_pct", label: "变化率 %" },
 ];
+
+const AGG_CN = { sum: "求和", avg: "平均", count: "计数", max: "最大", min: "最小", count_distinct: "去重计数" };
+
+/** 口径摘要行（B9.2-5 ⑥）：flat / expression 两形态 → 业务可读短句列表 */
+const profileLines = computed(() => {
+  const p = props.data?.metric_profile;
+  if (!p) return [];
+  const lines = [];
+  if (p.definition) lines.push(`口径说明：${p.definition}`);
+  if (p.kind === "flat") {
+    lines.push(`算法：对 ${p.source_table}.${p.source_column} ${AGG_CN[p.aggregation] ?? p.aggregation}`);
+    if (p.filter) lines.push(`过滤条件：${p.filter}`);
+  } else {
+    lines.push(`算法：${p.expression}`);
+    for (const o of p.operands ?? []) {
+      lines.push(`操作数 ${o.name} = ${o.table}.${o.column} ${AGG_CN[o.aggregation] ?? o.aggregation}${o.filter ? `（过滤：${o.filter}）` : ""}`);
+    }
+  }
+  return lines;
+});
 
 const changePct = computed(() => {
   const c = props.data?.compare;
@@ -93,6 +114,8 @@ function exportResult() {
       </span>
       <el-button text type="primary" class="ask__export" @click="exportResult">⬇ 导出 CSV</el-button>
     </div>
+    <!-- B9.2-5 一句话结论：后端模板拼装（数字全部来自计算出口） -->
+    <div v-if="data.conclusion" class="ask__conclusion">💡 {{ data.conclusion }}</div>
     <el-table :data="data.rows" size="default" class="ask__table">
       <el-table-column prop="dimension" label="维度值" min-width="140" />
       <el-table-column
@@ -100,11 +123,18 @@ function exportResult() {
         :key="col.key"
         :prop="col.key"
         :label="col.label"
-        min-width="130"
+        min-width="120"
         sortable
       >
         <template #default="{ row }">
           <template v-if="col.key === 'value'">{{ formatMetricValue(row.value) }}</template>
+          <template v-else-if="col.key === 'share'">
+            <div v-if="row.share !== null && row.share !== undefined" class="ask__share">
+              <span class="ask__share-bar" :style="{ width: `${Math.max(row.share * 100, 2)}%` }" />
+              <span class="ask__share-num">{{ (row.share * 100).toFixed(1) }}%</span>
+            </div>
+            <span v-else>—</span>
+          </template>
           <template v-else-if="col.key === 'change_abs'">
             <span v-if="row.change_abs === null">—</span>
             <span v-else :class="row.change_abs >= 0 ? 'up' : 'down'">
@@ -127,6 +157,10 @@ function exportResult() {
       —— 与上方查询区间对比得出变化
     </div>
     <p v-else class="ask__hint">未启用对比或全期常数指标（无基期概念）</p>
+    <details v-if="profileLines.length" class="ask__profile">
+      <summary>口径说明（{{ displayName }}）</summary>
+      <p v-for="(l, i) in profileLines" :key="i">{{ l }}</p>
+    </details>
   </section>
 
   <!-- 单值卡 -->
@@ -141,6 +175,7 @@ function exportResult() {
       </span>
       <el-button text type="primary" class="ask__export" @click="exportResult">⬇ 导出 CSV</el-button>
     </div>
+    <div v-if="data.conclusion" class="ask__conclusion">💡 {{ data.conclusion }}</div>
     <div class="ask__result-value">{{ formatMetricValue(data.value) }}</div>
     <div v-if="changePct !== null" class="ask__result-compare">
       {{ data.compare?.type === "yoy" ? "同比" : "环比" }}
@@ -149,6 +184,10 @@ function exportResult() {
       </span>
     </div>
     <p v-else class="ask__hint">无对比基期数据</p>
+    <details v-if="profileLines.length" class="ask__profile">
+      <summary>口径说明（{{ displayName }}）</summary>
+      <p v-for="(l, i) in profileLines" :key="i">{{ l }}</p>
+    </details>
   </section>
 </template>
 
@@ -201,5 +240,55 @@ function exportResult() {
   color: var(--pwc-text-secondary);
   font-size: 12px;
   margin-top: var(--pwc-space-1);
+}
+
+/* B9.2-5 一句话结论条 */
+.ask__conclusion {
+  margin: var(--pwc-space-3) 0;
+  padding: var(--pwc-space-2) var(--pwc-space-3);
+  background: rgba(253, 81, 8, 0.06);
+  border-left: 3px solid var(--pwc-brand, #FD5108);
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 占比列：迷你条形 + 数值 */
+.ask__share {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+  min-width: 110px;
+}
+
+.ask__share-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--pwc-brand, #FD5108);
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.ask__share-num {
+  font-size: 12px;
+  color: var(--pwc-text-secondary);
+  white-space: nowrap;
+}
+
+/* 口径透明脚注（B9.2-5 ⑥） */
+.ask__profile {
+  margin-top: var(--pwc-space-3);
+  font-size: 12px;
+  color: var(--pwc-text-secondary);
+}
+
+.ask__profile summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ask__profile p {
+  margin: var(--pwc-space-1) 0 0 var(--pwc-space-4);
+  line-height: 1.6;
 }
 </style>

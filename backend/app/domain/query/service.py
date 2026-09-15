@@ -601,6 +601,15 @@ def _build_breakdown_payload(
             "change_pct": _change_pct(value, prev_value),
         })
     total_groups = len(rows)
+    # B9.2-5 占比：分母 = 截断前全部非空组值之和（TopN 截断后占比仍以全体为准）；
+    # 全部非正/无值 → share=None（无占比语义）
+    total_sum = sum(r["value"] for r in rows if r["value"] is not None)
+    for r in rows:
+        r["share"] = (
+            round(r["value"] / total_sum, 4)
+            if r["value"] is not None and total_sum > 0
+            else None
+        )
     # 空值组恒排末尾（与方向无关），其余按所选字段升/降序
     nonnull = [r for r in rows if r[order_by] is not None]
     nulls = [r for r in rows if r[order_by] is None]
