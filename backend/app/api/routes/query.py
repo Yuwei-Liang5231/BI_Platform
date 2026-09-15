@@ -82,6 +82,8 @@ class AskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str
+    # B9.2-4 多轮追问：上一轮理解卡返回的 session_id；缺省=首问（后端生成新会话）
+    session_id: str | None = None
 
 
 class AskExecuteRequest(BaseModel):
@@ -120,7 +122,7 @@ def ask(db: DbDep, body: AskRequest, user: CurrentUser):
     明确返回"算不了"原因，不现场拼装查询。
     B9.2-3：问句命中多个可见指标时附 multi_metrics 并列清单（前端可勾选同时计算）。
     """
-    return ok_response(ask_service.build_card(db, user, body.question))
+    return ok_response(ask_service.build_card(db, user, body.question, session_id=body.session_id))
 
 
 @router.get("/ask/suggestions")

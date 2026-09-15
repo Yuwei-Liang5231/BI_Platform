@@ -14,58 +14,190 @@
     {
       "id": "A1",
       "question": "2026年1月销售额是多少",
-      "expect": { "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-31", "compare": "none" }
+      "expect": {
+        "metric_code": "ask_gmv",
+        "start": "2026-01-01",
+        "end": "2026-01-31",
+        "compare": "none"
+      }
     },
     {
       "id": "A2",
       "question": "上个月营业额环比如何",
-      "expect": { "metric_code": "ask_gmv", "relative_time": "prev_month", "compare": "mom" }
+      "expect": {
+        "metric_code": "ask_gmv",
+        "relative_time": "prev_month",
+        "compare": "mom"
+      }
     },
     {
       "id": "A3",
       "question": "看一下 GMV 销售额",
-      "expect": { "metric_code": "ask_gmv", "relative_time": "prev_month", "compare": "none" }
+      "expect": {
+        "metric_code": "ask_gmv",
+        "relative_time": "prev_month",
+        "compare": "none"
+      }
     },
     {
       "id": "A4",
       "question": "2026-01-01至2026-01-15的销售额同比",
-      "expect": { "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-15", "compare": "yoy" }
+      "expect": {
+        "metric_code": "ask_gmv",
+        "start": "2026-01-01",
+        "end": "2026-01-15",
+        "compare": "yoy"
+      }
     },
     {
       "id": "A5",
       "question": "本月ask_gmv怎么样",
-      "expect": { "metric_code": "ask_gmv", "relative_time": "this_month", "compare": "none" }
+      "expect": {
+        "metric_code": "ask_gmv",
+        "relative_time": "this_month",
+        "compare": "none"
+      }
     },
     {
       "id": "A6",
       "question": "库存周转率是多少",
-      "expect": { "can_compute": false, "mode": "help" }
+      "expect": {
+        "can_compute": false,
+        "mode": "help"
+      }
     },
     {
       "id": "B1",
       "question": "按status拆解2026年1月销售额",
-      "expect": { "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-31", "dimension": "status" }
+      "expect": {
+        "metric_code": "ask_gmv",
+        "start": "2026-01-01",
+        "end": "2026-01-31",
+        "dimension": "status"
+      }
     },
     {
       "id": "B2",
       "question": "只看paid的上个月销售额环比",
       "expect": {
-        "metric_code": "ask_gmv", "relative_time": "prev_month", "compare": "mom",
-        "filters": [{ "column": "status", "op": "=", "value": "paid" }]
+        "metric_code": "ask_gmv",
+        "relative_time": "prev_month",
+        "compare": "mom",
+        "filters": [
+          {
+            "column": "status",
+            "op": "=",
+            "value": "paid"
+          }
+        ]
       }
     },
     {
       "id": "B3",
       "question": "2026年1月销售额各status环比，前1",
       "expect": {
-        "metric_code": "ask_gmv", "start": "2026-01-01", "end": "2026-01-31",
-        "compare": "mom", "dimension": "status", "top_n": 1
+        "metric_code": "ask_gmv",
+        "start": "2026-01-01",
+        "end": "2026-01-31",
+        "compare": "mom",
+        "dimension": "status",
+        "top_n": 1
       }
     },
     {
       "id": "B4",
       "question": "量子力学波函数坍缩是什么",
-      "expect": { "can_compute": false, "mode": "help" }
+      "expect": {
+        "can_compute": false,
+        "mode": "help"
+      }
+    },
+    {
+      "id": "MF1",
+      "question": "2026年1月销售额是多少",
+      "expect": {
+        "metric_code": "ask_gmv",
+        "start": "2026-01-01",
+        "end": "2026-01-31",
+        "compare": "none"
+      },
+      "followups": [
+        {
+          "question": "那上个月呢",
+          "expect": {
+            "metric_code": "ask_gmv",
+            "relative_time": "prev_month",
+            "compare": "none",
+            "inherited": true
+          }
+        },
+        {
+          "question": "那去年呢",
+          "expect": {
+            "metric_code": "ask_gmv",
+            "relative_time": "last_year",
+            "compare": "none",
+            "inherited": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "MF2",
+      "question": "2026年1月按status拆解销售额",
+      "expect": {
+        "metric_code": "ask_gmv",
+        "dimension": "status",
+        "start": "2026-01-01",
+        "end": "2026-01-31"
+      },
+      "followups": [
+        {
+          "question": "那上个月呢",
+          "expect": {
+            "metric_code": "ask_gmv",
+            "dimension": "status",
+            "relative_time": "prev_month",
+            "inherited": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "MF3",
+      "question": "2026年1月销售额前3是多少",
+      "expect": {
+        "metric_code": "ask_gmv",
+        "top_n": 3
+      },
+      "followups": [
+        {
+          "question": "重置一下，销售额环比如何",
+          "expect": {
+            "metric_code": "ask_gmv",
+            "relative_time": "prev_month",
+            "compare": "mom",
+            "top_n": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "MF4",
+      "question": "2026年1月销售额",
+      "expect": {
+        "metric_code": "ask_gmv",
+        "start": "2026-01-01",
+        "end": "2026-01-31"
+      },
+      "followups": [
+        {
+          "question": "帮我全面分析一下当前业务的整体经营状况和未来的战略建议",
+          "expect": {
+            "mode": "help"
+          }
+        }
+      ]
     }
   ]
 }

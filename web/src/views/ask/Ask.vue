@@ -17,9 +17,9 @@ import {
   askSuggestions,
   metricValue,
 } from "@/api/query";
-import { formatMetricValue } from "@/utils/format";
 import { useMetricStore } from "@/stores/metric";
 import { useAuthStore } from "@/stores/auth";
+import AskResultCard from "@/components/business/AskResultCard.vue";
 
 const auth = useAuthStore();
 const metricStore = useMetricStore();
@@ -32,13 +32,33 @@ const results = ref([]);
 const executing = ref(false);
 // 问句同时命中的其他指标勾选区（B9.2-3 多指标并列）
 const multiSelected = ref([]);
-// 空态推荐问题（B9.2-3）：后端按可见指标生成（非固定内容，随指标/权限变化）
+// 空态推荐问题（B9.2-3）：后端按可见指标生成；加载中不渲染避免先静态后推荐的跳动
 const suggestions = ref([]);
 const suggestionsLoading = ref(true);
 // 推荐为空/接口失败时回落静态示例
 const shownSuggestions = computed(() =>
   suggestions.value.length ? suggestions.value : EXAMPLES,
 );
+// B9.2-4 多轮会话：session_id 后端生成每轮携带；messages 记录历史轮（问句+只读结果）
+const sessionId = ref(null);
+const messages = ref([]); // {role:'user', text} | {role:'assistant', question, card, results}
+
+function resetChat() {
+  sessionId.value = null;
+  card.value = null;
+  results.value = [];
+  multiSelected.value = [];
+  messages.value = [];
+  Object.assign(cardEdit, {
+    metricCode: "", range: [], compare: "none", dimension: "",
+    filters: [], order_by: "value", order: "desc", top_n: null,
+  });
+}
+
+function syncResultsToLastMessage() {
+  const last = messages.value[messages.value.length - 1];
+  if (last?.role === "assistant") last.results = results.value;
+}
 
 // 可编辑理解卡的本地状态（B9.2-2：拆解维度/筛选/排序/TopN 同样可改）
 const cardEdit = reactive({
@@ -82,11 +102,11 @@ const orderByOptions = [
 const dimValueOptions = reactive({});   // { column: [values] }
 const dimValueLoading = reactive({});   // { column: bool }
 
-const changePctOf = (data) => {
-  const c = data?.compare;
-  if (!c || c.change_pct === null || c.change_pct === undefined) return null;
-  return c.change_pct;
-};
+// 维度候选标签：高基数列（>200 值，与后端 LOW_CARDINALITY_THRESHOLD 对齐）标注拆解较慢，由业务自行取舍
+const dimLabel = (d) =>
+  d.distinct_count > 200
+    ? `${d.column}（${d.dataset} · ${d.distinct_count} 值 · 拆解较慢）`
+    : `${d.column}（${d.dataset} · ${d.distinct_count} 值）`;
 
 async function fetchSuggestions() {
   try {
@@ -107,12 +127,16 @@ async function submit(questionOverride) {
   }
   asking.value = true;
   results.value = [];
+  messages.value.push({ role: "user", text: q });
   try {
-    const res = await askApi(q);
+    const res = await askApi(q, sessionId.value);
     card.value = res;
     // 多指标并列默认全选（问句本来就在问它们），用户可取消
     multiSelected.value = (res.multi_metrics ?? []).map((m) => m.code);
     applyCard(res);
+    // B9.2-4：session_id 由后端生成，每轮携带实现多轮追问
+    if (res.session_id) sessionId.value = res.session_id;
+    messages.value.push({ role: "assistant", question: q, card: res, results: [] });
   } finally {
     asking.value = false;
   }
@@ -214,6 +238,7 @@ async function execute() {
     }
     const datas = await Promise.all(jobs.map((j) => askExecuteApi(j.payload)));
     results.value = jobs.map((j, i) => ({ label: j.label, data: datas[i] }));
+    syncResultsToLastMessage();
   } finally {
     executing.value = false;
   }
@@ -238,28 +263,14 @@ async function recomputeWithDashboard() {
     ),
   );
   results.value = targets.map((t, i) => ({ label: t.name, data: datas[i] }));
+  syncResultsToLastMessage();
   ElMessage.success("已与看板同口径重算");
 }
-
-/** 拆解表格列（后端已按理解卡排序返回；表头可客户端再排） */
-const breakdownCols = [
-  { key: "value", label: "当期值" },
-  { key: "change_abs", label: "绝对变化" },
-  { key: "change_pct", label: "变化率 %" },
-];
 
 const metricName = computed(() => {
   const code = cardEdit.metricCode;
   return metricOptions.value.find((m) => m.code === code)?.name ?? code;
 });
-
-const isBreakdown = (data) => data?.kind === "breakdown";
-
-// 维度候选标签：高基数列（>200 值，与后端 LOW_CARDINALITY_THRESHOLD 对齐）标注拆解较慢，由业务自行取舍
-const dimLabel = (d) =>
-  d.distinct_count > 200
-    ? `${d.column}（${d.dataset} · ${d.distinct_count} 值 · 拆解较慢）`
-    : `${d.column}（${d.dataset} · ${d.distinct_count} 值）`;
 
 onMounted(fetchSuggestions);
 </script>
@@ -288,6 +299,9 @@ onMounted(fetchSuggestions);
         <el-button type="danger" size="large" :loading="asking" @click="submit()">
           理解问题
         </el-button>
+        <el-button v-if="messages.length" size="large" :disabled="asking" @click="resetChat">
+          新话题
+        </el-button>
       </div>
     </section>
 
@@ -306,6 +320,34 @@ onMounted(fetchSuggestions);
         </el-tag>
       </div>
     </section>
+
+    <!-- B9.2-4 会话消息流：历史轮问句气泡 + 只读结果；当前轮在下方完整可交互 -->
+    <template v-for="(msg, mi) in messages" :key="mi">
+      <div v-if="msg.role === 'user'" class="ask__bubble">{{ msg.text }}</div>
+      <template v-else-if="mi < messages.length - 1">
+        <AskResultCard
+          v-for="(r, ri) in msg.results"
+          :key="ri"
+          :data="r.data"
+          :label="r.label"
+          class="ask__history-result"
+        />
+        <el-alert
+          v-if="msg.card?.mode === 'help'"
+          type="info"
+          :closable="false"
+          show-icon
+          class="ask__history-help"
+          :title="msg.card.help_reply"
+        />
+        <div
+          v-else-if="msg.card?.mode === 'analysis' && !msg.results.length"
+          class="ask__hint ask__uncomputed"
+        >
+          该轮已理解（{{ msg.card.metric?.name ?? "—" }}），未计算
+        </div>
+      </template>
+    </template>
 
     <!-- 逃生舱：意图解析不出可执行结构 → 纯对话引导（无数字） -->
     <section v-if="card && card.mode === 'help'" class="pwc-card ask__card">
@@ -336,6 +378,14 @@ onMounted(fetchSuggestions);
       </div>
 
       <!-- 解析来源提示：成功/降级/未配置都必须给用户明确反馈 -->
+      <el-alert
+        v-if="card.inherited"
+        type="success"
+        :closable="false"
+        show-icon
+        class="ask__amb"
+        title="已继承上一轮的指标与口径，时间/维度等按新问题更新；如有偏差可在理解卡中修改"
+      />
       <el-alert
         v-if="card.source === 'llm'"
         type="success"
@@ -454,7 +504,10 @@ onMounted(fetchSuggestions);
               end-placeholder="结束"
               style="width: 100%"
             />
-            <span v-if="!card.time_is_explicit" class="ask__hint">
+            <span v-if="card.time_inherited" class="ask__hint">
+              时间继承上一轮问题，可直接修改
+            </span>
+            <span v-else-if="!card.time_is_explicit" class="ask__hint">
               问题未指明时间，默认取上一完整自然月
             </span>
           </el-form-item>
@@ -561,75 +614,13 @@ onMounted(fetchSuggestions);
       <el-alert v-else :title="card.no_metric_reason" type="warning" :closable="false" show-icon />
     </section>
 
-    <!-- 结果：多指标并列渲染（B9.2-3），每条与 ask/execute 返回同构 -->
-    <template v-for="(r, ri) in results" :key="ri">
-      <!-- 拆解表格 -->
-      <section v-if="isBreakdown(r.data)" class="pwc-card ask__result">
-        <div class="ask__result-head">
-          <span class="ask__result-metric">{{ r.data.name || r.label }} · 按「{{ r.data.dimension }}」拆解</span>
-          <span class="pwc-badge pwc-badge--grey">
-            {{ r.data.start }} ~ {{ r.data.end }}
-            <template v-if="!r.data.period_complete && r.data.data_through">
-              · 数据截至 {{ r.data.data_through }}
-            </template>
-            · 共 {{ r.data.total_groups }} 组，显示前 {{ r.data.rows.length }} 组
-          </span>
-        </div>
-        <el-table :data="r.data.rows" size="default" class="ask__table">
-          <el-table-column prop="dimension" label="维度值" min-width="140" />
-          <el-table-column
-            v-for="col in breakdownCols"
-            :key="col.key"
-            :prop="col.key"
-            :label="col.label"
-            min-width="130"
-            sortable
-          >
-            <template #default="{ row }">
-              <template v-if="col.key === 'value'">{{ formatMetricValue(row.value) }}</template>
-              <template v-else-if="col.key === 'change_abs'">
-                <span v-if="row.change_abs === null">—</span>
-                <span v-else :class="row.change_abs >= 0 ? 'up' : 'down'">
-                  {{ row.change_abs >= 0 ? "+" : "" }}{{ formatMetricValue(row.change_abs) }}
-                </span>
-              </template>
-              <template v-else>
-                <span v-if="row.change_pct === null">—</span>
-                <span v-else :class="row.change_pct >= 0 ? 'up' : 'down'">
-                  {{ row.change_pct >= 0 ? "▲" : "▼" }} {{ Math.abs(row.change_pct).toFixed(2) }}%
-                </span>
-              </template>
-            </template>
-          </el-table-column>
-        </el-table>
-        <div v-if="r.data.compare" class="ask__hint">
-          基期：{{ r.data.compare.start }} ~ {{ r.data.compare.end }}
-          <template v-if="!r.data.compare.period_complete">（数据截至 {{ r.data.compare.data_through }}）</template>
-        </div>
-        <p v-else class="ask__hint">未启用对比或全期常数指标（无基期概念）</p>
-      </section>
-
-      <!-- 单值卡 -->
-      <section v-else class="pwc-card ask__result">
-        <div class="ask__result-head">
-          <span class="ask__result-metric">{{ r.label }}</span>
-          <span class="pwc-badge pwc-badge--grey">
-            {{ r.data.start }} ~ {{ r.data.end }}
-            <template v-if="!r.data.period_complete && r.data.data_through">
-              · 数据截至 {{ r.data.data_through }}
-            </template>
-          </span>
-        </div>
-        <div class="ask__result-value">{{ formatMetricValue(r.data.value) }}</div>
-        <div v-if="changePctOf(r.data) !== null" class="ask__result-compare">
-          {{ r.data.compare?.type === "yoy" ? "同比" : "环比" }}
-          <span :class="changePctOf(r.data) >= 0 ? 'up' : 'down'">
-            {{ changePctOf(r.data) >= 0 ? "▲" : "▼" }} {{ Math.abs(changePctOf(r.data)).toFixed(2) }}%
-          </span>
-        </div>
-        <p v-else class="ask__hint">无对比基期数据</p>
-      </section>
-    </template>
+    <!-- 结果：多指标并列渲染（B9.2-3），AskResultCard 与历史轮共用（B9.2-4 抽取） -->
+    <AskResultCard
+      v-for="(r, ri) in results"
+      :key="ri"
+      :data="r.data"
+      :label="r.label"
+    />
   </div>
 </template>
 
@@ -643,6 +634,31 @@ onMounted(fetchSuggestions);
 
 .ask__input-row .el-input {
   flex: 1;
+}
+
+/* B9.2-4 会话消息流 */
+.ask__bubble {
+  max-width: 72%;
+  margin: var(--pwc-space-4) 0 var(--pwc-space-2) auto;
+  padding: var(--pwc-space-2) var(--pwc-space-3);
+  background: var(--pwc-brand, #FD5108);
+  color: #fff;
+  border-radius: 12px 12px 2px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  width: fit-content;
+}
+
+.ask__history-result {
+  margin-top: var(--pwc-space-3);
+}
+
+.ask__history-help {
+  margin-top: var(--pwc-space-3);
+}
+
+.ask__uncomputed {
+  margin-top: var(--pwc-space-3);
 }
 
 .ask__examples {

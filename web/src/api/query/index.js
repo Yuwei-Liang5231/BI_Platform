@@ -10,8 +10,10 @@ import request from "@/config/request";
 export const metricValue = (data) => request.post("/query/metric-value", data);
 
 /** 问数（B9）：问句 → 理解卡（只解析意图，不产数值）。
- *  B9.2-3：命中多个指标时返回 multi_metrics 并列清单。 */
-export const ask = (question) => request.post("/query/ask", { question });
+ *  B9.2-3：命中多个指标时返回 multi_metrics 并列清单。
+ *  B9.2-4：sessionId 每轮携带实现多轮追问（首问 null，后端生成新会话）。 */
+export const ask = (question, sessionId) =>
+  request.post("/query/ask", { question, session_id: sessionId ?? null });
 
 /** 空态推荐问题（B9.2-3）：可见指标自动生成的示例问法（≤5 条）。 */
 export const askSuggestions = () => request.get("/query/ask/suggestions");

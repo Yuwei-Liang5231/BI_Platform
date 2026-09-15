@@ -145,6 +145,17 @@ def parse_filter_words(question: str) -> list[dict]:
     return out
 
 
+# 追问语气/指代/相对时间词（B9.2-4）：问句无指标词面但含这些信号 → 继承上一轮意图
+_FOLLOWUP_RE = re.compile(
+    r"那|再|还|就|只|仅|它|他|她|这|呢|吧$|同比|环比|上(一)?个?月|上上月|去年|今年|本月|上月|最近\d+天"
+)
+
+
+def _looks_like_followup(question: str) -> bool:
+    """追问判定辅助：短问句 + 追问语气/指代/时间词。长问句（>30 字）视为新问题。"""
+    return len(question) <= 30 and bool(_FOLLOWUP_RE.search(question))
+
+
 def _to_date(raw: str) -> date:
     y, m, d = re.split(r"[-/]", raw)
     return date(int(y), int(m), int(d))
@@ -300,17 +311,21 @@ def _llm_help_reply(config: dict, question: str, metric_names: list[str]) -> str
 # ---------------------------------------------------------------- 理解卡
 
 
-def build_card(db: Session, user, question: str) -> dict:
+def build_card(db: Session, user, question: str, session_id: str | None = None) -> dict:
     """问句 → 理解卡（只解析意图，不计算数值）。
 
     B9.2-2 扩展：拆解维度/筛选/排序/TopN 进意图（全部锚定真实数据候选）；
     意图解析不出可执行结构时走「逃生舱」纯对话兜底（mode=help，无数字）。
+    B9.2-4 多轮追问：问句无指标词面且带追问语气/指代/时间词时，继承上一轮
+    意图（metric/dimension/filters/排序/对比），时间按新词重算、无新词则继承；
+    权限每轮重校验（继承指标已受限 → 提示无权限，不泄露名称）。
     """
     question = (question or "").strip()
     if not question:
         raise BusinessError("请输入问题", 40000)
 
     from app.core.config import get_settings
+    from app.domain.ask import session as ask_session
     from app.domain.query.service import BREAKDOWN_MAX_CARDINALITY
 
     settings = get_settings()
@@ -324,12 +339,14 @@ def build_card(db: Session, user, question: str) -> dict:
     visible = [m for m in all_active if m.id not in hidden]
     restricted_named = [m for m in all_active if m.id in hidden]
 
+    prev_intent = ask_session.get_intent(session_id)
     hits = match_metrics(question, visible)
     restricted_hits = match_metrics(question, restricted_named)
 
     metric: Metric | None = None
     ambiguous: list[dict] = []
     no_metric_reason: str | None = None
+    inherited = False       # B9.2-4：本轮为追问轮且成功继承上一轮指标
 
     if len(hits) == 1:
         metric = hits[0]
@@ -345,17 +362,39 @@ def build_card(db: Session, user, question: str) -> dict:
         )
     elif restricted_hits:
         no_metric_reason = "该指标无权限"
-    else:
+    elif prev_intent is not None and _looks_like_followup(question):
+        # 追问轮：继承上一轮指标；权限每轮重校验（继承指标已受限 → 提示无权限，不泄露名称）
+        prev_code = prev_intent.get("metric_code")
+        prev_metric = next((m for m in visible if m.code == prev_code), None)
+        if prev_metric is not None:
+            metric = prev_metric
+            inherited = True
+        elif any(m.code == prev_code for m in restricted_named):
+            no_metric_reason = "该指标无权限"
+        # 继承指标已被删除：落回下方「无匹配指标」首问处理
+    if metric is None and no_metric_reason is None:
         no_metric_reason = "没有找到匹配的指标（可先在指标目录确认指标名称或别名）"
 
     start, end = previous_complete_month(today)
     time_is_explicit = False
+    time_inherited = False
     time_hit = parse_time_range(question, today)
     if time_hit:
         start, end, _ = time_hit
         time_is_explicit = True
+    elif inherited and prev_intent.get("start") and prev_intent.get("end"):
+        # 追问轮无新时间词 → 继承上一轮时间（如「那上个月呢」之外的纯指代）
+        start = date.fromisoformat(prev_intent["start"])
+        end = date.fromisoformat(prev_intent["end"])
+        time_inherited = True
 
-    compare = parse_compare(question) or "none"
+    parsed_compare = parse_compare(question)
+    if parsed_compare:
+        compare = parsed_compare
+    elif inherited and prev_intent.get("compare"):
+        compare = prev_intent["compare"]  # 追问轮无对比词 → 沿用上一轮口径
+    else:
+        compare = "none"
 
     # 拆解意图（B9.2-2）：先取该指标的候选维度列（权限同源、真实数据锚点）
     dimension: str | None = None
@@ -421,6 +460,19 @@ def build_card(db: Session, user, question: str) -> dict:
                 if grounded:
                     rule_filters.extend(grounded)
                     break
+
+    # 追问轮补全（B9.2-4）：本轮词面未命中的意图字段继承上一轮
+    if inherited:
+        valid_cols = {c["column"] for c in dim_candidates}
+        if dimension is None and prev_intent.get("dimension") in valid_cols:
+            dimension = prev_intent["dimension"]  # 上一轮维度仍在本轮候选内才继承
+        if not rule_filters and prev_intent.get("filters"):
+            prev_filters = [f for f in prev_intent["filters"] if f.get("column") in valid_cols]
+            if prev_filters == prev_intent.get("filters"):
+                rule_filters = [dict(f) for f in prev_filters]  # 列全部仍有效才整体继承
+        for k in ("order_by", "order", "top_n"):
+            if topn_intent.get(k) is None and prev_intent.get(k) is not None:
+                topn_intent[k] = prev_intent[k]
 
     # LLM 通道：在候选清单内改选指标/时间/比较/维度/筛选，越纲字段丢弃
     source = "fallback"
@@ -506,6 +558,10 @@ def build_card(db: Session, user, question: str) -> dict:
 
     card = {
         "question": question,
+        # B9.2-4 会话：首问由后端生成 session_id，前端每轮携带实现多轮追问
+        "session_id": session_id or ask_session.new_session_id(),
+        "inherited": inherited,
+        "time_inherited": time_inherited,
         "llm_configured": llm_cfg is not None,
         "source": source,
         # LLM 降级原因（source=fallback 且已配置 LLM 时非空，供前端向用户解释）
@@ -541,7 +597,20 @@ def build_card(db: Session, user, question: str) -> dict:
         "no_metric_reason": no_metric_reason,
     }
     card["mode"] = "analysis" if metric is not None else "help"
-    if metric is None:
+    if metric is not None:
+        # 会话意图留存（B9.2-4）：仅存意图，数值每轮由 compute 单点出口现算
+        ask_session.save_intent(card["session_id"], {
+            "metric_code": metric.code,
+            "dimension": dimension,
+            "filters": rule_filters,
+            "order_by": card["order_by"],
+            "order": card["order"],
+            "top_n": card["top_n"],
+            "compare": compare,
+            "start": card["start"],
+            "end": card["end"],
+        })
+    else:
         # 逃生舱：意图解析不出可执行结构 → 纯对话兜底（LLM 生成引导，规则通道给固定文案；都无数字）
         help_reply = None
         if llm_cfg:

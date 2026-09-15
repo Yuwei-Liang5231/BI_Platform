@@ -98,8 +98,50 @@ def _relative_range(kind: str, today: date) -> tuple[str, str]:
     raise ValueError(f"未知 relative_time: {kind}")
 
 
+def _assert_card(card: dict, exp: dict) -> bool:
+    """单轮理解卡断言（主问与追问共用）。"""
+    ok = True
+    if exp.get("mode") == "help" or exp.get("can_compute") is False:
+        # 逃生舱（B9.2-2）：解析不出可执行结构 → help 模式 + 引导文案（无数字）
+        ok = ok and card["can_compute"] is False
+        ok = ok and card.get("mode") == "help"
+        ok = ok and bool(card.get("help_reply"))
+        return ok
+    ok = ok and card["can_compute"] is True
+    ok = ok and card.get("mode") == "analysis"
+    ok = ok and card["metric"]["code"] == exp["metric_code"]
+    if exp.get("start"):
+        ok = ok and card["start"] == exp["start"]
+    if exp.get("end"):
+        ok = ok and card["end"] == exp["end"]
+    if exp.get("relative_time"):
+        s, e = _relative_range(exp["relative_time"], date.today())
+        ok = ok and card["start"] == s and card["end"] == e
+    if exp.get("compare"):
+        ok = ok and card["compare"] == exp["compare"]
+    if exp.get("dimension"):
+        ok = ok and card["dimension"] == exp["dimension"]
+    if "filters" in exp:
+        ok = ok and card["filters"] == exp["filters"]
+    if "top_n" in exp:
+        ok = ok and card["top_n"] == exp["top_n"]
+    if "inherited" in exp:
+        ok = ok and card.get("inherited") is exp["inherited"]
+    return ok
+
+
+def _ask_card(client, question: str, session_id: str | None = None):
+    body = {"question": question}
+    if session_id:
+        body["session_id"] = session_id
+    return client.post("/api/query/ask", json=body).json()["data"]
+
+
 def test_ask_testset_regression(client, ask_env):
-    """问数测试集（tests/ask_testset.json）：通过率必须 100%（M3 标准 ≥95%）。"""
+    """问数测试集（tests/ask_testset.json）：通过率必须 100%（M3 标准 ≥95%）。
+
+    B9.2-4：case 带 followups 时逐轮携带上一轮返回的 session_id 链式断言。
+    """
     testset = json.loads(
         (Path(__file__).parent / "ask_testset.json").read_text(encoding="utf-8")
     )
@@ -108,36 +150,19 @@ def test_ask_testset_regression(client, ask_env):
     failed: list[str] = []
     for case in testset["cases"]:
         card = _ask(client, case["question"])
-        exp = case["expect"]
-        ok = True
-        if exp.get("mode") == "help" or exp.get("can_compute") is False:
-            # 逃生舱（B9.2-2）：解析不出可执行结构 → help 模式 + 引导文案（无数字）
-            ok = ok and card["can_compute"] is False
-            ok = ok and card.get("mode") == "help"
-            ok = ok and bool(card.get("help_reply"))
-        else:
-            ok = ok and card["can_compute"] is True
-            ok = ok and card.get("mode") == "analysis"
-            ok = ok and card["metric"]["code"] == exp["metric_code"]
-            if exp.get("start"):
-                ok = ok and card["start"] == exp["start"]
-            if exp.get("end"):
-                ok = ok and card["end"] == exp["end"]
-            if exp.get("relative_time"):
-                s, e = _relative_range(exp["relative_time"], date.today())
-                ok = ok and card["start"] == s and card["end"] == e
-            if exp.get("compare"):
-                ok = ok and card["compare"] == exp["compare"]
-            if exp.get("dimension"):
-                ok = ok and card["dimension"] == exp["dimension"]
-            if "filters" in exp:
-                ok = ok and card["filters"] == exp["filters"]
-            if "top_n" in exp:
-                ok = ok and card["top_n"] == exp["top_n"]
+        ok = _assert_card(card, case["expect"])
         if not ok:
             failed.append(f"{case['id']}: got {json.dumps(card, ensure_ascii=False)[:200]}")
+        for fi, fu in enumerate(case.get("followups") or []):
+            fu_card = _ask_card(client, fu["question"], card.get("session_id"))
+            if not _assert_card(fu_card, fu["expect"]):
+                failed.append(
+                    f"{case['id']}#followup{fi} ({fu['question']}): "
+                    f"got {json.dumps(fu_card, ensure_ascii=False)[:200]}"
+                )
 
-    rate = 1 - len(failed) / len(testset["cases"])
+    total = sum(1 + len(c.get("followups") or []) for c in testset["cases"])
+    rate = 1 - len(failed) / total
     assert not failed, f"通过率 {rate:.0%} < 100%：\n" + "\n".join(failed)
 
 
@@ -261,6 +286,69 @@ def test_help_mode_reply_without_numbers(client, ask_env):
     assert card["can_compute"] is False
     assert card["help_reply"]
     assert "%" not in card["help_reply"]  # 兜底文案绝不出现数值
+
+
+# ---------------------------------------------------------------- 多轮追问（B9.2-4）
+
+
+def test_followup_inherits_metric_and_time(client, ask_env):
+    """追问「那上个月呢」：继承指标与对比方式，时间按新词重算。"""
+    first = _ask(client, "2026年1月销售额")
+    assert first["session_id"]
+    fu = _ask_card(client, "那上个月呢", first["session_id"])
+    assert fu["inherited"] is True
+    assert fu["metric"]["code"] == METRIC_CODE
+    s, e = _relative_range("prev_month", date.today())
+    assert fu["start"] == s and fu["end"] == e
+
+
+def test_followup_inherits_dimension(client, ask_env):
+    """追问继承拆解维度：「按status拆解2026年1月销售额」→「那上个月呢」。"""
+    first = _ask(client, "按status拆解2026年1月销售额")
+    assert first["dimension"] == "status"
+    fu = _ask_card(client, "那上个月呢", first["session_id"])
+    assert fu["inherited"] is True
+    assert fu["dimension"] == "status"
+    s, e = _relative_range("prev_month", date.today())
+    assert fu["start"] == s and fu["end"] == e
+
+
+def test_followup_bogus_session_degrades_to_first_turn(client, ask_env):
+    """伪造/过期 session_id：降级为首问——无指标匹配走逃生舱，绝不继承。"""
+    card = _ask_card(client, "那上个月呢", "bogus-session-id")
+    assert card["mode"] == "help"
+    assert card["inherited"] is False
+
+
+def test_followup_with_metric_word_is_new_question(client, ask_env):
+    """追问句含指标词面 → 按新问题解析（重置话题），不继承。"""
+    first = _ask(client, "2026年1月销售额")
+    fu = _ask_card(client, "2026年2月营业额是多少", first["session_id"])
+    assert fu["inherited"] is False
+    assert fu["metric"]["code"] == METRIC_CODE
+    assert fu["start"] == "2026-02-01" and fu["end"] == "2026-02-28"
+
+
+def test_followup_permission_rechecked_per_turn(client, ask_env):
+    """权限每轮重校验：admin 首问建立会话，受限用户携同一 session 追问 → 无权限（不泄露名称）。"""
+    from tests.conftest import create_test_user
+
+    first = _ask(client, "2026年1月销售额")
+    metric_id = client.get("/api/metrics", params={"search": METRIC_CODE}).json()["data"][0]["id"]
+    viewer = create_test_user(client, "ask_fu_viewer", role="viewer")
+    resp = client.put(
+        f"/api/auth/metrics/{metric_id}/restrictions",
+        json={"items": [{"subject_type": "role", "subject_value": "viewer"}]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    fu = client.post(
+        "/api/query/ask", json={"question": "那上个月呢", "session_id": first["session_id"]},
+        headers=viewer,
+    ).json()["data"]
+    assert fu["can_compute"] is False
+    assert fu["no_metric_reason"] == "该指标无权限"
+    assert fu["metric"] is None
 
 
 # ---------------------------------------------------------------- 权限继承

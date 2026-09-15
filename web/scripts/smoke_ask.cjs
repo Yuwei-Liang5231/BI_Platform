@@ -128,15 +128,29 @@ async function api(path, { method = "GET", token, body, form } = {}) {
   step("S5a 理解卡含拆解维度区", cardText3.includes("拆解维度"), cardText3.slice(0, 120));
   await page.getByRole("button", { name: "确认计算" }).click();
   await page.waitForTimeout(2500);
-  const resultText2 = (await page.locator(".ask__result").first().innerText()).replace(/\s+/g, " ");
+  // B9.2-4 会话流：历史轮结果也渲染 .ask__result，当前轮恒为最后一个
+  const resultText2 = (await page.locator(".ask__result").last().innerText()).replace(/\s+/g, " ");
   step("S5b 拆解表格 paid=1,000", resultText2.includes("拆解") && resultText2.includes("paid") && resultText2.includes("1,000"),
     resultText2.slice(0, 140));
+
+  // S6/S7 多轮追问（B9.2-4）：首问建立会话 →「那上个月呢」继承指标、时间按新词重算
+  await page.getByPlaceholder(/试着问/).fill("2026年1月销售额是多少");
+  await page.getByRole("button", { name: "理解问题" }).click();
+  await page.waitForTimeout(1500);
+  step("S6 会话气泡随轮次累积", (await page.locator(".ask__bubble").count()) >= 4);
+
+  await page.getByPlaceholder(/试着问/).fill("那上个月呢");
+  await page.getByRole("button", { name: "理解问题" }).click();
+  await page.waitForTimeout(1500);
+  const fuText = (await page.locator(".ask__card").last().innerText()).replace(/\s+/g, " ");
+  step("S7 追问继承上一轮指标", fuText.includes("已继承上一轮") && fuText.includes(METRIC_CODE),
+    fuText.slice(0, 120));
 
   step("Z console 无页面错误", errors.length === 0, errors.join(" | ").slice(0, 200));
 
   console.log(`\n结果: ${passed} passed`);
   await browser.close();
-  process.exit(passed >= 9 ? 0 : 1);
+  process.exit(passed >= 12 ? 0 : 1);
 })().catch((e) => {
   console.error("FATAL:", e.message);
   process.exit(1);
