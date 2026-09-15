@@ -57,7 +57,14 @@ def ask_env(client):
         "name": "问数销售额",
         "aliases": ["销售额", "营业额", "GMV"],
         "definition": "已支付订单金额合计",
-        "disambiguation": {"下降": "按减少金额", "波动": "按变化幅度"},
+        "disambiguation": {
+            "question": "口径下降时按哪个口径计算？",
+            "options": [
+                {"name": "下降", "description": "按减少金额"},
+                {"name": "波动", "description": "按变化幅度"},
+            ],
+            "default": "下降",
+        },
         "calc_rule": GMV_RULE,
     })
     assert resp.status_code == 200, resp.text
@@ -172,11 +179,17 @@ def test_llm_not_configured_flag(client, ask_env):
 
 
 def test_disambiguation_note_surfaced(client, ask_env):
-    """disambiguation 登记的默认算法出现在理解卡（黄色提示引用）。"""
+    """disambiguation（口径分歧登记，真实 schema question/options/default）出现在理解卡。"""
     card = _ask(client, "2026年1月销售额")
-    assert card["disambiguation_note"] is not None
-    assert "下降" in card["disambiguation_note"]["defaults"]
-    assert any(a["field"] == "disambiguation" for a in card["ambiguous"])
+    note = card["disambiguation_note"]
+    assert note is not None
+    assert note["question"] == "口径下降时按哪个口径计算？"
+    names = [o["name"] for o in note["options"]]
+    assert "下降" in names and "波动" in names
+    default_opts = [o for o in note["options"] if o["is_default"]]
+    assert len(default_opts) == 1 and default_opts[0]["name"] == "下降"
+    amb = next(a for a in card["ambiguous"] if a["field"] == "disambiguation")
+    assert amb["question"] and amb["options"]
 
 
 def test_no_metric_clear_reason(client, ask_env):
@@ -283,6 +296,37 @@ def test_permission_inheritance(client, ask_env):
     # admin 不受影响
     admin_card = _ask(client, "2026年1月销售额")
     assert admin_card["can_compute"] is True
+
+
+# ---------------------------------------------------------------- 时间解析（规则通道）
+
+
+def test_parse_time_range_relative_month():
+    """相对年份+N月：去年/今年/前年M月 → 具体某年某月，不得落进整年分支。"""
+    from app.domain.ask.service import parse_time_range
+
+    today = date(2026, 9, 15)
+    # 回归（用户实测 bug）：「去年11月」曾被解析为去年整年
+    assert parse_time_range("帮我看看去年11月运行次数前三的工具", today) == (
+        date(2025, 11, 1), date(2025, 11, 30), "去年11月",
+    )
+    assert parse_time_range("今年2月怎么样", today) == (
+        date(2026, 2, 1), date(2026, 2, 28), "今年2月",
+    )
+    assert parse_time_range("前年3月的销售额", today) == (
+        date(2024, 3, 1), date(2024, 3, 31), "前年3月",
+    )
+    # 上上月（必须先于「上个月」词面匹配）
+    assert parse_time_range("上上月环比如何", today) == (
+        date(2026, 7, 1), date(2026, 7, 31), "上上月",
+    )
+    # 原有语义不回退
+    assert parse_time_range("去年整体怎么样", today) == (
+        date(2025, 1, 1), date(2025, 12, 31), "去年",
+    )
+    assert parse_time_range("上个月销售额", today) == (
+        date(2026, 8, 1), date(2026, 8, 31), "上个月",
+    )
 
 
 # ---------------------------------------------------------------- 易用性三件套（B9.2-3）

@@ -62,6 +62,21 @@ def parse_time_range(question: str, today: date) -> tuple[date, date, str] | Non
         y, m = int(cn_month.group(1)), int(cn_month.group(2))
         return date(y, m, 1), date(y, m, monthrange(y, m)[1]), cn_month.group(0)
 
+    # 相对年份 + N月：去年11月 / 前年3月 / 今年6月 → 具体某年某月
+    # （必须先于下方整年匹配，否则「去年11月」会错落进「去年→整年」分支）
+    rel_month = re.search(r"(前年|去年|今年)\s*(\d{1,2})\s*月", question)
+    if rel_month:
+        y = today.year + {"前年": -2, "去年": -1, "今年": 0}[rel_month.group(1)]
+        m = int(rel_month.group(2))
+        if 1 <= m <= 12:
+            return date(y, m, 1), date(y, m, monthrange(y, m)[1]), rel_month.group(0)
+
+    if re.search(r"上上(个)?月", question):
+        # 上上个完整自然月（必须先于「上个月」判断：r"上(一)?个?月" 会命中"上上月"尾部）
+        first_of_this = today.replace(day=1)
+        last_prev = first_of_this - timedelta(days=1)
+        last_prev2 = last_prev.replace(day=1) - timedelta(days=1)
+        return last_prev2.replace(day=1), last_prev2, "上上月"
     if re.search(r"上(一)?个?月", question):
         return (*previous_complete_month(today), "上个月")
     if re.search(r"(本|这)个?月", question):
@@ -442,20 +457,46 @@ def build_card(db: Session, user, question: str) -> dict:
             dis = json.loads(metric.disambiguation_json or "{}")
         except json.JSONDecodeError:
             dis = {}
-        if dis:
-            disambiguation_note = {
-                "metric_code": metric.code,
-                "defaults": dis,
-                "hint": "该指标登记了常见歧义场景的默认算法（仅为口径说明，理解卡可修改计算方式）",
-            }
-            ambiguous.append(
-                {
-                    "field": "disambiguation",
-                    "options": [{"scenario": k, "default": v} for k, v in dis.items()],
-                    "default": None,
-                    "reason": "指标责任人登记的默认算法说明",
+        # 口径分歧登记（指标管理页，责任人维护）真实 schema：
+        #   {question: str, options: [{name, description} | str], default: str}
+        # 兼容历史误存格式 {scenario: 说明}（纯 str→str 映射）。
+        if isinstance(dis, dict) and dis:
+            if "question" in dis or "options" in dis:
+                dis_question = str(dis.get("question") or "").strip()
+                raw_opts = dis.get("options") or []
+                dis_options: list[dict] = []
+                for raw in raw_opts[:6]:
+                    o = raw if isinstance(raw, dict) else {"name": str(raw)}
+                    name = str(o.get("name") or o.get("label") or "").strip()
+                    if not name:
+                        continue
+                    dis_options.append({
+                        "name": name,
+                        "description": str(o.get("description") or "").strip() or None,
+                        "is_default": name == str(dis.get("default") or "").strip(),
+                    })
+            else:
+                dis_question = "该指标存在多种可能口径"
+                dis_options = [
+                    {"name": str(k), "description": str(v).strip() or None, "is_default": False}
+                    for k, v in list(dis.items())[:6]
+                ]
+            dis_options = [o for o in dis_options if o["name"]]
+            if dis_question or dis_options:
+                disambiguation_note = {
+                    "metric_code": metric.code,
+                    "question": dis_question or None,
+                    "options": dis_options,
+                    "hint": "该指标责任人登记了口径分歧说明（仅为口径提示，理解卡可修改计算方式）",
                 }
-            )
+                ambiguous.append(
+                    {
+                        "field": "disambiguation",
+                        "question": dis_question or None,
+                        "options": dis_options,
+                        "reason": "指标责任人登记的口径分歧说明（来源：指标管理页「口径分歧」登记）",
+                    }
+                )
 
     card = {
         "question": question,
@@ -482,7 +523,7 @@ def build_card(db: Session, user, question: str) -> dict:
         "dimension": dimension,
         "dimension_options": [
             {"dataset": c["dataset"], "column": c["column"], "distinct_count": c["distinct_count"]}
-            for c in dim_candidates[:10]
+            for c in dim_candidates[:15]
         ],
         "filters": rule_filters,
         "order_by": topn_intent.get("order_by", "value"),

@@ -385,7 +385,7 @@ VALID_BREAKDOWN_FILTER_OPS = ("<=", ">=", "!=", "=", ">", "<", "is_null", "is_no
 DEFAULT_BREAKDOWN_TOP_N = 10
 MAX_BREAKDOWN_TOP_N = 50
 MAX_BREAKDOWN_ROWS = 2000        # SQL 端拉回上限：防高基数列把结果集拖爆
-LOW_CARDINALITY_THRESHOLD = 50   # 候选维度列「低基数」判定线（前端展示用）
+LOW_CARDINALITY_THRESHOLD = 200  # 候选维度列「低基数」判定线；200 组内 GROUP BY + TopN≤50 性能可控（V1.3.2 由 50 放宽：真实列如 ToolName 60+ 值被误挡）
 
 
 def _parse_breakdown_filters(raw) -> list[FilterCondition]:
@@ -675,6 +675,8 @@ def list_breakdown_dimensions(db: Session, *, metric_ref, user: User) -> dict:
             counts = con.execute(f"SELECT {sel} FROM {_quote_ident(name)}").fetchone()
             for col, cnt in zip(ordered, counts):
                 cnt = int(cnt or 0)
+                if cnt == 0:
+                    continue  # 全空列（整列 NULL/空串）拆解无意义，不出现在候选中
                 out.append({
                     "dataset": name,
                     "column": col,

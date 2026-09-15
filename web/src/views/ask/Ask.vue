@@ -390,11 +390,20 @@ onMounted(fetchSuggestions);
                   {{ opt.column }}
                 </el-tag>
               </template>
-              <template v-else>
-                <span v-for="opt in amb.options" :key="opt.scenario" class="ask__amb-opt">
-                  「{{ opt.scenario }}」默认按 {{ opt.default?.name ?? opt.default }}
-                  <template v-if="opt.default?.description">（{{ opt.default.description }}）</template>
-                </span>
+              <template v-else-if="amb.field === 'disambiguation'">
+                <!-- 口径分歧说明（指标责任人登记）：分歧问题 + 候选口径（默认口径标注），仅提示不阻断 -->
+                <p v-if="amb.question" class="ask__dis-q">{{ amb.question }}</p>
+                <div class="ask__amb-opts">
+                  <el-tag
+                    v-for="opt in amb.options"
+                    :key="opt.name"
+                    :type="opt.is_default ? 'warning' : 'info'"
+                    class="ask__amb-opt ask__amb-opt--static"
+                  >
+                    {{ opt.name }}<template v-if="opt.is_default">（默认口径）</template>
+                    <template v-if="opt.description">：{{ opt.description }}</template>
+                  </el-tag>
+                </div>
               </template>
             </div>
           </template>
@@ -664,6 +673,15 @@ onMounted(fetchSuggestions);
 
 .ask__amb-opt {
   cursor: pointer;
+}
+
+.ask__amb-opt--static {
+  cursor: default;
+}
+
+.ask__dis-q {
+  margin: 0 0 var(--pwc-space-1);
+  font-weight: 600;
 }
 
 .ask__form {
