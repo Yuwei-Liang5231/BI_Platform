@@ -171,7 +171,7 @@ class TestAnomalyConfig:
         assert abnormal is False and ab is None
 
     def test_disabled_metric_skipped_in_scan(self, client, anomaly_env):
-        """enabled=false 的指标不参与批量扫描（计数中体现）。"""
+        """enabled=false 的配置不参与批量扫描（旧语义保留用例，由 TestAnomalyScan 覆盖）。"""
         mid = anomaly_env["metric"]["id"]
         client.put(f"/api/metrics/{mid}/anomaly-config", json={"enabled": False})
         scan = client.get("/api/query/anomalies").json()["data"]
@@ -181,13 +181,40 @@ class TestAnomalyConfig:
 
 class TestAnomalyScan:
     def test_scan_finds_spike_and_limited(self, client, anomaly_env):
-        """批量扫描：默认项目内的突刺指标被检出且限量 ≤5。"""
+        """批量扫描：opt-in 语义——只扫配置过且启用的指标，突刺被检出且限量 ≤5。"""
         scan = client.get("/api/query/anomalies").json()["data"]
+        assert scan["counts"]["configured"] >= 1
         assert scan["counts"]["abnormal"] >= 1
         assert len(scan["anomalies"]) <= 5
         top = scan["anomalies"][0]
         assert top["verdict"] == "abnormal"
         assert {"current", "baseline", "delta", "direction", "abnormality"} <= set(top.keys())
+
+    def test_unconfigured_metrics_not_scanned(self, client, anomaly_env):
+        """未配置检测的指标不参与扫描（opt-in 语义，保证扫描性能可控）。"""
+        # 建一个未配置的新指标（同一数据集，同样有突刺）→ 不出现在扫描结果
+        sfx = anomaly_env["sfx"]
+        resp = client.post("/api/metrics", json={
+            "code": f"anom_unconf_{sfx}",
+            "name": "未配置检测",
+            "calc_rule": {
+                "base_aggregation": "count",
+                "source": {"table": f"anom_ds_{sfx}", "column": "amount"},
+            },
+        })
+        assert resp.status_code == 200, resp.text
+        scan = client.get("/api/query/anomalies").json()["data"]
+        assert all(a["metric_code"] != f"anom_unconf_{sfx}" for a in scan["anomalies"])
+        client.delete(f"/api/metrics/{resp.json()['data']['id']}")
+
+    def test_disabled_config_not_scanned(self, client, anomaly_env):
+        """enabled=false 的配置不参与扫描。"""
+        mid = anomaly_env["metric"]["id"]
+        client.put(f"/api/metrics/{mid}/anomaly-config", json={"enabled": False})
+        scan = client.get("/api/query/anomalies").json()["data"]
+        assert all(a["metric_id"] != mid for a in scan["anomalies"])
+        assert scan["counts"]["configured"] == 0
+        client.put(f"/api/metrics/{mid}/anomaly-config", json={"enabled": True})
 
 
 # ---------------------------------------------------------------- B10-2 要紧度 + 单层归因

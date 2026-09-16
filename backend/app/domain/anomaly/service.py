@@ -214,29 +214,29 @@ def _no_data_result(metric: Metric, cfg: dict, reason: str, target: date | None 
 
 
 def detect_for_project(db: Session, user: User, project_id: int | None = None) -> list[dict]:
-    """项目内全部启用指标的批量检测（总览页/看板黄条数据源）。
+    """项目内批量检测（总览页/看板黄条数据源）。
 
-    只返回反常项 + 无数据/样本不足的摘要计数——宁缺毋滥。
-    B10-3：反常且要紧（三道判断过二）的结论落库生成站内通知
-    （同 user+metric+日+方向去重，重复扫描不刷屏；收件人 = 全部活跃 admin/analyst）。
+    扫描范围为 **opt-in 语义**：只扫「显式配置过且 enabled=1」的指标——
+    全量默认扫描在大目录下不可行（每指标一次序列计算，数十指标即超时），
+    且用户只关心自己开启检测的指标。结果只含反常项，限量 5 条宁缺毋滥；
+    反常且要紧的结论落库生成站内通知（去重，收件人 = 活跃 admin/analyst）。
     """
-    from app.domain.metric.service import list_metrics
     from app.domain.project.service import resolve_project_id
 
     pid = resolve_project_id(db, project_id)
-    metrics = [
-        m for m in list_metrics(db, status="active", project_id=pid)
-        if m.status == "active"
-    ]
+    configured = (
+        db.query(AnomalyConfig)
+        .filter(AnomalyConfig.project_id == pid, AnomalyConfig.enabled == 1)
+        .all()
+    )
     results = []
-    counts = {"abnormal": 0, "normal": 0, "insufficient_baseline": 0, "no_data": 0, "disabled": 0}
-    for m in metrics:
-        cfg = get_config(db, m.id)
-        if cfg is not None and not cfg.enabled:
-            counts["disabled"] += 1
-            continue
+    counts = {"configured": len(configured), "abnormal": 0, "normal": 0, "insufficient_baseline": 0, "no_data": 0}
+    for cfg in configured:
+        metric = db.get(Metric, cfg.metric_id)
+        if metric is None or metric.status != "active":
+            continue  # 指标已删/停用：配置随指标生命周期，扫描跳过
         try:
-            r = detect_for_metric(db, user, m)
+            r = detect_for_metric(db, user, metric)
         except BusinessError:
             counts["no_data"] += 1
             continue

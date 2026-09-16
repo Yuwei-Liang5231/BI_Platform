@@ -110,7 +110,9 @@ onMounted(fetchScan);
 
       <el-empty
         v-if="!scan.anomalies.length"
-        description="本期无异动——所有启用检测的指标都在正常范围内"
+        :description="scan.counts.configured === 0
+          ? '尚未开启异动检测——通过 PUT /api/metrics/{id}/anomaly-config 为关心的指标开启检测后，这里会自动呈现异动结论'
+          : '本期无异动——所有开启检测的指标都在正常范围内'"
       />
 
       <div v-for="item in scan.anomalies" :key="item.metric_id" class="pwc-card overview__card">

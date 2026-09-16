@@ -55,10 +55,12 @@ export const breakdownDimensions = (data) =>
 /** 单指标反常性检测（B10-1）。body: { metric, date? } */
 export const anomalyDetect = (data) => request.post("/query/anomaly", data);
 
-/** 项目批量异动扫描（B10-1，总览页/看板黄条数据源）。 */
+/** 项目批量异动扫描（B10-1，总览页/看板黄条数据源）。
+ *  逐指标序列计算，配置指标多时较慢——放宽超时至 3 分钟。 */
 export const anomalyScan = (projectId) =>
   request.get("/query/anomalies", {
     params: projectId ? { project_id: projectId } : undefined,
+    timeout: 180000,
   });
 
 /** 单层归因（B10-2）：变化量按维度拆贡献（加性指标）。 */
