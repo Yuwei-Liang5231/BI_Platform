@@ -83,6 +83,8 @@ instance.interceptors.response.use(
       );
       return Promise.reject(error);
     }
+    // eslint-disable-next-line no-console
+    console.error("[API ERR]", error && error.stack ? error.stack : String(error));
     ElMessage.error(body?.message || "服务异常，请稍后重试");
     return Promise.reject(error);
   },

@@ -1,56 +1,72 @@
-/* 完整诊断：登录 → 看板静置 → 总览 → 管理对话框（行数/取消行为）。 */
+/* 诊断：对用户正在跑的 5173 复现"登录后/刷新后报服务异常"。
+ * 抓取：所有 >=400 的 API 响应（URL + 状态 + body 片段）、页面 toast 文本、控制台错误。 */
 const { chromium } = require("playwright-core");
+const fs = require("fs");
 
-const BASE = process.env.DIAG_BASE || "http://localhost:5194";
-const out = [];
+const BASE = "http://localhost:5173";
+const OUT = String.raw`C:\Users\William Y Liang\Desktop\工作内容\AI Agent\BI Platform_WorkBuddy\diag_result.txt`;
 
 (async () => {
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage();
   const bad = [];
-  page.on("response", (r) => {
-    if (r.status() >= 400) bad.push(`${r.status()} ${r.request().method()} ${r.url().replace(BASE, "")}`);
-  });
-  page.on("pageerror", (e) => out.push("PAGEERROR: " + String(e).slice(0, 300)));
+  const toasts = [];
+  const consoleErrs = [];
 
-  await page.goto(`${BASE}/#/login`, { waitUntil: "networkidle" });
-  await page.locator("input").first().fill("admin");
+  page.on("response", async (r) => {
+    const url = r.url();
+    if (!url.includes("/api/")) return;
+    if (r.status() >= 300) {
+      let snippet = "";
+      try { snippet = (await r.text()).slice(0, 220); } catch {}
+      bad.push(`${r.status()} ${r.request().method()} ${url}\n    body: ${snippet}`);
+    }
+  });
+  page.on("requestfailed", (r) => {
+    bad.push(
+      `FAILED ${r.request().method()} ${r.url()}\n    reason: ${r.failure()?.errorText} type: ${r.resourceType()}`,
+    );
+  });
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrs.push(m.text().slice(0, 220));
+  });
+  // 抓 ElMessage toast
+  page.on("domcontentloaded", () => {});
+  const watchToasts = async (label) => {
+    await page.waitForTimeout(2500);
+    const found = await page.evaluate(() =>
+      Array.from(document.querySelectorAll(".el-message"))
+        .map((n) => n.textContent.trim())
+    );
+    found.forEach((t) => toasts.push(`[${label}] ${t}`));
+  };
+
+  // 场景 A：全新登录（模拟关浏览器后重开）
+  await page.goto(`${BASE}/#/login`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(1500);
+  const inputs = page.locator("input");
+  await inputs.nth(0).fill("admin");
   await page.locator("input[type=password]").fill("admin123");
   await page.getByRole("button", { name: /登\s*录/ }).click();
-  await page.waitForSelector(".layout__user", { timeout: 30000 });
-  await page.waitForTimeout(8000);
-  out.push("STEP2 看板失败请求: " + (bad.length ? bad.join(" | ") : "无"));
+  await page.waitForURL(/dashboard|overview/, { timeout: 20000 }).catch(() => {});
+  await watchToasts("登录后");
 
-  await page.goto(`${BASE}/#/overview`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(5000);
-  await page.screenshot({ path: "C:/Users/William Y Liang/Desktop/工作内容/AI Agent/BI Platform_WorkBuddy/diag_overview.png" });
-  const manageBtn = page.getByRole("button", { name: "管理检测指标" });
-  const btnDisabled = await manageBtn.isDisabled();
-  out.push("STEP3 管理按钮 disabled=" + btnDisabled);
-  await manageBtn.click();
-  await page.waitForTimeout(3000);
-  const rows = await page.locator(".el-dialog:visible .el-table__row").count();
-  out.push("STEP3 对话框表格行数=" + rows);
-  await page.screenshot({ path: "C:/Users/William Y Liang/Desktop/工作内容/AI Agent/BI Platform_WorkBuddy/diag_dialog.png" });
+  // 场景 B：整页刷新（用户复现路径）
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await watchToasts("刷新后");
 
-  await page.locator(".el-dialog:visible").getByRole("button", { name: "取消" }).click();
-  await page.waitForTimeout(1500);
-  const stillOpen = await page.locator(".el-dialog:visible").count();
-  out.push("STEP4 取消后对话框: " + (stillOpen > 0 ? "仍打开(无反应复现)" : "已关闭(正常)"));
+  // 场景 C：切到 AI 问数（整页内路由）
+  await page.goto(`${BASE}/#/ask`);
+  await watchToasts("切问数后");
 
-  out.push("STEP5 失败请求汇总: " + (bad.length ? bad.join(" | ") : "无"));
-  require("fs").writeFileSync(
-    "C:/Users/William Y Liang/Desktop/工作内容/AI Agent/BI Platform_WorkBuddy/diag_result.txt",
-    out.join("\n"),
-    "utf8",
-  );
+  const lines = [
+    "=== >=400 API 响应 ===",
+    bad.length ? bad.join("\n") : "（无）",
+    "=== toast ===",
+    toasts.length ? toasts.join("\n") : "（无）",
+    "=== console errors ===",
+    consoleErrs.length ? consoleErrs.slice(0, 8).join("\n") : "（无）",
+  ];
+  fs.writeFileSync(OUT, lines.join("\n"), "utf8");
   await browser.close();
-})().catch((e) => {
-  out.push("FATAL: " + String(e).slice(0, 400));
-  require("fs").writeFileSync(
-    "C:/Users/William Y Liang/Desktop/工作内容/AI Agent/BI Platform_WorkBuddy/diag_result.txt",
-    out.join("\n"),
-    "utf8",
-  );
-  process.exit(1);
-});
+})();
