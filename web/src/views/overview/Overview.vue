@@ -267,6 +267,7 @@ onMounted(fetchScan);
         ref="manageTableRef"
         v-loading="manageLoading"
         :data="metricItems"
+        row-key="metric_id"
         size="small"
         max-height="380"
         @selection-change="(rows) => (checkedIds = rows.map((r) => r.metric_id))"
