@@ -217,6 +217,8 @@ def detect_for_project(db: Session, user: User, project_id: int | None = None) -
     """项目内全部启用指标的批量检测（总览页/看板黄条数据源）。
 
     只返回反常项 + 无数据/样本不足的摘要计数——宁缺毋滥。
+    B10-3：反常且要紧（三道判断过二）的结论落库生成站内通知
+    （同 user+metric+日+方向去重，重复扫描不刷屏；收件人 = 全部活跃 admin/analyst）。
     """
     from app.domain.metric.service import list_metrics
     from app.domain.project.service import resolve_project_id
@@ -242,7 +244,61 @@ def detect_for_project(db: Session, user: User, project_id: int | None = None) -
         if r["verdict"] == "abnormal":
             results.append(r)
     results.sort(key=lambda r: -(r.get("abnormality") or 0))
+    _persist_notifications(db, [r for r in results if r.get("material") is not False], pid)
     return {"project_id": pid, "counts": counts, "anomalies": results[:5]}  # 限量 5 条宁缺毋滥
+
+
+def _persist_notifications(db: Session, abnormal_results: list[dict], project_id: int | None) -> None:
+    """异动结论 → 站内通知（同 user+metric+日+方向去重）。"""
+    from app.infra.models import Notification
+
+    recipients = (
+        db.query(User)
+        .filter(User.status == "active", User.role.in_(("admin", "analyst")))
+        .all()
+    )
+    for r in abnormal_results:
+        if r.get("date") is None or r.get("direction") not in ("up", "down"):
+            continue
+        anomaly_date = date.fromisoformat(r["date"])
+        delta_pct = r.get("delta_pct")
+        pct_text = f"{abs(delta_pct):.1f}%" if delta_pct is not None else ""
+        arrow = "↑" if r["direction"] == "up" else "↓"
+        title = f"「{r['name']}」异动{arrow} {pct_text}"
+        baseline = r.get("baseline") or {}
+        body = (
+            f"{r['date']} 值为 {r['current']}，正常水平约 {baseline.get('mean')}；"
+            f"{r.get('reason') or ''}"
+        )
+        for u in recipients:
+            dup = (
+                db.query(Notification)
+                .filter(
+                    Notification.user_id == u.id,
+                    Notification.metric_id == r["metric_id"],
+                    Notification.anomaly_date == anomaly_date,
+                    Notification.direction == r["direction"],
+                )
+                .first()
+            )
+            if dup is not None:
+                continue
+            db.add(
+                Notification(
+                    user_id=u.id,
+                    project_id=project_id,
+                    metric_id=r["metric_id"],
+                    metric_code=r["metric_code"],
+                    anomaly_date=anomaly_date,
+                    direction=r["direction"],
+                    title=title,
+                    body=body,
+                    current=r.get("current"),
+                    baseline_mean=baseline.get("mean"),
+                    abnormality=r.get("abnormality"),
+                )
+            )
+    db.flush()
 
 
 def _compile_for_anomaly(db: Session, metric: Metric):

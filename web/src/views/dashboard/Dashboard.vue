@@ -8,7 +8,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import * as echarts from "echarts";
 import { ElMessage } from "element-plus";
 
-import { metricValue, exportMetric, exportCsvBlob } from "@/api/query";
+import { metricValue, exportMetric, exportCsvBlob, anomalyScan } from "@/api/query";
 import TrendBadge from "@/components/business/TrendBadge.vue";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
@@ -251,6 +251,19 @@ async function fetchData() {
     ...(pid ? { project_id: pid } : {}),
   });
   await loadCards();
+  loadAnomalyBanner();
+}
+
+// B10-3 异动黄条：进入看板/切项目时扫描一次（结果与总览页同源）
+const anomalyBanner = ref([]);
+
+async function loadAnomalyBanner() {
+  try {
+    const scan = await anomalyScan(projectStore.lockedId);
+    anomalyBanner.value = scan?.anomalies ?? [];
+  } catch {
+    anomalyBanner.value = []; // 扫描失败不阻塞看板
+  }
 }
 
 // B9.3：切换项目重新拉取看板
@@ -279,6 +292,22 @@ onMounted(fetchData);
         <el-button :disabled="!selected" type="primary" @click="handleExport">导出 CSV</el-button>
       </div>
     </div>
+
+    <!-- B10-3 异动黄条：当前项目有反常指标时提示（限量展示，宁缺毋滥） -->
+    <el-alert v-if="anomalyBanner.length" type="warning" :closable="true" class="dash__anomaly-banner">
+      <template #title>
+        检测到 {{ anomalyBanner.length }} 个指标出现异动：
+        <router-link
+          v-for="a in anomalyBanner"
+          :key="a.metric_id"
+          :to="`/metrics/${a.metric_id}`"
+          class="dash__anomaly-link"
+        >
+          {{ a.name }}（{{ a.direction === "up" ? "↑" : "↓" }}{{ a.abnormality }}σ）
+        </router-link>
+        —— <router-link to="/overview">前往经营总览</router-link>
+      </template>
+    </el-alert>
 
     <div class="dash__topics">
       <button
@@ -365,6 +394,16 @@ onMounted(fetchData);
 </template>
 
 <style scoped>
+.dash__anomaly-banner {
+  margin-bottom: var(--pwc-space-4);
+}
+
+.dash__anomaly-link {
+  color: var(--pwc-bg-brand);
+  font-weight: 700;
+  margin: 0 var(--pwc-space-2);
+}
+
 .dash__topics {
   display: flex;
   flex-wrap: wrap;

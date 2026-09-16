@@ -23,6 +23,12 @@ const routes = [
         meta: { title: "统一看板" },
       },
       {
+        path: "overview",
+        name: "Overview",
+        component: () => import("@/views/overview/Overview.vue"),
+        meta: { title: "经营总览" },
+      },
+      {
         path: "ask",
         name: "Ask",
         component: () => import("@/views/ask/Ask.vue"),

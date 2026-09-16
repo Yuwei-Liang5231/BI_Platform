@@ -48,6 +48,22 @@ export const askConversationRename = (conversationId, title) =>
  *  B9.2-2：带 dimension 时走拆解出口（filters/order_by/order/top_n 生效）。 */
 export const askExecute = (data) => request.post("/query/ask/execute", data);
 
+/** 候选拆解维度列（B9.2-1）：主数据集与一跳可达维度表的文本列 + 现算基数。 */
+export const breakdownDimensions = (data) =>
+  request.post("/query/breakdown-dimensions", data);
+
+/** 单指标反常性检测（B10-1）。body: { metric, date? } */
+export const anomalyDetect = (data) => request.post("/query/anomaly", data);
+
+/** 项目批量异动扫描（B10-1，总览页/看板黄条数据源）。 */
+export const anomalyScan = (projectId) =>
+  request.get("/query/anomalies", {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
+
+/** 单层归因（B10-2）：变化量按维度拆贡献（加性指标）。 */
+export const attributeDelta = (data) => request.post("/query/attribute", data);
+
 /** 理解卡筛选值候选（B9.2-2）：{ metric, column } → 维度列真实取值清单（≤50）。 */
 export const askDimensionValues = (data) => request.post("/query/ask/dimension-values", data);
 

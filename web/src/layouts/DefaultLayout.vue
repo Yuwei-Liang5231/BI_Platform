@@ -1,13 +1,19 @@
 <!-- pwc-regime: product-ui -->
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Folder, ArrowDown, User as UserIcon } from "@element-plus/icons-vue";
+import { Bell, Folder, ArrowDown, User as UserIcon } from "@element-plus/icons-vue";
 
 import PwcLogo from "@/components/base/PwcLogo.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useProjectStore } from "@/stores/project";
+import {
+  listNotifications as listNotificationsApi,
+  markAllRead as markAllReadApi,
+  markRead as markReadApi,
+  unreadCount as unreadCountApi,
+} from "@/api/notifications";
 
 const route = useRoute();
 const router = useRouter();
@@ -15,6 +21,7 @@ const auth = useAuthStore();
 const projectStore = useProjectStore();
 
 const navItems = [
+  { path: "/overview", label: "经营总览" },
   { path: "/dashboard", label: "统一看板" },
   { path: "/ask", label: "AI 问数" },
   { path: "/metrics", label: "指标目录" },
@@ -48,7 +55,62 @@ function onUserCommand(command) {
 /* ---------- 项目工作区（B9.3）：全局切换器 + 项目管理 ---------- */
 onMounted(() => {
   projectStore.fetchProjects();
+  refreshUnread();
 });
+
+/* ---------- 站内通知（B10-3）：铃铛 + 小红点 ---------- */
+const notifications = ref([]);
+const unreadCount = ref(0);
+
+async function refreshUnread() {
+  try {
+    const res = await unreadCountApi(projectStore.lockedId ?? undefined);
+    unreadCount.value = res?.count ?? 0;
+  } catch {
+    unreadCount.value = 0;
+  }
+}
+
+async function fetchNotifications() {
+  try {
+    notifications.value = await listNotificationsApi({
+      project_id: projectStore.lockedId ?? undefined,
+    });
+  } catch {
+    notifications.value = [];
+  }
+}
+
+function shortTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return hm;
+  return `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
+}
+
+async function handleReadAll() {
+  await markAllReadApi(projectStore.lockedId ?? undefined);
+  await fetchNotifications();
+  refreshUnread();
+}
+
+function openNotificationMetric(n) {
+  if (!n.read) markReadApi(n.id).then(refreshUnread).catch(() => {});
+  n.read = true;
+  router.push(`/metrics/${n.metric_id}`);
+}
+
+// 切换项目：未读数按项目范围刷新
+watch(
+  () => projectStore.lockedId,
+  () => {
+    refreshUnread();
+    fetchNotifications();
+  },
+);
 
 const ALL_PROJECTS = -1; // 切换器内部值：全部项目视图（store 中存 null）
 
@@ -133,6 +195,45 @@ async function handleDeleteProject(p) {
         </router-link>
       </nav>
       <div class="layout__context">
+        <!-- B10-3 站内通知：铃铛 + 未读小红点 + 下拉列表 -->
+        <el-popover placement="bottom-end" :width="380" trigger="click" @show="fetchNotifications">
+          <template #reference>
+            <el-badge :value="unreadCount" :hidden="!unreadCount" :max="99" class="layout__bell">
+              <el-icon :size="20"><Bell /></el-icon>
+            </el-badge>
+          </template>
+          <div class="notif__panel">
+            <div class="notif__head">
+              <span>异动提醒</span>
+              <el-button
+                v-if="notifications.length"
+                text
+                type="primary"
+                size="small"
+                @click="handleReadAll"
+              >
+                全部已读
+              </el-button>
+            </div>
+            <el-empty
+              v-if="!notifications.length"
+              description="暂无异动提醒"
+              :image-size="60"
+            />
+            <div
+              v-for="n in notifications"
+              :key="n.id"
+              class="notif__item"
+              :class="{ 'is-unread': !n.read }"
+              role="button"
+              @click="openNotificationMetric(n)"
+            >
+              <p class="notif__title">{{ n.title }}</p>
+              <p class="notif__body">{{ n.body }}</p>
+              <p class="notif__time">{{ shortTime(n.created_at) }}</p>
+            </div>
+          </div>
+        </el-popover>
         <!-- B9.3 项目上下文：图标 + 固定宽切换器，与导航区拉开层级 -->
         <el-select
           :model-value="projectStore.currentId ?? ALL_PROJECTS"
@@ -274,8 +375,60 @@ async function handleDeleteProject(p) {
 .layout__context {
   display: flex;
   align-items: center;
+  gap: var(--pwc-space-4);
   padding-left: var(--pwc-space-6);
   border-left: 1px solid var(--pwc-border-subtle);
+}
+
+.layout__bell {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--pwc-text-primary);
+}
+
+.notif__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 700;
+  margin-bottom: var(--pwc-space-2);
+}
+
+.notif__item {
+  padding: var(--pwc-space-2) 0;
+  border-top: 1px solid var(--pwc-border-subtle);
+  cursor: pointer;
+}
+
+.notif__item.is-unread .notif__title {
+  font-weight: 700;
+}
+
+.notif__item.is-unread::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pwc-bg-brand);
+  margin-right: var(--pwc-space-2);
+  vertical-align: middle;
+}
+
+.notif__title {
+  font-size: var(--pwc-font-body-s);
+}
+
+.notif__body {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
+  margin: 2px 0;
+}
+
+.notif__time {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
 }
 
 .layout__project {

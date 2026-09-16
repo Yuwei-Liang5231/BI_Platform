@@ -291,3 +291,28 @@ class AnomalyConfig(Base):
     materiality_pct: Mapped[float] = mapped_column(default=5.0)  # B10-2 要紧度：|变化率| 低于此%的异动不构成结论
     enabled: Mapped[int] = mapped_column(Integer, default=1)  # 1=参与批量检测
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
+
+
+class Notification(Base):
+    """站内通知（B10-3 最小版）：异动结论落库即生成，纯平台内"发现→告知"闭环。
+
+    去重语义：同 (user, metric, 异动日, 方向) 只生成一条——重复扫描不刷屏。
+    read_at 非空即已读；小红点按未读计数。
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # B10 规矩：新表挂 project_id
+    metric_id: Mapped[int] = mapped_column(ForeignKey("metrics.id"), index=True)
+    metric_code: Mapped[str] = mapped_column(String(100))
+    anomaly_date: Mapped[date] = mapped_column(Date)                 # 异动发生日
+    direction: Mapped[str] = mapped_column(String(10))               # up / down
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text, default="")
+    current: Mapped[float | None] = mapped_column(nullable=True)     # 快照：当时算出的真值
+    baseline_mean: Mapped[float | None] = mapped_column(nullable=True)
+    abnormality: Mapped[float | None] = mapped_column(nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)

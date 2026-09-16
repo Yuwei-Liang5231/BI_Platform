@@ -1,0 +1,286 @@
+<!-- pwc-regime: product-ui -->
+<script setup>
+/**
+ * 经营总览（B10-3）：看板不等人来找问题。
+ * 异动卡片（当前值/正常水平/变化/异动度）限量 ≤5 条宁缺毋滥；
+ * 空态明确「本期无异动」；点击卡片进指标详情；
+ * 卡片展开调归因接口显示主要来源（Top3 + 其他）。
+ */
+import { onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
+import { ElMessage } from "element-plus";
+
+import { anomalyScan, attributeDelta, breakdownDimensions } from "@/api/query";
+import { listNotifications, markRead } from "@/api/notifications";
+import { formatMetricValue } from "@/utils/format";
+import { useProjectStore } from "@/stores/project";
+
+const router = useRouter();
+const projectStore = useProjectStore();
+
+const loading = ref(true);
+const scan = ref(null); // { counts, anomalies }
+const attribution = reactive({}); // { [metricId]: { loading, data, error } }
+
+async function fetchScan() {
+  loading.value = true;
+  try {
+    scan.value = await anomalyScan(projectStore.lockedId);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loadAttribution(item) {
+  const state = attribution[item.metric_id];
+  if (state?.data || state?.loading) return;
+  attribution[item.metric_id] = { loading: true, data: null, error: "" };
+  try {
+    // 归因需要维度列：取该指标第一个可拆解维度（拆解出口同一候选逻辑）
+    const dims = await breakdownDimensions({ metric: item.metric_id });
+    const column = dims?.dimensions?.[0]?.column;
+    if (!column) {
+      attribution[item.metric_id] = { loading: false, data: null, error: "该指标无可归因的维度列" };
+      return;
+    }
+    // 归因区间 = 异动日所在的自然周（周一~周日）
+    const d = new Date(item.date);
+    const day = (d.getDay() + 6) % 7;
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - day);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const iso = (x) =>
+      `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+    const data = await attributeDelta({
+      metric: item.metric_id,
+      start: iso(monday),
+      end: iso(sunday),
+      dimension: column,
+      compare: "mom",
+      top_n: 3,
+    });
+    attribution[item.metric_id] = { loading: false, data };
+  } catch {
+    attribution[item.metric_id] = {
+      loading: false,
+      data: null,
+      error: "该指标暂无法归因（比率类或归因区间无数据）",
+    };
+  }
+}
+
+async function toggleDetail(item) {
+  // 从总览进入详情时把对应通知标已读（小红点同步）——失败静默
+  try {
+    const unread = await listNotifications({ project_id: projectStore.lockedId, unread_only: true });
+    const hit = (unread || []).find((n) => n.metric_id === item.metric_id);
+    if (hit) await markRead(hit.id);
+  } catch {
+    /* 静默 */
+  }
+  router.push(`/metrics/${item.metric_id}`);
+}
+
+const directionText = (d) => (d === "up" ? "↑ 高于" : "↓ 低于");
+
+onMounted(fetchScan);
+</script>
+
+<template>
+  <div class="page-container">
+    <div class="page-header">
+      <div>
+        <h1 class="page-header__title">经营总览</h1>
+        <p class="page-header__subtitle">看板不等人来找问题 · 异动限量呈现，宁缺毋滥</p>
+      </div>
+      <el-button @click="fetchScan" :loading="loading">重新扫描</el-button>
+    </div>
+
+    <template v-if="scan">
+      <p class="overview__summary">
+        扫描
+        {{ (scan.counts.abnormal || 0) + (scan.counts.normal || 0) + (scan.counts.insufficient_baseline || 0) + (scan.counts.no_data || 0) }}
+        个指标：
+        <span class="overview__num overview__num--alert">{{ scan.counts.abnormal }} 个反常</span>、
+        {{ scan.counts.normal }} 个正常、
+        {{ scan.counts.insufficient_baseline }} 个基准不足、
+        {{ scan.counts.no_data }} 个无数据
+      </p>
+
+      <el-empty
+        v-if="!scan.anomalies.length"
+        description="本期无异动——所有启用检测的指标都在正常范围内"
+      />
+
+      <div v-for="item in scan.anomalies" :key="item.metric_id" class="pwc-card overview__card">
+        <div class="overview__head">
+          <span class="overview__title" role="link" @click="toggleDetail(item)">
+            {{ item.name }}（{{ item.metric_code }}）
+          </span>
+          <span class="overview__badge" :class="item.direction === 'up' ? 'is-up' : 'is-down'">
+            {{ directionText(item.direction) }}正常水平
+          </span>
+        </div>
+        <div class="overview__metrics">
+          <div class="overview__metric">
+            <span class="overview__metric-label">{{ item.date }} 值</span>
+            <span class="overview__metric-value">{{ formatMetricValue(item.current) }}</span>
+          </div>
+          <div class="overview__metric">
+            <span class="overview__metric-label">正常水平</span>
+            <span class="overview__metric-value">
+              {{ formatMetricValue(item.baseline?.mean) }}
+              <span class="overview__metric-sub">±{{ formatMetricValue(item.baseline?.stdev) }}</span>
+            </span>
+          </div>
+          <div class="overview__metric">
+            <span class="overview__metric-label">变化</span>
+            <span class="overview__metric-value">
+              {{ item.delta > 0 ? "+" : "" }}{{ formatMetricValue(item.delta) }}
+              <span class="overview__metric-sub" v-if="item.delta_pct !== null">
+                （{{ item.delta_pct > 0 ? "+" : "" }}{{ item.delta_pct }}%）
+              </span>
+            </span>
+          </div>
+          <div class="overview__metric">
+            <span class="overview__metric-label">异动度</span>
+            <span class="overview__metric-value">{{ item.abnormality }}σ</span>
+          </div>
+        </div>
+        <p class="overview__reason">{{ item.reason }}</p>
+        <div class="overview__attr">
+          <el-button text type="primary" size="small" @click="loadAttribution(item)">
+            查看主要来源
+          </el-button>
+          <template v-if="attribution[item.metric_id]">
+            <span v-if="attribution[item.metric_id].loading" class="overview__attr-loading">
+              归因计算中…
+            </span>
+            <span v-else-if="attribution[item.metric_id].error" class="overview__attr-error">
+              {{ attribution[item.metric_id].error }}
+            </span>
+            <div v-else-if="attribution[item.metric_id].data" class="overview__attr-body">
+              <div
+                v-for="c in attribution[item.metric_id].data.top_dimensions"
+                :key="c.value"
+                class="overview__attr-row"
+              >
+                <span>{{ c.value }}</span>
+                <span>
+                  {{ c.contribution > 0 ? "+" : "" }}{{ formatMetricValue(c.contribution) }}
+                  <span v-if="c.contribution_pct !== null" class="overview__metric-sub">
+                    （{{ c.contribution_pct > 0 ? "+" : "" }}{{ c.contribution_pct }}%）
+                  </span>
+                </span>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.overview__summary {
+  margin-bottom: var(--pwc-space-4);
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
+}
+
+.overview__num--alert {
+  color: var(--pwc-up);
+  font-weight: 700;
+}
+
+.overview__card {
+  margin-bottom: var(--pwc-space-4);
+  padding: var(--pwc-space-4);
+}
+
+.overview__head {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-3);
+  margin-bottom: var(--pwc-space-3);
+}
+
+.overview__title {
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.overview__title:hover {
+  color: var(--pwc-bg-brand);
+}
+
+.overview__badge {
+  font-size: var(--pwc-font-body-s);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.overview__badge.is-up {
+  background: color-mix(in srgb, var(--pwc-up) 10%, transparent);
+  color: var(--pwc-up);
+}
+
+.overview__badge.is-down {
+  background: color-mix(in srgb, var(--pwc-down) 10%, transparent);
+  color: var(--pwc-down);
+}
+
+.overview__metrics {
+  display: flex;
+  gap: var(--pwc-space-8);
+  flex-wrap: wrap;
+  margin-bottom: var(--pwc-space-2);
+}
+
+.overview__metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.overview__metric-label {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
+}
+
+.overview__metric-value {
+  font-size: var(--pwc-font-heading-m);
+  font-weight: 700;
+}
+
+.overview__metric-sub {
+  font-size: var(--pwc-font-body-s);
+  font-weight: 400;
+  color: var(--pwc-text-secondary);
+}
+
+.overview__reason {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
+  margin-bottom: var(--pwc-space-2);
+}
+
+.overview__attr-body {
+  margin-top: var(--pwc-space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pwc-space-1);
+}
+
+.overview__attr-row {
+  display: flex;
+  justify-content: space-between;
+  max-width: 420px;
+}
+
+.overview__attr-error {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
+}
+</style>

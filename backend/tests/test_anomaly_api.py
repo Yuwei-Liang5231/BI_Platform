@@ -330,3 +330,49 @@ class TestAttribution:
             "dimension": "channel",
         })
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------- B10-3 站内通知
+
+
+class TestNotifications:
+    def test_scan_generates_deduped_notifications(self, client, anomaly_env):
+        """批量扫描落库通知：admin 收到、同 metric+日+方向去重（二次扫描不重复）。"""
+        scan = client.get("/api/query/anomalies").json()["data"]
+        assert scan["counts"]["abnormal"] >= 1
+        first = client.get("/api/notifications").json()["data"]
+        assert first, "扫描后应有通知"
+        titles = [n["title"] for n in first]
+        assert any("异动" in t for t in titles)
+        # 二次扫描：去重不刷屏
+        client.get("/api/query/anomalies")
+        second = client.get("/api/notifications").json()["data"]
+        assert len(second) == len(first)
+
+    def test_unread_count_and_read_flow(self, client, anomaly_env):
+        unread = client.get("/api/notifications/unread-count").json()["data"]["count"]
+        assert unread >= 1
+        first = client.get("/api/notifications", params={"unread_only": True}).json()["data"][0]
+        resp = client.post("/api/notifications/read", json={"id": first["id"]})
+        assert resp.status_code == 200
+        after = client.get("/api/notifications/unread-count").json()["data"]["count"]
+        assert after == unread - 1
+        # 他人通知不可读（按用户隔离）
+        from tests.conftest import create_test_user
+
+        other = create_test_user(client, f"notif_other_{anomaly_env['sfx']}", role="analyst")
+        resp = client.post("/api/notifications/read", json={"id": first["id"]}, headers=other)
+        assert resp.status_code == 404
+
+    def test_read_all(self, client, anomaly_env):
+        client.post("/api/notifications/read-all")
+        assert client.get("/api/notifications/unread-count").json()["data"]["count"] == 0
+
+    def test_project_scope_filter(self, client, anomaly_env):
+        """project_id 过滤：异动通知挂项目，空项目范围查不到。"""
+        import uuid
+
+        p = client.post("/api/projects", json={"name": f"notif_empty_{uuid.uuid4().hex[:6]}"}).json()["data"]
+        listing = client.get("/api/notifications", params={"project_id": p["id"]}).json()["data"]
+        assert listing == []
+        client.delete(f"/api/projects/{p['id']}")
