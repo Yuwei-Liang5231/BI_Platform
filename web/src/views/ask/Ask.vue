@@ -682,7 +682,7 @@ onMounted(() => {
               />
             </el-select>
             <span v-if="!dimensionOptions.length" class="ask__hint">
-              该指标暂无低基数文本列可拆解
+              该指标暂无可拆解的文本列
             </span>
           </el-form-item>
 

@@ -674,9 +674,11 @@ def build_card(db: Session, user, question: str, conversation_id: int | None = N
         "time_is_explicit": time_is_explicit,
         # B9.2-2 拆解意图
         "dimension": dimension,
+        # 全量输出（V1.3.2 拆解维度全量开放后不再 [:15] 截断——高基数列排在
+        # distinct 升序尾部，截断会系统性隐藏业务要拆的列；前端 select 可搜索）
         "dimension_options": [
             {"dataset": c["dataset"], "column": c["column"], "distinct_count": c["distinct_count"]}
-            for c in dim_candidates[:15]
+            for c in dim_candidates
         ],
         "filters": rule_filters,
         "order_by": topn_intent.get("order_by", "value"),

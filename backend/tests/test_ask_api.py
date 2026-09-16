@@ -503,6 +503,55 @@ def test_followup_permission_rechecked_per_turn(client, ask_env):
     assert fu["metric"] is None
 
 
+# ---------------------------------------------------------------- 拆解维度候选
+
+
+def test_dimension_options_not_truncated(client, ask_env):
+    """回归（2026-09-16 用户报障）：理解卡拆解维度候选不得 [:15] 截断——
+
+    候选按 distinct 升序排，高基数列（如明细名称列）排尾部，截断会系统性
+    隐藏业务要拆的列。构造 18 个文本列（1 高基数 + 17 低基数）数据集，
+    断言高基数列出现在 dimension_options 中且候选全量输出。
+    """
+    wide_name = f"ask_wide_{date.today().strftime('%Y%m%d%H%M%S')}"
+    n_cols = 18
+    header = ["sale_date", "amount"] + [f"tag_{i:02d}" for i in range(n_cols - 1)] + ["item_name"]
+    rows = [
+        ["2026-01-10", "100"] + [f"T{i}" for i in range(n_cols - 1)] + [f"项目-{r}"]
+        for r in range(20)
+    ]
+    resp = client.post(
+        "/api/datasets/upload",
+        files={"file": ("ask_wide.csv", io.BytesIO(_csv_bytes(header, rows)), "text/csv")},
+        data={"name": wide_name},
+    )
+    assert resp.status_code == 200, resp.text
+    metric_code = f"ask_wide_sum_{date.today().strftime('%Y%m%d%H%M%S')}"
+    resp = client.post("/api/metrics", json={
+        "code": metric_code,
+        "name": "宽表求和",
+        "calc_rule": {
+            "base_aggregation": "sum",
+            "source": {"table": wide_name, "column": "amount"},
+        },
+    })
+    assert resp.status_code == 200, resp.text
+
+    card = _ask(client, f"2026年1月{metric_code}是多少")
+    assert card["can_compute"] is True
+    opts = card["dimension_options"]
+    assert len(opts) >= n_cols  # 全量输出，不再截到 15
+    # 高基数明细列（20 行唯一值，distinct 升序排尾部）必须仍在候选中
+    assert "item_name" in [o["column"] for o in opts]
+
+    # 收尾清理：避免共享测试库累积同名指标/数据集
+    metric_id = client.get("/api/metrics", params={"search": metric_code}).json()["data"][0]["id"]
+    client.delete(f"/api/metrics/{metric_id}")
+    ds_id = client.get("/api/datasets").json()["data"]
+    target = next(d for d in ds_id if d["name"] == wide_name)
+    client.delete(f"/api/datasets/{target['id']}")
+
+
 # ---------------------------------------------------------------- 权限继承
 
 
