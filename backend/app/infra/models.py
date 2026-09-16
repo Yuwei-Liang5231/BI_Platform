@@ -268,3 +268,25 @@ class AskMessage(Base):
     card_json: Mapped[str] = mapped_column(Text, default="{}")        # assistant：理解卡快照
     results_json: Mapped[str] = mapped_column(Text, default="[]")     # assistant：结果数组 [{label,data}]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+
+
+# ---------------------------------------------------------------- 异动检测（B10）
+
+
+class AnomalyConfig(Base):
+    """指标级异动检测配置（B10-1）：指标唯一，缺省用保守档默认值。
+
+    z_threshold：|z| 超过该值判反常（默认 3.0 保守档）；min_samples：同星期几
+    基准样本下限（默认 8，不足不判断——宁漏不误）。enabled=false 指标不参与
+    批量检测。project_id 随 metric 冗余存储（B10 起新表一律挂 project_id）。
+    """
+
+    __tablename__ = "anomaly_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    metric_id: Mapped[int] = mapped_column(ForeignKey("metrics.id"), unique=True, index=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    z_threshold: Mapped[float] = mapped_column(default=3.0)
+    min_samples: Mapped[int] = mapped_column(Integer, default=8)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)  # 1=参与批量检测
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)

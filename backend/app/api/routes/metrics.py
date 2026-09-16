@@ -166,6 +166,50 @@ def get_metric_changes(db: DbDep, metric_id: int, user: CurrentUser):
     return ok_response(service.get_changes(db, metric_id))
 
 
+# ---------------------------------------------------------------- 异动检测配置（B10-1）
+
+
+class AnomalyConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    z_threshold: float | None = None   # 1.0~10.0，缺省 3.0（保守档）
+    min_samples: int | None = None     # 同星期几基准样本下限，缺省 8
+    enabled: bool | None = None        # false = 不参与批量异动扫描
+
+
+@router.get("/{metric_id}/anomaly-config")
+def get_anomaly_config(db: DbDep, metric_id: int, user: CurrentUser):
+    """指标级异动检测配置（无记录返回默认保守档）。"""
+    from app.domain.anomaly import service as anomaly_service
+
+    ensure_metric_visible(db, user, service.get_metric(db, metric_id))
+    return ok_response(anomaly_service.get_effective_config(db, metric_id))
+
+
+@router.put("/{metric_id}/anomaly-config")
+def put_anomaly_config(db: DbDep, metric_id: int, body: AnomalyConfigRequest, user: WriterUser):
+    """创建/更新指标级异动检测配置（仅 analyst/admin）。"""
+    from app.domain.anomaly import service as anomaly_service
+
+    metric = service.get_metric(db, metric_id)
+    cfg = anomaly_service.upsert_config(
+        db,
+        metric,
+        z_threshold=body.z_threshold,
+        min_samples=body.min_samples,
+        enabled=body.enabled,
+    )
+    return ok_response(
+        {
+            "metric_id": metric_id,
+            "z_threshold": cfg.z_threshold,
+            "min_samples": cfg.min_samples,
+            "enabled": bool(cfg.enabled),
+        },
+        message="异动检测配置已保存",
+    )
+
+
 @router.post("/compile")
 def compile_try(db: DbDep, body: CompileTryRequest, _: CurrentUser):
     """试编译：不落库，返回参数化 SQL 与周期元信息（Swagger 调试/前端预览用）。"""

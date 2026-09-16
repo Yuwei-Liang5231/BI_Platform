@@ -55,6 +55,11 @@ def _parse_date(raw: str, field_name: str) -> date:
         raise BusinessError(f"{field_name} 日期格式应为 YYYY-MM-DD，收到 {raw!r}", 40000) from None
 
 
+def parse_date_optional(raw: str) -> date:
+    """可选日期入参解析（异动检测等场景），格式错误同样 400。"""
+    return _parse_date(raw, "date")
+
+
 def parse_range(start: str, end: str) -> tuple[date, date]:
     s = _parse_date(start, "start")
     e = _parse_date(end, "end")

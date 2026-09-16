@@ -268,3 +268,44 @@ def breakdown_dimensions(db: DbDep, body: BreakdownDimensionsRequest, user: Curr
     """候选拆解维度列：主数据集与一跳可达维度表的文本列 + 现算基数
     （低基数判定线 50），供问数理解卡与前端下拉展示。"""
     return ok_response(service.list_breakdown_dimensions(db, metric_ref=body.metric, user=user))
+
+
+# ---------------------------------------------------------------- 异动检测（B10）
+
+
+class AnomalyRequest(BaseModel):
+    """单指标单日反常性检测。date 缺省 = 数据覆盖末日（最新有数据日）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str | int
+    date: str | None = None
+
+
+@router.post("/anomaly")
+def anomaly_detect(db: DbDep, body: AnomalyRequest, user: CurrentUser):
+    """单指标反常性检测（B10-1）：同星期几基准 + z-score（先排周期性再判断）。
+
+    数值全部来自 compute 单点出口；基准样本不足不判断（宁漏不误）。
+    """
+    from app.domain.anomaly import service as anomaly_service
+
+    detect_date = service.parse_date_optional(body.date) if body.date else None
+    metric = service._resolve_metric(db, body.metric)
+    from app.domain.auth.service import ensure_metric_visible
+
+    ensure_metric_visible(db, user, metric)
+    return ok_response(
+        anomaly_service.detect_for_metric(db, user, metric, detect_date=detect_date)
+    )
+
+
+@router.get("/anomalies")
+def anomaly_scan(db: DbDep, user: CurrentUser, project_id: int | None = None):
+    """项目内批量异动扫描（B10-1，B10-3 总览页/看板黄条数据源）。
+
+    仅返回反常项（按 abnormality 降序，限量 5 条宁缺毋滥）+ 各判定计数。
+    """
+    from app.domain.anomaly import service as anomaly_service
+
+    return ok_response(anomaly_service.detect_for_project(db, user, project_id=project_id))
