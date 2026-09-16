@@ -207,6 +207,35 @@ class TestMetricsApi:
         resp = client.get(f"/api/metrics/{metric_id}")
         assert resp.status_code == 404
 
+    def test_soft_delete_hidden_from_status_all_and_no_double_delete(self, client, metric_env):
+        """回归：管理页「全部状态」(status=all) 不得显示已删除指标；重复删除报 404。
+
+        用户报障：删除后指标仍可见，再点删除提示「指标不存在」——根因是
+        status=all 未过滤软删记录，列表出现已删除指标但删除接口判不存在。
+        """
+        resp = client.post("/api/metrics", json={
+            "code": "api_doomed_all", "name": "全状态待删除", "calc_rule": GMV_RULE,
+        })
+        assert resp.status_code == 200, resp.text
+        metric_id = resp.json()["data"]["id"]
+
+        # 删除前：status=all 可见
+        resp = client.get("/api/metrics", params={"status": "all", "search": "api_doomed_all"})
+        assert [m["id"] for m in resp.json()["data"]] == [metric_id]
+
+        resp = client.delete(f"/api/metrics/{metric_id}")
+        assert resp.status_code == 200
+
+        # 删除后：默认目录、全状态目录、搜索均不可见
+        for params in ({"status": "all"}, {"status": "all", "search": "api_doomed_all"}, {}):
+            resp = client.get("/api/metrics", params=params)
+            assert all(m["id"] != metric_id for m in resp.json()["data"]), params
+
+        # 重复删除 → 404「指标不存在」（与列表不可见行为一致）
+        resp = client.delete(f"/api/metrics/{metric_id}")
+        assert resp.status_code == 404
+        assert resp.json()["code"] == 40400
+
     def test_metric_not_found(self, client):
         resp = client.get("/api/metrics/99999")
         assert resp.status_code == 404

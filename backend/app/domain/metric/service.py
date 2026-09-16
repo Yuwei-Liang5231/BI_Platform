@@ -318,7 +318,10 @@ def list_metrics(
 ) -> list[Metric]:
     repo = Repository(Metric, db)
     if status == "all":
-        metrics = repo.list(order_by=Metric.id, limit=10000)
+        # 软删指标目录与搜索不可见（DELETE 契约），「全部状态」仅含 active/disabled/pending
+        metrics = [
+            m for m in repo.list(order_by=Metric.id, limit=10000) if m.status != "deleted"
+        ]
     else:
         metrics = repo.list(order_by=Metric.id, limit=10000, status=status)
     if topic:
