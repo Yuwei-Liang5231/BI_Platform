@@ -68,8 +68,10 @@ const router = createRouter({
   routes,
 });
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore();
+  // 有 token 但 user 丢失（重开浏览器）：先经 /auth/me 恢复角色，再判定权限
+  await auth.ensureUser();
   if (!to.meta.public && !auth.isLoggedIn) {
     return { name: "Login", query: { redirect: to.fullPath } };
   }

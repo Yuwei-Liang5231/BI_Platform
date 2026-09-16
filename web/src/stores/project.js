@@ -31,6 +31,12 @@ export const useProjectStore = defineStore("project", () => {
   });
   /** 供锁定项目页面使用：当前项目 id，全部项目视图回落默认项目。 */
   const lockedId = computed(() => currentId.value ?? defaultId.value);
+  /** 切换器排序：业务项目在前（按名称），默认项目垫底（存量数据容器）。 */
+  const sortedProjects = computed(() => {
+    const rest = projects.value.filter((p) => p.id !== defaultId.value);
+    const def = projects.value.find((p) => p.id === defaultId.value);
+    return [...rest, ...(def ? [def] : [])];
+  });
 
   async function fetchProjects() {
     projects.value = await listApi();
@@ -70,6 +76,7 @@ export const useProjectStore = defineStore("project", () => {
     current,
     defaultId,
     lockedId,
+    sortedProjects,
     fetchProjects,
     setCurrent,
     create,

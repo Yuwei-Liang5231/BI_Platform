@@ -145,7 +145,7 @@ async function handleDeleteProject(p) {
             </span>
           </template>
           <el-option label="全部项目（浏览）" :value="ALL_PROJECTS" />
-          <el-option v-for="p in projectStore.projects" :key="p.id" :label="p.name" :value="p.id" />
+          <el-option v-for="p in projectStore.sortedProjects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
       </div>
       <div class="layout__user">

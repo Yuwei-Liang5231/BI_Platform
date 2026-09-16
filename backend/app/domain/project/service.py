@@ -11,21 +11,35 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.core.response import BusinessError
-from app.infra.models import Dataset, Metric, Project
+from app.infra.models import Dataset, KeyValue, Metric, Project
 from app.infra.repository import Repository
 
 DEFAULT_PROJECT_NAME = "默认项目"
+DEFAULT_PROJECT_KEY = "default_project_id"
 
 
 def ensure_default_project(db: Session) -> Project:
     """默认项目幂等创建 + 存量 NULL 回填（lifespan/迁移后调用）。
 
-    回填只处理 project_id IS NULL 的行（新建行一律显式挂项目，不会为 NULL）；
-    SQLite 无行级触发器，直接 UPDATE。幂等：默认项目已存在且无 NULL 行时空操作。
+    标记存 key_value（default_project_id）而非按名字判定——默认项目允许
+    admin 改名（如改为「历史数据」），改名后不得再创建第二个默认项目。
+    回填只处理 project_id IS NULL 的行；幂等：标记存在且无 NULL 行时空操作。
     """
-    project = db.query(Project).filter(Project.name == DEFAULT_PROJECT_NAME).first()
+    repo_kv = Repository(KeyValue, db)
+    marker = repo_kv.get(DEFAULT_PROJECT_KEY)
+    project = None
+    if marker is not None and marker.value:
+        project = db.get(Project, int(marker.value))
     if project is None:
-        project = Repository(Project, db).add(Project(name=DEFAULT_PROJECT_NAME, created_by="system"))
+        project = (
+            db.query(Project).filter(Project.name == DEFAULT_PROJECT_NAME).first()
+            or Repository(Project, db).add(
+                Project(name=DEFAULT_PROJECT_NAME, created_by="system")
+            )
+        )
+        repo_kv.update(marker, value=str(project.id)) if marker is not None else repo_kv.add(
+            KeyValue(key=DEFAULT_PROJECT_KEY, value=str(project.id))
+        )
     for model in (Dataset, Metric):
         db.query(model).filter(model.project_id.is_(None)).update(
             {model.project_id: project.id}, synchronize_session=False
@@ -104,7 +118,9 @@ def delete_project(db: Session, project_id: int) -> dict:
     project = repo.get(project_id)
     if project is None:
         raise BusinessError(f"项目 {project_id} 不存在", 40400)
-    if project.name == DEFAULT_PROJECT_NAME:
+    marker = Repository(KeyValue, db).get(DEFAULT_PROJECT_KEY)
+    if marker is not None and marker.value and int(marker.value) == project_id:
+        # 默认项目承载存量数据且不可删（可改名；改名后仍按标记识别）
         raise BusinessError("默认项目不可删除", 40000)
     ds_count = db.query(Dataset).filter(Dataset.project_id == project_id).count()
     metric_count = db.query(Metric).filter(Metric.project_id == project_id).count()

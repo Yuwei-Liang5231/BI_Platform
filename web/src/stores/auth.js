@@ -1,7 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
-import { login as loginApi } from "@/api/auth";
+import { getMe as getMeApi, login as loginApi } from "@/api/auth";
 import { clearToken, clearUser, getToken, getUser, setToken, setUser } from "@/utils/storage";
 
 export const useAuthStore = defineStore("auth", () => {
@@ -30,5 +30,27 @@ export const useAuthStore = defineStore("auth", () => {
     user.value = null;
   }
 
-  return { token, user, isLoggedIn, role, isAdmin, canWrite, login, logout };
+  // token 持久化在 localStorage、user 在 sessionStorage（标签页关闭即失）——
+  // 重开浏览器会出现「有 token 无 user」：角色为空、全站被当只读降权。
+  // 用 /auth/me 恢复身份；token 失效则清除回登录页。
+  let ensuring = null;
+  function ensureUser() {
+    if (!token.value || user.value) return Promise.resolve();
+    ensuring =
+      ensuring ??
+      getMeApi()
+        .then((u) => {
+          user.value = u;
+          setUser(u);
+        })
+        .catch(() => {
+          logout();
+        })
+        .finally(() => {
+          ensuring = null;
+        });
+    return ensuring;
+  }
+
+  return { token, user, isLoggedIn, role, isAdmin, canWrite, login, logout, ensureUser };
 });
