@@ -25,7 +25,9 @@ export function formatMetricValue(value) {
 export function formatPercent(value) {
   if (value === null || value === undefined) return "—";
   if (typeof value !== "number") return String(value);
-  return `${(value * 100).toFixed(2)}%`;
+  // 入参已是百分数单位（后端 change_pct 约定：*100 后的值，如 13.57 = 13.57%），
+  // 统一 1 位小数与报告叙述句对齐——切勿再乘 100（曾致 -13.57% 显示为 -1357.4%）。
+  return `${value.toFixed(1)}%`;
 }
 
 /**
