@@ -332,6 +332,79 @@ def anomaly_enable_all(db: DbDep, user: CurrentUser, project_id: int | None = No
     return ok_response({"project_id": pid, "total": len(metrics), "enabled_now": created})
 
 
+class AnomalyConfigItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metric_id: int
+    enabled: bool
+
+
+class AnomalyConfigsRequest(BaseModel):
+    """检测指标管理（B10-3）：整组替换语义——列表内开启、列表外停用（幂等）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric_ids: list[int]
+
+
+@router.get("/anomalies/configs")
+def anomaly_configs_list(db: DbDep, user: CurrentUser, project_id: int | None = None):
+    """检测指标清单（管理对话框数据源）：项目内全部 active 指标 + 各自配置状态。"""
+    from app.domain.anomaly import service as anomaly_service
+    from app.domain.metric.service import list_metrics
+    from app.domain.project.service import resolve_project_id
+
+    pid = resolve_project_id(db, project_id)
+    items = []
+    for m in list_metrics(db, status="active", project_id=pid):
+        cfg = anomaly_service.get_config(db, m.id)
+        items.append(
+            {
+                "metric_id": m.id,
+                "code": m.code,
+                "name": m.name,
+                "configured": cfg is not None,
+                "enabled": bool(cfg.enabled) if cfg is not None else False,
+            }
+        )
+    return ok_response({"project_id": pid, "items": items})
+
+
+@router.post("/anomalies/configs")
+def anomaly_configs_save(
+    db: DbDep, body: AnomalyConfigsRequest, user: CurrentUser, project_id: int | None = None
+):
+    """整组替换检测指标集合：列表内的指标开启（无配置则建保守档）、列表外的停用。"""
+    from app.domain.anomaly import service as anomaly_service
+    from app.domain.metric.service import list_metrics
+    from app.domain.project.service import resolve_project_id
+
+    pid = resolve_project_id(db, project_id)
+    wanted = set(body.metric_ids)
+    metrics = list_metrics(db, status="active", project_id=pid)
+    enabled_count = disabled_count = 0
+    for m in metrics:
+        cfg = anomaly_service.get_config(db, m.id)
+        if m.id in wanted:
+            if cfg is None:
+                anomaly_service.upsert_config(db, m, enabled=True)
+                enabled_count += 1
+            elif not cfg.enabled:
+                anomaly_service.upsert_config(db, m, enabled=True)
+                enabled_count += 1
+        elif cfg is not None and cfg.enabled:
+            anomaly_service.upsert_config(db, m, enabled=False)
+            disabled_count += 1
+    return ok_response(
+        {
+            "project_id": pid,
+            "enabled_count": enabled_count,
+            "disabled_count": disabled_count,
+        },
+        message="检测指标已更新",
+    )
+
+
 class AttributeRequest(BaseModel):
     """单层归因请求（B10-2）：变化量按维度拆贡献（加性指标）。
 

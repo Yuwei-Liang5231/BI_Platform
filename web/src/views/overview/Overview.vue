@@ -6,11 +6,13 @@
  * 空态明确「本期无异动」；点击卡片进指标详情；
  * 卡片展开调归因接口显示主要来源（Top3 + 其他）。
  */
-import { onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
 import {
+  anomalyConfigsList,
+  anomalyConfigsSave,
   anomalyEnableAll,
   anomalyScan,
   attributeDelta,
@@ -102,24 +104,70 @@ async function enableAll() {
   }
 }
 
+/* ---------- 检测指标管理（B10-3）：勾选开启/停用 ---------- */
+const manageVisible = ref(false);
+const manageLoading = ref(false);
+const manageSaving = ref(false);
+const metricItems = ref([]); // [{metric_id, code, name, configured, enabled}]
+const checkedIds = ref([]);
+const manageTableRef = ref(null);
+
+async function openManage() {
+  manageVisible.value = true;
+  manageLoading.value = true;
+  try {
+    const res = await anomalyConfigsList(projectStore.lockedId);
+    metricItems.value = res?.items ?? [];
+    await nextTick();
+    // 已开启的行预勾选（el-table 勾选需编程式设置）
+    for (const row of metricItems.value) {
+      if (row.enabled) manageTableRef.value?.toggleRowSelection(row, true);
+    }
+  } finally {
+    manageLoading.value = false;
+  }
+}
+
+async function saveManage() {
+  manageSaving.value = true;
+  try {
+    await anomalyConfigsSave(checkedIds.value, projectStore.lockedId);
+    ElMessage.success("检测指标已更新");
+    manageVisible.value = false;
+    await fetchScan();
+  } finally {
+    manageSaving.value = false;
+  }
+}
+
 onMounted(fetchScan);
 </script>
 
 <template>
-  <div class="page-container">
+  <div class="page-container" v-loading="loading" element-loading-text="正在逐指标计算基准分布（同星期几基准 + z-score），指标越多耗时越长…">
     <div class="page-header">
       <div>
         <h1 class="page-header__title">经营总览</h1>
         <p class="page-header__subtitle">看板不等人来找问题 · 异动限量呈现，宁缺毋滥</p>
       </div>
-      <el-button @click="fetchScan" :loading="loading">重新扫描</el-button>
+      <div class="page-header__actions">
+        <el-button @click="openManage">管理检测指标</el-button>
+        <el-button @click="fetchScan" :loading="loading">重新扫描</el-button>
+      </div>
     </div>
+
+    <!-- 检测口径说明（常驻）：用户不必猜测"反常/正常"如何得出 -->
+    <el-alert type="info" :closable="false" class="overview__method">
+      <template #title>
+        检测口径：<b>反常</b> = 该日值偏离「过去 N 个同星期几」的基准分布超过阈值倍标准差（默认 3σ，
+        先排除周期性——周日天然低不算暴涨），且变化幅度超过要紧度阈值（默认 5%）；
+        基准样本不足则标注「不判断」。逐指标阈值可在指标管理中调整。
+      </template>
+    </el-alert>
 
     <template v-if="scan">
       <p class="overview__summary">
-        扫描
-        {{ (scan.counts.abnormal || 0) + (scan.counts.normal || 0) + (scan.counts.insufficient_baseline || 0) + (scan.counts.no_data || 0) }}
-        个指标：
+        扫描 {{ scan.counts.configured }} 个开启检测的指标：
         <span class="overview__num overview__num--alert">{{ scan.counts.abnormal }} 个反常</span>、
         {{ scan.counts.normal }} 个正常、
         {{ scan.counts.insufficient_baseline }} 个基准不足、
@@ -208,10 +256,44 @@ onMounted(fetchScan);
         </div>
       </div>
     </template>
+
+    <!-- 检测指标管理（B10-3）：勾选开启/停用 -->
+    <el-dialog v-model="manageVisible" title="管理检测指标" width="560px">
+      <p class="overview__method">
+        勾选要监控的指标（建议只挑核心指标）：保存后每次进入总览自动扫描；
+        取消勾选即停用（配置保留，可随时再勾回）。扫描阈值默认 3σ 保守档。
+      </p>
+      <el-table
+        ref="manageTableRef"
+        v-loading="manageLoading"
+        :data="metricItems"
+        size="small"
+        max-height="380"
+        @selection-change="(rows) => (checkedIds = rows.map((r) => r.metric_id))"
+      >
+        <el-table-column type="selection" width="44" reserve-selection />
+        <el-table-column prop="name" label="指标" min-width="140" />
+        <el-table-column prop="code" label="编码" min-width="140" />
+        <el-table-column label="检测状态" width="100">
+          <template #default="{ row }">
+            <span v-if="row.enabled" class="overview__num--alert">检测中</span>
+            <span v-else style="color: var(--pwc-text-secondary)">未开启</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="manageVisible = false">取消</el-button>
+        <el-button type="primary" :loading="manageSaving" @click="saveManage">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
+.overview__method {
+  margin-bottom: var(--pwc-space-4);
+}
+
 .overview__summary {
   margin-bottom: var(--pwc-space-4);
   font-size: var(--pwc-font-body-s);

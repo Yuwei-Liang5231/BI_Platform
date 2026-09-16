@@ -230,6 +230,48 @@ class TestAnomalyScan:
         assert scan["counts"]["configured"] >= first_created + 1
 
 
+class TestAnomalyConfigManage:
+    def test_configs_list_and_group_save(self, client, anomaly_env):
+        """检测指标清单 + 整组替换：列表内开启、列表外停用。"""
+        sfx = anomaly_env["sfx"]
+        mid = anomaly_env["metric"]["id"]
+        # 再建一个指标（未配置）
+        resp = client.post("/api/metrics", json={
+            "code": f"anom_m2_{sfx}",
+            "name": "未配置二",
+            "calc_rule": {
+                "base_aggregation": "count",
+                "source": {"table": f"anom_ds_{sfx}", "column": "amount"},
+            },
+        })
+        assert resp.status_code == 200, resp.text
+        m2 = resp.json()["data"]
+
+        # 清单：两个指标都在，一个开启一个未配置
+        listing = client.get("/api/query/anomalies/configs").json()["data"]["items"]
+        by_id = {i["metric_id"]: i for i in listing}
+        assert by_id[mid]["enabled"] is True
+        assert by_id[m2["id"]]["configured"] is False
+
+        # 整组替换：只留 m2 → mid 停用、m2 开启
+        resp = client.post("/api/query/anomalies/configs", json={"metric_ids": [m2["id"]]})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()["data"]
+        assert body["disabled_count"] == 1
+        assert body["enabled_count"] == 1
+
+        listing = client.get("/api/query/anomalies/configs").json()["data"]["items"]
+        by_id = {i["metric_id"]: i for i in listing}
+        assert by_id[mid]["enabled"] is False
+        assert by_id[m2["id"]]["enabled"] is True
+
+        # 扫描只含 m2
+        scan = client.get("/api/query/anomalies").json()["data"]
+        assert all(a["metric_id"] != mid for a in scan["anomalies"])
+
+        client.delete(f"/api/metrics/{m2['id']}")
+
+
 # ---------------------------------------------------------------- B10-2 要紧度 + 单层归因
 
 
@@ -378,6 +420,8 @@ class TestAttribution:
 class TestNotifications:
     def test_scan_generates_deduped_notifications(self, client, anomaly_env):
         """批量扫描落库通知：admin 收到、同 metric+日+方向去重（二次扫描不重复）。"""
+        # 前序用例可能停用了配置：确保开启后再扫描
+        client.put(f"/api/metrics/{anomaly_env['metric']['id']}/anomaly-config", json={"enabled": True})
         scan = client.get("/api/query/anomalies").json()["data"]
         assert scan["counts"]["abnormal"] >= 1
         first = client.get("/api/notifications").json()["data"]
