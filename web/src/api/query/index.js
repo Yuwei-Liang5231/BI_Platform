@@ -63,6 +63,12 @@ export const anomalyScan = (projectId) =>
     timeout: 180000,
   });
 
+/** 一键开启项目内全部 active 指标的异动检测（默认保守档，幂等）。 */
+export const anomalyEnableAll = (projectId) =>
+  request.post("/query/anomalies/enable-all", null, {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
+
 /** 单层归因（B10-2）：变化量按维度拆贡献（加性指标）。 */
 export const attributeDelta = (data) => request.post("/query/attribute", data);
 

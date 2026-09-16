@@ -216,6 +216,19 @@ class TestAnomalyScan:
         assert scan["counts"]["configured"] == 0
         client.put(f"/api/metrics/{mid}/anomaly-config", json={"enabled": True})
 
+    def test_enable_all_idempotent(self, client, anomaly_env):
+        """一键开启：未配置的指标批量建配置（保守档）；重复调用幂等。"""
+        resp = client.post("/api/query/anomalies/enable-all")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()["data"]
+        assert body["total"] >= 1
+        first_created = body["enabled_now"]
+        resp2 = client.post("/api/query/anomalies/enable-all")
+        assert resp2.json()["data"]["enabled_now"] == 0  # 幂等：已有配置不覆盖
+        # 新配置生效：扫描覆盖到此前未配置的指标
+        scan = client.get("/api/query/anomalies").json()["data"]
+        assert scan["counts"]["configured"] >= first_created + 1
+
 
 # ---------------------------------------------------------------- B10-2 要紧度 + 单层归因
 

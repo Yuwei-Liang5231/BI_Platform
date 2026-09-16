@@ -305,10 +305,31 @@ def anomaly_scan(db: DbDep, user: CurrentUser, project_id: int | None = None):
     """项目内批量异动扫描（B10-1，B10-3 总览页/看板黄条数据源）。
 
     仅返回反常项（按 abnormality 降序，限量 5 条宁缺毋滥）+ 各判定计数。
+    扫描范围为 opt-in：只扫显式配置且 enabled=1 的指标。
     """
     from app.domain.anomaly import service as anomaly_service
 
     return ok_response(anomaly_service.detect_for_project(db, user, project_id=project_id))
+
+
+@router.post("/anomalies/enable-all")
+def anomaly_enable_all(db: DbDep, user: CurrentUser, project_id: int | None = None):
+    """为项目内全部 active 指标开启异动检测（B10-3 便捷入口，默认保守档）。
+
+    已有配置的指标保持原配置不动（幂等）；返回开启数量。
+    """
+    from app.domain.anomaly import service as anomaly_service
+    from app.domain.metric.service import list_metrics
+    from app.domain.project.service import resolve_project_id
+
+    pid = resolve_project_id(db, project_id)
+    metrics = list_metrics(db, status="active", project_id=pid)
+    created = 0
+    for m in metrics:
+        if anomaly_service.get_config(db, m.id) is None:
+            anomaly_service.upsert_config(db, m, enabled=True)
+            created += 1
+    return ok_response({"project_id": pid, "total": len(metrics), "enabled_now": created})
 
 
 class AttributeRequest(BaseModel):

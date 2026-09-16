@@ -10,7 +10,12 @@ import { onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
-import { anomalyScan, attributeDelta, breakdownDimensions } from "@/api/query";
+import {
+  anomalyEnableAll,
+  anomalyScan,
+  attributeDelta,
+  breakdownDimensions,
+} from "@/api/query";
 import { listNotifications, markRead } from "@/api/notifications";
 import { formatMetricValue } from "@/utils/format";
 import { useProjectStore } from "@/stores/project";
@@ -84,6 +89,19 @@ async function toggleDetail(item) {
 
 const directionText = (d) => (d === "up" ? "↑ 高于" : "↓ 低于");
 
+const enabling = ref(false);
+
+async function enableAll() {
+  enabling.value = true;
+  try {
+    const res = await anomalyEnableAll(projectStore.lockedId);
+    ElMessage.success(`已为 ${res.total} 个指标开启异动检测（本次新增 ${res.enabled_now} 个）`);
+    await fetchScan();
+  } finally {
+    enabling.value = false;
+  }
+}
+
 onMounted(fetchScan);
 </script>
 
@@ -111,9 +129,18 @@ onMounted(fetchScan);
       <el-empty
         v-if="!scan.anomalies.length"
         :description="scan.counts.configured === 0
-          ? '尚未开启异动检测——通过 PUT /api/metrics/{id}/anomaly-config 为关心的指标开启检测后，这里会自动呈现异动结论'
+          ? '尚未开启异动检测——开启后每次进入总览自动扫描，异动限量呈现、宁缺毋滥'
           : '本期无异动——所有开启检测的指标都在正常范围内'"
-      />
+      >
+        <el-button
+          v-if="scan.counts.configured === 0"
+          type="primary"
+          :loading="enabling"
+          @click="enableAll"
+        >
+          一键开启当前项目全部指标的异动检测
+        </el-button>
+      </el-empty>
 
       <div v-for="item in scan.anomalies" :key="item.metric_id" class="pwc-card overview__card">
         <div class="overview__head">
