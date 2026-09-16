@@ -106,7 +106,11 @@ const AGG_OPTIONS = [
 
 const builder = reactive({
   mode: "flat", // flat | expr | json
-  flat: { table: "", column: "", aggregation: "sum", filter: "", time_field: "", time_none: false, time_confirmed: false },
+  flat: {
+    table: "", column: "", aggregation: "sum", filter: "", time_field: "", time_none: false, time_confirmed: false,
+    // 结构化相对时间条件（2026-09-16）：以计算当天为锚点，生成 today 文法并入 filter
+    timeCond: { on: false, column: "", kind: "up_to_today", n: 7, range: null },
+  },
   expr: {
     expression: "A / B",
     operands: [
@@ -117,6 +121,110 @@ const builder = reactive({
 });
 const jsonRule = ref("");
 const datasetColumns = reactive({}); // table name -> [{ name, isDate }]
+
+/* ---------- 相对时间条件：文法片段生成 + filter 文本回填解析 ---------- */
+
+const TIME_KINDS = [
+  { value: "before_today", label: "今天之前", frag: (c) => `${c} < today` },
+  { value: "up_to_today", label: "今天及之前", frag: (c) => `${c} <= today` },
+  { value: "after_today", label: "今天之后", frag: (c) => `${c} > today` },
+  { value: "from_today", label: "今天及之后", frag: (c) => `${c} >= today` },
+  { value: "next_n_days", label: "未来 N 天内", frag: (c, n) => `${c} >= today AND ${c} <= today+${n}d` },
+  { value: "last_n_days", label: "过去 N 天内", frag: (c, n) => `${c} >= today-${n}d AND ${c} <= today` },
+  { value: "custom_range", label: "自定义日期区间", frag: (c, r) => `${c} >= '${r[0]}' AND ${c} <= '${r[1]}'` },
+];
+const TIME_KIND_NEEDS_N = new Set(["next_n_days", "last_n_days"]);
+
+function quoteFilterCol(name) {
+  return /^[\w\u4e00-\u9fff.-]+$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+}
+
+function timeCondFragment(tc) {
+  if (!tc.on) return { frag: "", error: "" };
+  if (!tc.column) return { frag: "", error: "已启用相对时间条件：请选择日期列" };
+  if (TIME_KIND_NEEDS_N.has(tc.kind) && (tc.n === null || tc.n === undefined || tc.n < 0))
+    return { frag: "", error: "请填写相对时间的天数 N" };
+  if (tc.kind === "custom_range" && (!Array.isArray(tc.range) || !tc.range[0] || !tc.range[1]))
+    return { frag: "", error: "请选择自定义日期区间" };
+  const kind = TIME_KINDS.find((k) => k.value === tc.kind);
+  return { frag: kind.frag(quoteFilterCol(tc.column), tc.kind === "custom_range" ? tc.range : tc.n), error: "" };
+}
+
+// 按 AND 分割条件段（跳过单引号字符串内的 AND）
+function splitFilterAnd(text) {
+  const parts = [];
+  let buf = "";
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "'") {
+      inStr = !inStr;
+      buf += ch;
+      continue;
+    }
+    if (!inStr) {
+      const m = text.slice(i).match(/^(\s+AND\s+)/i);
+      if (m) {
+        parts.push(buf.trim());
+        buf = "";
+        i += m[1].length - 1;
+        continue;
+      }
+    }
+    buf += ch;
+  }
+  if (buf.trim()) parts.push(buf.trim());
+  return parts;
+}
+
+const RE_COND_SIMPLE = /^("[^"]+"|[^\s]+?)\s*(<=|>=|<|>)\s*today$/i;
+const RE_COND_OFFSET = /^("[^"]+"|[^\s]+?)\s*(<=|>=|<|>)\s*today\s*([+-])\s*(\d+)\s*d$/i;
+
+function unquoteFilterCol(c) {
+  return c.startsWith('"') && c.endsWith('"') ? c.slice(1, -1).replace(/""/g, '"') : c;
+}
+
+/** 从 filter 文本中抽取可回填的相对时间条件（首组命中）。
+ *  单条件（today 无偏移）四种方向 + 连续双段窗口（未来/过去 N 天）可回填；
+ *  带偏移的单条件、自定义区间等留在文法框（合法可编辑）。 */
+function extractTimeCond(filterText) {
+  const empty = { timeCond: null, rest: (filterText ?? "").trim() };
+  if (!filterText || !filterText.trim()) return empty;
+  const segs = splitFilterAnd(filterText);
+  const tc = { on: true, column: "", kind: "", n: 7, range: null };
+  const colOf = (m) => unquoteFilterCol(m[1]);
+
+  for (let i = 0; i < segs.length; i++) {
+    const winA = segs[i].match(RE_COND_SIMPLE);
+    const winB = i + 1 < segs.length ? segs[i + 1].match(RE_COND_OFFSET) : null;
+    // 未来 N 天：C >= today AND C <= today+Nd
+    if (winA && winB && colOf(winA) === colOf(winB) && winA[2] === ">=" && winA[3] === undefined
+        && winB[2] === "<=" && winB[3] === "+") {
+      Object.assign(tc, { column: colOf(winA), kind: "next_n_days", n: Number(winB[4]) });
+      return { timeCond: tc, rest: [...segs.slice(0, i), ...segs.slice(i + 2)].join(" AND ") };
+    }
+    // 过去 N 天：C >= today-Nd AND C <= today
+    const winA2 = segs[i].match(RE_COND_OFFSET);
+    const winB2 = i + 1 < segs.length ? segs[i + 1].match(RE_COND_SIMPLE) : null;
+    if (winA2 && winB2 && colOf(winA2) === colOf(winB2) && winA2[2] === ">=" && winA2[3] === "-"
+        && winB2[2] === "<=") {
+      Object.assign(tc, { column: colOf(winA2), kind: "last_n_days", n: Number(winA2[4]) });
+      return { timeCond: tc, rest: [...segs.slice(0, i), ...segs.slice(i + 2)].join(" AND ") };
+    }
+    // 单条件：today（无偏移）
+    const m = segs[i].match(RE_COND_SIMPLE);
+    if (m) {
+      const kindByOp = { "<": "before_today", "<=": "up_to_today", ">": "after_today", ">=": "from_today" };
+      Object.assign(tc, { column: colOf(m), kind: kindByOp[m[2]] });
+      return { timeCond: tc, rest: [...segs.slice(0, i), ...segs.slice(i + 1)].join(" AND ") };
+    }
+  }
+  return empty;
+}
+
+function resetTimeCond() {
+  Object.assign(builder.flat.timeCond, { on: false, column: "", kind: "up_to_today", n: 7, range: null });
+}
 
 function ruleMode(rule) {
   if (!rule || typeof rule !== "object") return "json";
@@ -138,6 +246,7 @@ function fillBuilderFromRule(rule) {
       time_none: false,
       time_confirmed: false,
     });
+    resetTimeCond();
     builder.expr.expression = "A / B";
     builder.expr.operands = [
       { key: "A", table: "", column: "", aggregation: "sum", filter: "" },
@@ -148,17 +257,24 @@ function fillBuilderFromRule(rule) {
   }
   builder.mode = ruleMode(rule);
   if (builder.mode === "flat") {
+    // 先抽出可回填的相对时间条件，剩余条件留在文法输入框
+    const { timeCond, rest } = extractTimeCond(rule.source?.filter);
     Object.assign(builder.flat, {
       table: rule.source?.table ?? "",
       column: rule.source?.column ?? "",
       aggregation: rule.base_aggregation ?? "sum",
-      filter: rule.source?.filter ?? "",
+      filter: rest,
       time_field: rule.time_field ?? "",
       // 规则里 time_field 显式为 null = 已声明的全期常数指标，编辑时不得被自动补填，
       // 也不再次弹确认框（time_confirmed）
       time_none: rule.time_field === null,
       time_confirmed: rule.time_field === null,
     });
+    if (timeCond) {
+      Object.assign(builder.flat.timeCond, timeCond);
+    } else {
+      resetTimeCond();
+    }
     // 旧规则未声明 time_field（键缺失）：列加载后自动补填，避免保存时被当成显式常数
     if (rule.time_field === undefined) autoPickTimeField(builder.flat.table);
   } else if (builder.mode === "expr") {
@@ -191,7 +307,11 @@ function buildRule() {
   if (builder.mode === "flat") {
     const f = builder.flat;
     const rule = { base_aggregation: f.aggregation, source: { table: f.table, column: f.column } };
-    if (f.filter.trim()) rule.source.filter = f.filter.trim();
+    // 结构化相对时间条件 + 文法框条件合并（时间条件在前）
+    const { frag, error } = timeCondFragment(f.timeCond);
+    if (error) throw new Error(error);
+    const merged = [frag, f.filter.trim()].filter(Boolean).join(" AND ");
+    if (merged) rule.source.filter = merged;
     if (f.time_field.trim()) {
       rule.time_field = f.time_field.trim();
     } else if (f.time_none || Array.isArray(datasetColumns[f.table])) {
@@ -217,8 +337,8 @@ function buildRule() {
 function parseRule() {
   try {
     return { ok: true, rule: buildRule() };
-  } catch {
-    ElMessage.error("计算规则不是合法 JSON");
+  } catch (e) {
+    ElMessage.error(e instanceof SyntaxError ? "计算规则不是合法 JSON" : (e?.message ?? "计算规则构建失败"));
     return { ok: false };
   }
 }
@@ -304,6 +424,7 @@ function onFlatTableChange(tableName) {
   builder.flat.time_field = "";
   builder.flat.time_none = false;
   builder.flat.time_confirmed = false;
+  resetTimeCond(); // 换数据集：相对时间条件的日期列随表失效
   loadColumns(tableName); // 未缓存时内部会再调 autoPickTimeField
   autoPickTimeField(tableName); // 已缓存时 loadColumns 提前返回，这里补一次
 }
@@ -742,6 +863,42 @@ onMounted(async () => {
                   <el-option v-for="a in AGG_OPTIONS" :key="a.value" :label="a.label" :value="a.value" />
                 </el-select>
               </div>
+              <!-- 相对时间条件（today 锚点）：结构化点选，生成文法并入过滤条件 -->
+              <div class="rule-builder__time-cond">
+                <el-checkbox v-model="builder.flat.timeCond.on">相对时间条件</el-checkbox>
+                <template v-if="builder.flat.timeCond.on">
+                  <el-select
+                    v-model="builder.flat.timeCond.column"
+                    placeholder="日期列"
+                    style="width: 150px"
+                    filterable
+                  >
+                    <el-option v-for="c in flatDateCols" :key="c.name" :label="c.name" :value="c.name" />
+                  </el-select>
+                  <el-select v-model="builder.flat.timeCond.kind" style="width: 160px">
+                    <el-option v-for="k in TIME_KINDS" :key="k.value" :label="k.label" :value="k.value" />
+                  </el-select>
+                  <el-input-number
+                    v-if="TIME_KIND_NEEDS_N.has(builder.flat.timeCond.kind)"
+                    v-model="builder.flat.timeCond.n"
+                    :min="0"
+                    :max="3650"
+                    style="width: 120px"
+                  />
+                  <el-date-picker
+                    v-if="builder.flat.timeCond.kind === 'custom_range'"
+                    v-model="builder.flat.timeCond.range"
+                    type="daterange"
+                    value-format="YYYY-MM-DD"
+                    start-placeholder="开始"
+                    end-placeholder="结束"
+                    style="width: 240px"
+                  />
+                </template>
+              </div>
+              <p v-if="builder.flat.timeCond.on" class="admin__hint">
+                以计算当天为锚点，指标值随日期自动滚动（时点性指标）；环比/同比基期沿用同一锚点。建议在名称或口径说明中体现滚动性质（如「截至今天」）。
+              </p>
               <el-input
                 v-model="builder.flat.filter"
                 placeholder="过滤条件（可选），如：order_status = '已支付'"
@@ -799,7 +956,7 @@ onMounted(async () => {
                 </el-select>
                 <el-input
                   v-model="o.filter"
-                  placeholder="过滤（可选）"
+                  placeholder="过滤（可选，支持 today±N d）"
                   class="rule-builder__mono"
                   style="flex: 1"
                 />
@@ -826,7 +983,7 @@ onMounted(async () => {
             />
 
             <p class="admin__hint rule-builder__filter-help">
-              过滤条件文法：仅支持「字段 比较符 值」，多个条件用 AND 连接；比较符 = != > >= < <=，文本值加单引号，列名含空格时用双引号包裹（如 "Project Name" = 'X'）。不支持 OR / NOT / 括号 / 函数。
+              过滤条件文法：仅支持「字段 比较符 值」，多个条件用 AND 连接；比较符 = != > >= < <=，文本值加单引号，列名含空格时用双引号包裹（如 "Project Name" = 'X'）。支持相对日期 today、today±N d（如 due_date &lt;= today+15d，锚定计算当天，值随日期滚动）。不支持 OR / NOT / 括号 / 函数。
             </p>
           </div>
         </el-form-item>
@@ -1008,6 +1165,13 @@ onMounted(async () => {
 .rule-builder__grid {
   display: flex;
   gap: var(--pwc-space-3);
+  flex-wrap: wrap;
+}
+
+.rule-builder__time-cond {
+  display: flex;
+  gap: var(--pwc-space-3);
+  align-items: center;
   flex-wrap: wrap;
 }
 
