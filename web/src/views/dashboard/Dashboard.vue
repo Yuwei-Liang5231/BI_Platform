@@ -13,9 +13,11 @@ import TrendBadge from "@/components/business/TrendBadge.vue";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
+import { useProjectStore } from "@/stores/project";
 import { useAuthStore } from "@/stores/auth";
 
 const metricStore = useMetricStore();
+const projectStore = useProjectStore();
 const auth = useAuthStore();
 
 const search = ref("");
@@ -243,9 +245,16 @@ function rerender() {
 watch(selectedId, loadTrend);
 
 async function fetchData() {
-  await metricStore.fetchList(search.value ? { search: search.value } : {});
+  const pid = projectStore.currentId;
+  await metricStore.fetchList({
+    ...(search.value ? { search: search.value } : {}),
+    ...(pid ? { project_id: pid } : {}),
+  });
   await loadCards();
 }
+
+// B9.3：切换项目重新拉取看板
+watch(() => projectStore.currentId, fetchData);
 
 onMounted(fetchData);
 </script>

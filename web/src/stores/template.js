@@ -18,8 +18,8 @@ export const useTemplateStore = defineStore("template", () => {
     return industries.value;
   }
 
-  async function fetchPack(industry) {
-    packDetail.value = await getIndustryApi(industry);
+  async function fetchPack(industry, params) {
+    packDetail.value = await getIndustryApi(industry, { params });
     return packDetail.value;
   }
 

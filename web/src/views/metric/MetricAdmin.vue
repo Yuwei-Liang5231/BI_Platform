@@ -4,7 +4,7 @@
  * 指标管理（analyst/admin）：CRUD（保存即编译校验）+ 从模板导入向导 +
  * 受限可见性配置（role/department 负向登记，整组替换）。
  */
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
@@ -18,11 +18,13 @@ import { getRestrictions, putRestrictions } from "@/api/auth";
 import { useAuthStore } from "@/stores/auth";
 import { useDatasetStore } from "@/stores/dataset";
 import { useMetricStore } from "@/stores/metric";
+import { useProjectStore } from "@/stores/project";
 import { useTemplateStore } from "@/stores/template";
 
 const auth = useAuthStore();
 const metricStore = useMetricStore();
 const datasetStore = useDatasetStore();
+const projectStore = useProjectStore();
 const templateStore = useTemplateStore();
 
 const activeTab = ref("manage");
@@ -523,10 +525,14 @@ const rules = {
 };
 
 async function fetchData() {
-  const params = { status: statusFilter.value };
+  const pid = projectStore.currentId;
+  const params = { status: statusFilter.value, ...(pid ? { project_id: pid } : {}) };
   if (search.value) params.search = search.value;
   await metricStore.fetchList(params);
 }
+
+// B9.3：切换项目重新拉取
+watch(() => projectStore.currentId, fetchData);
 
 function openCreate() {
   editingId.value = null;
@@ -615,6 +621,8 @@ async function handleSave() {
       topic: form.topic,
       parent_id: form.parent_id,
       calc_rule: parsed.rule,
+      // B9.3：归入当前项目；「全部项目」视图下新建 → 默认项目（后端缺省语义）
+      ...(projectStore.currentId ? { project_id: projectStore.currentId } : {}),
     };
     if (editingId.value) {
       // PATCH：口径未变不带 calc_rule（避免后端强制 reason）；变了才带规则 + reason。
@@ -690,7 +698,9 @@ async function openWizard() {
 
 async function chooseIndustry(industry) {
   chosenIndustry.value = industry;
-  const pack = await templateStore.fetchPack(industry);
+  // B9.3：导入状态按当前项目判定（全部项目视图 → 默认项目）
+  const pid = projectStore.currentId ?? projectStore.defaultId;
+  const pack = await templateStore.fetchPack(industry, pid ? { project_id: pid } : {});
   packMetrics.value = pack?.metrics ?? (Array.isArray(pack) ? pack : []);
   // 未导入 + 已导入但 pending（待绑定数据）的指标可勾选：pending 重新导入可升级启用
   checkedCodes.value = packMetrics.value
@@ -705,6 +715,8 @@ async function doImport() {
       industries: [chosenIndustry.value],
       codes: checkedCodes.value,
       revalidate: true, // 已存在且 pending 的指标：数据集就绪后可编译则升级为 active
+      // B9.3：导入指标挂当前项目（全部项目视图 → 默认项目）
+      ...(projectStore.currentId ? { project_id: projectStore.currentId } : {}),
     });
     importResult.value = res;
     wizardStep.value = 2;

@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
         db = next(get_db())
         try:
             ensure_default_project(db)
+            db.commit()  # 手动取的会话不走 get_db 的自动 commit
         finally:
             db.close()
         logger.info(

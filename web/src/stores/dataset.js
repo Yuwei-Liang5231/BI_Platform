@@ -22,10 +22,10 @@ export const useDatasetStore = defineStore("dataset", () => {
   const relations = ref([]);
   const anomalies = ref(null);
 
-  async function fetchList() {
+  async function fetchList(params) {
     loading.value = true;
     try {
-      const res = await listApi();
+      const res = await listApi(params);
       list.value = Array.isArray(res) ? res : (res?.list ?? []);
       return list.value;
     } finally {
@@ -53,10 +53,11 @@ export const useDatasetStore = defineStore("dataset", () => {
     return anomalies.value;
   }
 
-  function upload(file, name, onProgress) {
+  function upload(file, name, onProgress, projectId) {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("name", name);
+    if (projectId) formData.append("project_id", String(projectId)); // B9.3 项目归属
     return uploadApi(formData, onProgress);
   }
 

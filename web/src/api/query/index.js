@@ -11,15 +11,26 @@ export const metricValue = (data) => request.post("/query/metric-value", data);
 
 /** 问数（B9）：问句 → 理解卡（只解析意图，不产数值）。
  *  B9.2-3：命中多个指标时返回 multi_metrics 并列清单。
- *  B9.2-6：conversationId 每轮携带实现多轮追问与持久化（首问 null，后端自动建会话）。 */
-export const ask = (question, conversationId) =>
-  request.post("/query/ask", { question, conversation_id: conversationId ?? null });
+ *  B9.2-6：conversationId 每轮携带实现多轮追问与持久化（首问 null，后端自动建会话）。
+ *  B9.3：projectId 锁定当前项目（候选/新会话归属该项目；null=不过滤，兼容存量调用）。 */
+export const ask = (question, conversationId, projectId) =>
+  request.post("/query/ask", {
+    question,
+    conversation_id: conversationId ?? null,
+    project_id: projectId ?? null,
+  });
 
 /** 空态推荐问题（B9.2-3）：可见指标自动生成的示例问法（≤5 条）。 */
-export const askSuggestions = () => request.get("/query/ask/suggestions");
+export const askSuggestions = (projectId) =>
+  request.get("/query/ask/suggestions", {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
 
 /** 历史会话列表（B9.2-6）：最近 50 次对话，按最近使用排序。 */
-export const askConversations = () => request.get("/query/ask/conversations");
+export const askConversations = (projectId) =>
+  request.get("/query/ask/conversations", {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
 
 /** 恢复会话消息（B9.2-6）：问句 + 理解卡/结果快照按序返回（只读历史）。 */
 export const askConversationMessages = (conversationId) =>

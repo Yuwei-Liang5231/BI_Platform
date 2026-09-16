@@ -2,8 +2,8 @@ import request from "@/config/request";
 
 export const listIndustries = () => request.get("/templates/industries");
 
-export const getIndustry = (industry) =>
-  request.get(`/templates/${industry}`);
+export const getIndustry = (industry, config) =>
+  request.get(`/templates/${industry}`, config);
 
 /**
  * 幂等导入。body: { industries?, codes?, revalidate? }

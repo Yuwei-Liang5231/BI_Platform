@@ -13,9 +13,11 @@ import TrendBadge from "@/components/business/TrendBadge.vue";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
+import { useProjectStore } from "@/stores/project";
 
 const router = useRouter();
 const metricStore = useMetricStore();
+const projectStore = useProjectStore();
 
 const search = ref("");
 const activeTopic = ref("all");
@@ -65,7 +67,9 @@ async function loadValues(items) {
 }
 
 async function fetchData() {
-  const list = await metricStore.fetchList(search.value ? { search: search.value } : {});
+  const pid = projectStore.currentId;
+  const params = { ...(search.value ? { search: search.value } : {}), ...(pid ? { project_id: pid } : {}) };
+  const list = await metricStore.fetchList(params);
   loadValues(list);
 }
 
@@ -78,6 +82,9 @@ watch(dateRange, () => {
   Object.keys(valueMap).forEach((k) => delete valueMap[k]);
   loadValues(metricStore.list);
 });
+
+// B9.3：切换项目重新拉取
+watch(() => projectStore.currentId, fetchData);
 
 onMounted(fetchData);
 </script>

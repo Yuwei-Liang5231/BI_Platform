@@ -11,9 +11,11 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { getDatasetQuality, importDatasetData } from "@/api/datasets";
 import { useAuthStore } from "@/stores/auth";
 import { useDatasetStore } from "@/stores/dataset";
+import { useProjectStore } from "@/stores/project";
 
 const auth = useAuthStore();
 const datasetStore = useDatasetStore();
+const projectStore = useProjectStore();
 
 const selectedId = ref(null);
 const detail = ref(null);
@@ -86,12 +88,17 @@ watch(
 );
 
 async function fetchData() {
-  await datasetStore.fetchList();
+  // B9.3：按当前项目过滤（全部项目视图不传，看全部）
+  const pid = projectStore.currentId;
+  await datasetStore.fetchList(pid ? { project_id: pid } : undefined);
   if (selectedId.value && !datasetStore.list.some((d) => d.id === selectedId.value)) {
     selectedId.value = null;
   }
   if (selectedId.value) await loadDetail(selectedId.value);
 }
+
+// B9.3：切换项目重新拉取
+watch(() => projectStore.currentId, fetchData);
 
 async function selectDataset(id) {
   selectedId.value = id;
@@ -133,6 +140,8 @@ async function handleUpload() {
       raw,
       uploadName.value.trim(),
       (p) => (uploadPercent.value = p),
+      // B9.3：挂当前项目（全部项目视图 → 默认项目，由后端缺省语义决定）
+      projectStore.currentId,
     );
     ElMessage.success(`已接入：${created.name ?? uploadName.value}`);
     uploadVisible.value = false;

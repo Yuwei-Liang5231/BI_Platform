@@ -7,7 +7,7 @@
  * - 拆解结果表格（组值/基期/变化，点击表头切换排序）；单值结果卡
  * - 逃生舱（mode=help）：意图解析不出可执行结构时纯对话引导，绝不含数字
  */
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
@@ -22,11 +22,13 @@ import {
   metricValue,
 } from "@/api/query";
 import { useMetricStore } from "@/stores/metric";
+import { useProjectStore } from "@/stores/project";
 import { useAuthStore } from "@/stores/auth";
 import AskResultCard from "@/components/business/AskResultCard.vue";
 
 const auth = useAuthStore();
 const metricStore = useMetricStore();
+const projectStore = useProjectStore();
 
 const question = ref("");
 const asking = ref(false);
@@ -82,7 +84,7 @@ function newConversation() {
 
 async function fetchConversations() {
   try {
-    const res = await askConversations();
+    const res = await askConversations(projectStore.lockedId);
     conversations.value = Array.isArray(res) ? res : [];
   } catch {
     conversations.value = [];
@@ -211,7 +213,7 @@ const dimLabel = (d) =>
 
 async function fetchSuggestions() {
   try {
-    const res = await askSuggestions();
+    const res = await askSuggestions(projectStore.lockedId);
     suggestions.value = Array.isArray(res) ? res : [];
   } catch {
     suggestions.value = [];
@@ -231,7 +233,8 @@ async function submit(questionOverride) {
   results.value = [];
   messages.value.push({ role: "user", text: q });
   try {
-    const res = await askApi(q, activeConvId.value);
+    // B9.3：问数锁定当前项目——候选与新会话均归属该项目
+    const res = await askApi(q, activeConvId.value, projectStore.lockedId);
     card.value = res;
     // 多指标并列默认全选（问句本来就在问它们），用户可取消
     multiSelected.value = (res.multi_metrics ?? []).map((m) => m.code);
@@ -257,7 +260,7 @@ function applyCard(res) {
   cardEdit.order_by = res.order_by ?? "value";
   cardEdit.order = res.order ?? "desc";
   cardEdit.top_n = res.top_n ?? null;
-  if (res.metric && !metricStore.list.length) metricStore.fetchList(); // 指标下拉数据（懒加载）
+  if (res.metric && !metricStore.list.length) metricStore.fetchList({ project_id: projectStore.lockedId }); // 指标下拉数据（懒加载，锁定项目）
   // 预载已解析筛选列的取值候选
   for (const f of cardEdit.filters) loadDimValues(f.column);
 }
@@ -390,6 +393,17 @@ onMounted(() => {
   fetchSuggestions();
   fetchConversations();
 });
+
+// B9.3：切换项目 → 问数强制开新会话，历史/推荐按新项目重取
+watch(
+  () => projectStore.lockedId,
+  () => {
+    newConversation();
+    suggestionsLoading.value = true;
+    fetchSuggestions();
+    fetchConversations();
+  },
+);
 </script>
 
 <template>
