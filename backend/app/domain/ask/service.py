@@ -359,7 +359,10 @@ def _llm_help_reply(config: dict, question: str, metric_names: list[str]) -> str
 # ---------------------------------------------------------------- 理解卡
 
 
-def build_card(db: Session, user, question: str, conversation_id: int | None = None) -> dict:
+def build_card(
+    db: Session, user, question: str, conversation_id: int | None = None,
+    project_id: int | None = None,
+) -> dict:
     """问句 → 理解卡（只解析意图，不计算数值）。
 
     B9.2-2 扩展：拆解维度/筛选/排序/TopN 进意图（全部锚定真实数据候选）；
@@ -383,11 +386,17 @@ def build_card(db: Session, user, question: str, conversation_id: int | None = N
     today = date.today()
 
     # B9.2-6 会话持久化：首问自动建会话；意图继承键 = 会话 id（TTL 语义不变）
-    conv = ask_conversations.get_or_create_conversation(db, user, conversation_id)
+    # B9.3：首问新建会话挂当前项目（锁定项目语义）
+    conv = ask_conversations.get_or_create_conversation(
+        db, user, conversation_id, project_id=project_id
+    )
     session_key = f"conv-{conv.id}"
 
     hidden = restricted_metric_ids(db, user)
     all_active = db.query(Metric).filter(Metric.status == "active").all()
+    if project_id is not None:
+        # B9.3 问数锁定当前项目：候选仅含该项目指标（杜绝跨行业歧义）
+        all_active = [m for m in all_active if m.project_id == project_id]
     # 权限继承：候选只含登录用户可见的指标（与看板同一套判定）
     visible = [m for m in all_active if m.id not in hidden]
     restricted_named = [m for m in all_active if m.id in hidden]
@@ -657,7 +666,8 @@ def build_card(db: Session, user, question: str, conversation_id: int | None = N
         "source": source,
         # LLM 降级原因（source=fallback 且已配置 LLM 时非空，供前端向用户解释）
         "source_note": source_note if (source == "fallback" and llm_cfg is not None) else None,
-        "metric": ({"id": metric.id, "code": metric.code, "name": metric.name} if metric else None),
+        "metric": ({"id": metric.id, "code": metric.code, "name": metric.name,
+                    "project_id": metric.project_id} if metric else None),
         # B9.2-3 多指标并列：问句命中的其余可见指标（默认主指标之外，最多 2 个），
         # 前端勾选后逐指标独立走 execute——数值仍全部由 compute 单点出口计算
         "multi_metrics": (
@@ -885,19 +895,22 @@ def _persist_results(db: Session, user, conversation_id: int | None, data: dict)
 # ---------------------------------------------------------------- 空态推荐问题（B9.2-3）
 
 
-def build_suggestions(db: Session, user, limit: int = 5) -> list[str]:
+def build_suggestions(db: Session, user, limit: int = 5, project_id: int | None = None) -> list[str]:
     """空态推荐问题：从登录用户可见的 active 指标自动生成示例问法。
 
     行业无关：只用指标名 + 真实维度列名拼模板（不硬编码任何业务词）；
     权限同源（restricted_metric_ids）；维度候选获取失败仅少拆解示例，不阻塞。
     生成策略（2026-09-15 优化）：跨指标轮转（避免 5 条全是同一指标）、
     业务可读名优先（含中文的指标/维度列排前，代码风命名如 Sum_Saving 降权）。
+    B9.3：project_id 指定时仅推荐该项目指标（与问数锁定项目一致）。
     """
     hidden = restricted_metric_ids(db, user)
     visible = [
         m for m in db.query(Metric).filter(Metric.status == "active").all()
         if m.id not in hidden
     ]
+    if project_id is not None:
+        visible = [m for m in visible if m.project_id == project_id]
     if not visible:
         return []
 

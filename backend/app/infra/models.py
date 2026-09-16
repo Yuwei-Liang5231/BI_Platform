@@ -24,6 +24,24 @@ def local_now() -> datetime:
     return datetime.now().astimezone()
 
 
+class Project(Base):
+    """项目工作区（B9.3）：多行业/多项目逻辑隔离的顶层命名空间。
+
+    单库内命名空间（方案 A）：datasets/metrics/ask_conversations 等主表挂
+    project_id；数据集 name 保持全局唯一（DuckDB 视图按名创建）；指标 code
+    唯一性收敛到**项目内**（不同项目可同名 sales）。行级/项目级权限留 B15。
+    """
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(64), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
+
+
 class KeyValue(Base):
     """系统级键值（schema 版本、种子标记等），也作为仓储实现的验证模型。"""
 
@@ -52,6 +70,7 @@ class Dataset(Base):
     column_count: Mapped[int] = mapped_column(Integer, default=0)
     schema_json: Mapped[str] = mapped_column(Text, default="[]")  # [{name,type,mixed,null_count,sample}]
     dataset_ver: Mapped[int] = mapped_column(Integer, default=1)  # 缓存键因子：指标ID:ver:dataset_ver
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # B9.3 项目工作区
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
 
@@ -93,7 +112,9 @@ class Metric(Base):
     __tablename__ = "metrics"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(100), unique=True)          # 稳定引用码（唯一，供外部系统引用）
+    # code 唯一性收敛到项目内（B9.3）：DB 层不再全局 unique（存量库由
+    # migrate_project_columns 重建表去除约束），应用层按 project_id 校验
+    code: Mapped[str] = mapped_column(String(100), index=True)           # 稳定引用码（项目内唯一，供外部系统引用）
     name: Mapped[str] = mapped_column(String(200))
     aliases_json: Mapped[str] = mapped_column(Text, default="[]")        # 别名 JSON 数组（搜索用）
     definition: Mapped[str] = mapped_column(Text, default="")            # 业务口径说明（自然语言，仅供人读）
@@ -111,6 +132,7 @@ class Metric(Base):
     owner_department: Mapped[str] = mapped_column(String(100), default="")
     status: Mapped[str] = mapped_column(String(20), default="active")    # active / disabled / deleted
     ver: Mapped[int] = mapped_column(Integer, default=1)                 # 口径版本号（缓存键因子）
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # B9.3 项目工作区
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
 
@@ -225,6 +247,7 @@ class AskConversation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(60), default="")   # 首问前 24 字
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # B9.3 项目工作区
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
 

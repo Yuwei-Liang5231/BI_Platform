@@ -72,9 +72,16 @@ def upload_dataset(
     user: AdminUser,
     file: UploadFile = File(...),
     name: str | None = Form(None),
+    project_id: int | None = Form(None),
 ):
-    """上传 CSV/XLSX 并完成接入：编码识别 → 类型推断 → Parquet → 注册（管理员专用，D12）。"""
+    """上传 CSV/XLSX 并完成接入：编码识别 → 类型推断 → Parquet → 注册（管理员专用，D12）。
+
+    B9.3：project_id 缺省归入默认项目；数据集 name 仍全局唯一（DuckDB 视图按名创建）。
+    """
     _ = user
+    from app.domain.project.service import resolve_project_id
+
+    resolved_project = resolve_project_id(db, project_id)
     original = file.filename or "upload.csv"
     suffix = Path(original).suffix.lower()
 
@@ -108,6 +115,7 @@ def upload_dataset(
     finally:
         tmp_path.unlink(missing_ok=True)
 
+    dataset.project_id = resolved_project  # B9.3 项目归属
     return ok_response(_detail(db, dataset), message="数据集接入成功")
 
 
@@ -115,9 +123,12 @@ def upload_dataset(
 
 
 @router.get("")
-def list_datasets(db: DbDep, _: CurrentUser):
+def list_datasets(db: DbDep, _: CurrentUser, project_id: int | None = None):
+    """数据集列表。project_id 缺省=None=全部项目；指定 id 仅返回该项目。"""
     repo = Repository(Dataset, db)
     items = repo.list(order_by=Dataset.id)
+    if project_id is not None:
+        items = [ds for ds in items if ds.project_id == project_id]
     return ok_response(
         [
             {
@@ -127,6 +138,7 @@ def list_datasets(db: DbDep, _: CurrentUser):
                 "row_count": ds.row_count,
                 "column_count": ds.column_count,
                 "dataset_ver": ds.dataset_ver,
+                "project_id": ds.project_id,
             }
             for ds in items
         ]
@@ -302,6 +314,13 @@ class RelationIn(BaseModel):
 def create_relation(dataset_id: int, body: RelationIn, db: DbDep, _: AdminUser):
     ds = _get_dataset(db, dataset_id)
     target = _get_dataset(db, body.target_dataset_id)
+
+    # B9.3：表关系禁止跨项目（一跳星型关系只服务于同项目事实/维表）
+    if (ds.project_id or 0) != (target.project_id or 0):
+        raise BusinessError(
+            f"数据集 {ds.name}（项目 {ds.project_id}）与 {target.name}（项目 {target.project_id}）"
+            "不属于同一项目，禁止跨项目登记表关系"
+        )
 
     if body.relation_type not in VALID_RELATION_TYPES:
         raise BusinessError(f"relation_type 须为 {sorted(VALID_RELATION_TYPES)} 之一")

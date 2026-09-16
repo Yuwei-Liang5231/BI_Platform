@@ -131,9 +131,18 @@ def _query(client, metric, **kw):
 
 
 def _template_metric_total(client) -> int:
-    """库内模板指标总数（按行业前缀过滤；全量回归时库里还有其他测试的指标）。"""
+    """库内模板指标总数（按行业前缀过滤；全量回归时库里还有其他测试的指标）。
+
+    B9.3：限定默认项目——其他测试会在自己的项目里导入同 code 模板，
+    全局计数会把项目隔离产生的并存同名指标误计为重复。
+    """
+    default_pid = next(
+        p["id"] for p in client.get("/api/projects").json()["data"] if p["name"] == "默认项目"
+    )
     codes = [
-        m["code"] for m in client.get("/api/metrics", params={"status": "all"}).json()["data"]
+        m["code"] for m in client.get(
+            "/api/metrics", params={"status": "all", "project_id": default_pid}
+        ).json()["data"]
         if m["code"].startswith(("ecom_", "saas_", "rst_", "gen_"))
     ]
     return len(codes)

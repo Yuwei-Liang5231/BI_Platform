@@ -311,6 +311,7 @@ def dataset_to_dict(dataset: Dataset, coverages: list[DatasetCoverage] | None = 
         "encoding": dataset.file_encoding,
         "row_count": dataset.row_count,
         "column_count": dataset.column_count,
+        "project_id": dataset.project_id,
         "columns": json.loads(dataset.schema_json),
         "dataset_ver": dataset.dataset_ver,
         "created_at": dataset.created_at.isoformat() if dataset.created_at else None,

@@ -100,6 +100,7 @@ def metric_to_dict(m: Metric) -> dict:
         "owner_department": m.owner_department,
         "status": m.status,
         "ver": m.ver,
+        "project_id": m.project_id,
         "created_at": m.created_at,
         "updated_at": m.updated_at,
     }
@@ -167,7 +168,10 @@ def create_metric(
     disambiguation=None,
     owner_department: str = "",
     operator_id: str = "system",
+    project_id: int | None = None,
 ) -> Metric:
+    from app.domain.project.service import resolve_project_id
+
     if not isinstance(code, str) or not _CODE_RE.match(code.strip() or ""):
         raise BusinessError(
             "code 必须以字母/中文开头，仅含字母、数字、下划线、连字符，长度 2-99", 40000
@@ -175,9 +179,11 @@ def create_metric(
     code = code.strip()
     if not isinstance(name, str) or not name.strip():
         raise BusinessError("name 必须是非空字符串", 40000)
+    proj_id = resolve_project_id(db, project_id)
     repo = Repository(Metric, db)
-    if repo.count(code=code):
-        raise BusinessError(f"指标 code {code!r} 已存在", 40900)
+    # B9.3：code 唯一性收敛到项目内（不同项目可同名 code；软删 code 同项目仍占用）
+    if repo.count(code=code, project_id=proj_id):
+        raise BusinessError(f"指标 code {code!r} 在当前项目中已存在", 40900)
 
     compiled = compile_for_db(db, calc_rule)  # 保存即拒绝：编译不过不允许创建
     parent_id = _validate_parent(db, parent_id)
@@ -199,6 +205,7 @@ def create_metric(
             primary_dataset_id=compiled.primary_dataset_id,
             owner_user_id=operator_id,
             owner_department=owner_department or "",
+            project_id=proj_id,
         )
     )
     Repository(MetricSqlArchive, db).add(
@@ -315,7 +322,10 @@ def list_metrics(
     search: str | None = None,
     topic: str | None = None,
     status: str = "active",
+    project_id: int | None = None,
 ) -> list[Metric]:
+    """指标目录。project_id=None 表示全部项目（跨项目浏览视图）；
+    指定 id 时仅返回该项目下的指标（含软删过滤语义不变）。"""
     repo = Repository(Metric, db)
     if status == "all":
         # 软删指标目录与搜索不可见（DELETE 契约），「全部状态」仅含 active/disabled/pending
@@ -324,6 +334,8 @@ def list_metrics(
         ]
     else:
         metrics = repo.list(order_by=Metric.id, limit=10000, status=status)
+    if project_id is not None:
+        metrics = [m for m in metrics if m.project_id == project_id]
     if topic:
         metrics = [m for m in metrics if m.topic == topic]
     if search:

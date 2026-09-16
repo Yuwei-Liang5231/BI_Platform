@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import app
-from app.api.routes import auth, datasets, health, llm, metrics, query, templates
+from app.api.routes import auth, datasets, health, llm, metrics, projects, query, templates
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.core.response import (
@@ -68,8 +68,16 @@ def create_app() -> FastAPI:
         storage.ensure_dirs()
         create_all()
         from app.domain.auth.service import ensure_bootstrap_admin
+        from app.domain.project.service import ensure_default_project
+        from app.infra.database import get_db
 
         ensure_bootstrap_admin()  # users 为空时创建引导 admin（幂等）
+        # B9.3：默认项目幂等创建 + 存量 project_id NULL 回填（列由迁移补齐）
+        db = next(get_db())
+        try:
+            ensure_default_project(db)
+        finally:
+            db.close()
         logger.info(
             "启动完成 env=%s data_dir=%s db=%s",
             settings.app_env,
@@ -87,6 +95,7 @@ def create_app() -> FastAPI:
     application.include_router(auth.router, prefix=settings.api_prefix)
     application.include_router(datasets.router, prefix=settings.api_prefix)
     application.include_router(metrics.router, prefix=settings.api_prefix)
+    application.include_router(projects.router, prefix=settings.api_prefix)
     application.include_router(query.router, prefix=settings.api_prefix)
     application.include_router(templates.router, prefix=settings.api_prefix)
     application.include_router(llm.router, prefix=settings.api_prefix)

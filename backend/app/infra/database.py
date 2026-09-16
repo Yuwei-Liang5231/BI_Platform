@@ -80,6 +80,100 @@ def create_all() -> None:
     import app.infra.models  # noqa: F401  —— 触发模型注册
 
     Base.metadata.create_all(get_engine())
+    migrate_project_columns()
+
+
+def migrate_project_columns() -> None:
+    """B9.3 轻量迁移（幂等）：存量表补 project_id 列 + 去除 metrics.code 全局唯一。
+
+    - create_all 不会为已存在的表加列：对 datasets/metrics/ask_conversations
+      逐个 PRAGMA 检查，缺 project_id 则 ALTER TABLE ADD COLUMN（存量行先置
+      NULL，由 ensure_default_project 回填默认项目）；
+    - 指标 code 唯一性收敛到项目内（B9.3）：SQLite 无法 DROP 建表自带的
+      UNIQUE 自动索引，检测到即重建 metrics 表（行数小，单事务完成；
+      metric_changes 等子表按 metric_id 引用不受影响——SQLite 默认不启用
+      外键强制，重命名/重建不影响子表数据）；
+    - 新装库由 ORM 直接生成新结构（code 无 unique、含 project_id），检测
+      不到旧约束时迁移为空操作。
+    """
+    with get_engine().begin() as conn:
+        for table in ("datasets", "metrics", "ask_conversations"):
+            rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+            if not rows:
+                continue  # 表尚不存在：create_all 已按新结构处理
+            cols = {r[1] for r in rows}
+            if "project_id" not in cols:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN project_id INTEGER")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_metrics_project_id ON metrics (project_id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_datasets_project_id ON datasets (project_id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_ask_conversations_project_id ON ask_conversations (project_id)"
+        )
+        if _metrics_has_unique_code(conn):
+            _rebuild_metrics_without_unique_code(conn)
+
+
+def _metrics_has_unique_code(conn) -> bool:
+    """metrics.code 是否带建表级 UNIQUE 约束（origin='u' 的唯一索引）。"""
+    rows = conn.exec_driver_sql("PRAGMA index_list('metrics')").fetchall()
+    for r in rows:
+        # 列序：seq, name, unique, origin, partial
+        if r[2] and r[3] == "u":
+            return True
+    return False
+
+
+_METRICS_DDL = """
+CREATE TABLE metrics (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    code VARCHAR(100) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    aliases_json TEXT DEFAULT '[]',
+    definition TEXT DEFAULT '',
+    calc_rule_json TEXT NOT NULL,
+    dimensions_json TEXT DEFAULT '[]',
+    filters_json TEXT DEFAULT '{}',
+    topic VARCHAR(100) DEFAULT 'general',
+    level INTEGER DEFAULT 1,
+    parent_id INTEGER,
+    disambiguation_json TEXT DEFAULT '{}',
+    primary_dataset_id INTEGER,
+    owner_user_id VARCHAR(64) DEFAULT 'system',
+    owner_department VARCHAR(100) DEFAULT '',
+    status VARCHAR(20) DEFAULT 'active',
+    ver INTEGER DEFAULT 1,
+    project_id INTEGER,
+    created_at DATETIME,
+    updated_at DATETIME,
+    FOREIGN KEY(parent_id) REFERENCES metrics (id),
+    FOREIGN KEY(primary_dataset_id) REFERENCES datasets (id)
+)
+"""
+
+_METRICS_COLS = [
+    "id", "code", "name", "aliases_json", "definition", "calc_rule_json",
+    "dimensions_json", "filters_json", "topic", "level", "parent_id",
+    "disambiguation_json", "primary_dataset_id", "owner_user_id",
+    "owner_department", "status", "ver", "created_at", "updated_at",
+]
+
+
+def _rebuild_metrics_without_unique_code(conn) -> None:
+    """重建 metrics 表去除 code 的 UNIQUE 约束（数据原样保留，project_id 置 NULL
+    由 ensure_default_project 回填）。单事务内执行（调用方处于 begin 块）。"""
+    conn.exec_driver_sql("ALTER TABLE metrics RENAME TO metrics_old_b93")
+    conn.exec_driver_sql(_METRICS_DDL)
+    cols = ", ".join(_METRICS_COLS)
+    conn.exec_driver_sql(
+        f"INSERT INTO metrics ({cols}, project_id) SELECT {cols}, NULL FROM metrics_old_b93"
+    )
+    conn.exec_driver_sql("DROP TABLE metrics_old_b93")
+    conn.exec_driver_sql("CREATE INDEX ix_metrics_code ON metrics (code)")
+    conn.exec_driver_sql("CREATE INDEX ix_metrics_project_id ON metrics (project_id)")
 
 
 def reset_engine() -> None:

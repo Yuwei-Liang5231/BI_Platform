@@ -85,6 +85,8 @@ class AskRequest(BaseModel):
     question: str
     # B9.2-6 会话持久化：会话 id（首问缺省自动建会话，理解卡返回 id 供后续轮携带）
     conversation_id: int | None = None
+    # B9.3 项目锁定：问数候选仅含该项目指标（None=不过滤，兼容存量调用）
+    project_id: int | None = None
 
 
 class AskExecuteRequest(BaseModel):
@@ -126,14 +128,20 @@ def ask(db: DbDep, body: AskRequest, user: CurrentUser):
     B9.2-3：问句命中多个可见指标时附 multi_metrics 并列清单（前端可勾选同时计算）。
     """
     return ok_response(
-        ask_service.build_card(db, user, body.question, conversation_id=body.conversation_id)
+        ask_service.build_card(
+            db, user, body.question,
+            conversation_id=body.conversation_id, project_id=body.project_id,
+        )
     )
 
 
 @router.get("/ask/conversations")
-def list_ask_conversations(db: DbDep, user: CurrentUser):
-    """历史会话列表（B9.2-6）：当前用户最近 50 次对话，按最近使用排序。"""
-    return ok_response(ask_conversations.list_conversations(db, user))
+def list_ask_conversations(db: DbDep, user: CurrentUser, project_id: int | None = None):
+    """历史会话列表（B9.2-6）：当前用户最近 50 次对话，按最近使用排序。
+
+    B9.3：project_id 指定时仅返回该项目会话（问数锁定当前项目）。
+    """
+    return ok_response(ask_conversations.list_conversations(db, user, project_id=project_id))
 
 
 @router.get("/ask/conversations/{conversation_id}/messages")
@@ -163,9 +171,12 @@ def ask_conversation_rename(conversation_id: int, body: ConversationRenameReques
 
 
 @router.get("/ask/suggestions")
-def ask_suggestions(db: DbDep, user: CurrentUser):
-    """空态推荐问题（B9.2-3）：登录用户可见指标自动生成的示例问法（≤5 条）。"""
-    return ok_response(ask_service.build_suggestions(db, user))
+def ask_suggestions(db: DbDep, user: CurrentUser, project_id: int | None = None):
+    """空态推荐问题（B9.2-3）：登录用户可见指标自动生成的示例问法（≤5 条）。
+
+    B9.3：project_id 指定时仅推荐该项目指标。
+    """
+    return ok_response(ask_service.build_suggestions(db, user, project_id=project_id))
 
 
 @router.post("/ask/execute")

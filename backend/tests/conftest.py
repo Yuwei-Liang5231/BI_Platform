@@ -29,6 +29,16 @@ def client():
     reset_engine()
     init_engine(force=False)
     create_all()
+    # B9.3：默认项目幂等创建 + 存量 NULL 回填（与生产 lifespan 一致）
+    from app.domain.project.service import ensure_default_project
+    from app.infra.database import get_db
+
+    db = next(get_db())
+    try:
+        ensure_default_project(db)
+        db.commit()
+    finally:
+        db.close()
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app) as c:

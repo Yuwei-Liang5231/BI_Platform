@@ -37,6 +37,7 @@ class MetricCreateRequest(BaseModel):
     parent_id: int | None = None
     disambiguation: dict | None = None
     owner_department: str = ""
+    project_id: int | None = None  # B9.3：归属项目（缺省=默认项目；code 项目内唯一）
     operator_id: str | None = None  # 缺省取当前登录用户
 
 
@@ -89,6 +90,7 @@ def create_metric(db: DbDep, body: MetricCreateRequest, user: WriterUser):
         disambiguation=body.disambiguation,
         owner_department=body.owner_department,
         operator_id=body.operator_id or user.username,
+        project_id=body.project_id,
     )
     return ok_response(service.metric_to_dict(metric), message="指标已创建")
 
@@ -100,12 +102,14 @@ def list_metrics(
     search: str | None = None,
     topic: str | None = None,
     status: str = "active",
+    project_id: int | None = None,
 ):
     """指标目录：按名称/别名/code 模糊搜索；status=active|disabled|all。
 
     可见性：按当前用户过滤受限指标（不变式 2，与 query 出口同一套判定）。
+    B9.3：project_id 缺省=None=全部项目（跨项目浏览）；指定 id 仅返回该项目。
     """
-    metrics = service.list_metrics(db, search=search, topic=topic, status=status)
+    metrics = service.list_metrics(db, search=search, topic=topic, status=status, project_id=project_id)
     metrics = filter_visible_metrics(db, user, metrics)
     return ok_response([service.metric_to_dict(m) for m in metrics])
 

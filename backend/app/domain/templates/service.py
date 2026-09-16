@@ -29,8 +29,11 @@ STATUS_DISABLED = "disabled"
 STATUS_ACTIVE = "active"
 
 
-def _exists(db: Session, code: str) -> Metric | None:
-    return db.query(Metric).filter(Metric.code == code).first()
+def _exists(db: Session, code: str, project_id: int | None = None) -> Metric | None:
+    query = db.query(Metric).filter(Metric.code == code)
+    if project_id is not None:
+        query = query.filter(Metric.project_id == project_id)
+    return query.first()
 
 
 def _referenced_tables(calc_rule: dict) -> set[str]:
@@ -66,8 +69,9 @@ def _create_metric(
     status: str,
     operator: User,
     compiled=None,
+    project_id: int | None = None,
 ) -> Metric:
-    parent = _exists(db, item["parent"]) if item["parent"] else None
+    parent = _exists(db, item["parent"], project_id) if item["parent"] else None
     metric = Metric(
         code=item["code"],
         name=item["name"],
@@ -83,6 +87,7 @@ def _create_metric(
         primary_dataset_id=compiled.primary_dataset_id if compiled is not None else None,
         owner_user_id=operator.username,
         status=status,
+        project_id=project_id,
     )
     db.add(metric)
     db.flush()  # 取 id 供存档使用
@@ -91,9 +96,12 @@ def _create_metric(
     return metric
 
 
-def _import_one(db: Session, item: dict, *, revalidate: bool, operator: User) -> tuple[str, str | None]:
-    """导入单条，返回 (动作, 说明)。动作 ∈ created/upgraded/skipped。"""
-    existing = _exists(db, item["code"])
+def _import_one(
+    db: Session, item: dict, *, revalidate: bool, operator: User, project_id: int | None = None
+) -> tuple[str, str | None]:
+    """导入单条，返回 (动作, 说明)。动作 ∈ created/upgraded/skipped。
+    B9.3：重复判定按项目作用域（同项目已存在 → skip；跨项目同名可再导入）。"""
+    existing = _exists(db, item["code"], project_id)
     if existing is not None:
         if (
             revalidate
@@ -112,20 +120,22 @@ def _import_one(db: Session, item: dict, *, revalidate: bool, operator: User) ->
         return "skipped", None
 
     if item["requires"] is not None:
-        _create_metric(db, item, status=STATUS_DISABLED, operator=operator)
+        _create_metric(db, item, status=STATUS_DISABLED, operator=operator, project_id=project_id)
         return "created", f"{item['code']}: 依赖阶段 4a 扩展算子，已登记为暂不可计算"
 
     missing = _missing_datasets(db, item["calc_rule"])
     if missing:
-        _create_metric(db, item, status=STATUS_PENDING, operator=operator)
+        _create_metric(db, item, status=STATUS_PENDING, operator=operator, project_id=project_id)
         return "created", f"{item['code']}: 待绑定数据集 {missing}"
 
     compiled = _try_compile(db, item["calc_rule"])
     if isinstance(compiled, str):
-        _create_metric(db, item, status=STATUS_PENDING, operator=operator)
+        _create_metric(db, item, status=STATUS_PENDING, operator=operator, project_id=project_id)
         return "created", f"{item['code']}: 编译未通过，待修正——{compiled}"
 
-    _create_metric(db, item, status=STATUS_ACTIVE, operator=operator, compiled=compiled)
+    _create_metric(
+        db, item, status=STATUS_ACTIVE, operator=operator, compiled=compiled, project_id=project_id
+    )
     return "created", None
 
 
@@ -136,8 +146,16 @@ def import_packs(
     codes: list[str] | None = None,
     revalidate: bool = False,
     operator: User,
+    project_id: int | None = None,
 ) -> dict:
-    """批量导入模板指标。industries/codes 缺省 = 全量。"""
+    """批量导入模板指标。industries/codes 缺省 = 全量。
+
+    B9.3：project_id 指定时导入的指标挂该项目（重复判定/状态统计按项目作用域）；
+    缺省 None → 默认项目（resolve 统一）。
+    """
+    from app.domain.project.service import resolve_project_id
+
+    resolved_project = resolve_project_id(db, project_id)
     available = [p["industry"] for p in loader.list_packs() if not p.get("error")]
     if not available:
         directory = get_settings().resolved_templates_dir
@@ -157,7 +175,9 @@ def import_packs(
         for item in pack["metrics"]:
             if code_filter is not None and item["code"] not in code_filter:
                 continue
-            action, note = _import_one(db, item, revalidate=revalidate, operator=operator)
+            action, note = _import_one(
+                db, item, revalidate=revalidate, operator=operator, project_id=resolved_project
+            )
             if note:
                 notes.append(note)
             if action == "created":
@@ -173,6 +193,7 @@ def import_packs(
             .filter(
                 Metric.code.in_([i["code"] for i in pack["metrics"]]),
                 Metric.status != "deleted",
+                Metric.project_id == resolved_project,
             )
             .all()
         )
@@ -199,15 +220,19 @@ def import_packs(
     return {"results": results, "totals": totals}
 
 
-def pack_detail(db: Session, industry: str) -> dict:
-    """模板包明细，附带每条的库内导入状态（导入向导勾选用）。"""
+def pack_detail(db: Session, industry: str, project_id: int | None = None) -> dict:
+    """模板包明细，附带每条的库内导入状态（导入向导勾选用）。
+
+    B9.3：project_id 指定时导入状态按项目判定（同 code 可存在于多项目）。
+    """
     pack = loader.load_pack(industry)
     codes = [m["code"] for m in pack["metrics"]]
-    rows = (
-        db.query(Metric.code, Metric.status, Metric.id)
-        .filter(Metric.code.in_(codes), Metric.status != "deleted")
-        .all()
+    query = db.query(Metric.code, Metric.status, Metric.id).filter(
+        Metric.code.in_(codes), Metric.status != "deleted"
     )
+    if project_id is not None:
+        query = query.filter(Metric.project_id == project_id)
+    rows = query.all()
     imported = {code: {"status": status, "metric_id": mid} for code, status, mid in rows}
     metrics = [
         {

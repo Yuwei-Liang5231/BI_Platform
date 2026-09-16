@@ -71,12 +71,32 @@ def _ensure_visible(db: Session, user: User, metric: Metric) -> None:
 
 
 def _resolve_metric(db: Session, metric_ref) -> Metric:
-    """metric 入参兼容 id（int / 数字字符串）与 code（字符串）。"""
+    """metric 入参兼容 id（int / 数字字符串）与 code（字符串）。
+
+    B9.3 项目化后同 code 可存在于多个项目：按 code 解析命中多条时，
+    取唯一 active 者；否则报歧义（提示用 id），绝不静默取错项目的指标。
+    """
     metric = None
     if isinstance(metric_ref, int) or (isinstance(metric_ref, str) and metric_ref.strip().isdigit()):
         metric = db.get(Metric, int(metric_ref))
     if metric is None and isinstance(metric_ref, str):
-        metric = db.query(Metric).filter(Metric.code == metric_ref.strip()).first()
+        code = metric_ref.strip()
+        candidates = (
+            db.query(Metric)
+            .filter(Metric.code == code, Metric.status != "deleted")
+            .all()
+        )
+        if len(candidates) > 1:
+            actives = [m for m in candidates if m.status == "active"]
+            if len(actives) == 1:
+                metric = actives[0]
+            else:
+                raise BusinessError(
+                    f"指标 code {code!r} 在多个项目中存在或状态异常，请改用指标 id 取数",
+                    40000,
+                )
+        elif candidates:
+            metric = candidates[0]
     if metric is None or metric.status == "deleted":
         raise BusinessError(f"指标 {metric_ref!r} 不存在", 40400)
     if metric.status == "disabled":

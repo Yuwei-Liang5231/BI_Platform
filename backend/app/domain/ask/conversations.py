@@ -28,29 +28,29 @@ def _owned_conversation(db: Session, user, conversation_id: int) -> AskConversat
     return conv
 
 
-def list_conversations(db: Session, user) -> list[dict]:
-    """当前用户的历史会话（按最近使用排序，限 50 条）。"""
-    rows = (
-        db.query(AskConversation)
-        .filter(AskConversation.user_id == user.id)
-        .order_by(AskConversation.updated_at.desc())
-        .limit(CONV_LIST_LIMIT)
-        .all()
-    )
+def list_conversations(db: Session, user, project_id: int | None = None) -> list[dict]:
+    """当前用户的历史会话（按最近使用排序，限 50 条）；project_id 指定时仅该项目。"""
+    query = db.query(AskConversation).filter(AskConversation.user_id == user.id)
+    if project_id is not None:
+        query = query.filter(AskConversation.project_id == project_id)
+    rows = query.order_by(AskConversation.updated_at.desc()).limit(CONV_LIST_LIMIT).all()
     return [
         {
             "id": c.id,
             "title": c.title or "（未命名对话）",
+            "project_id": c.project_id,
             "updated_at": c.updated_at.isoformat() if c.updated_at else None,
         }
         for c in rows
     ]
 
 
-def get_or_create_conversation(db: Session, user, conversation_id: int | None) -> AskConversation:
-    """首问无会话则新建；带会话 id 则校验归属。"""
+def get_or_create_conversation(
+    db: Session, user, conversation_id: int | None, project_id: int | None = None
+) -> AskConversation:
+    """首问无会话则新建（B9.3：挂当前项目）；带会话 id 则校验归属。"""
     if conversation_id is None:
-        conv = AskConversation(user_id=user.id)
+        conv = AskConversation(user_id=user.id, project_id=project_id)
         db.add(conv)
         db.flush()  # 取 id
         return conv
