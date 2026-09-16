@@ -230,7 +230,10 @@ def detect_for_project(db: Session, user: User, project_id: int | None = None) -
         .all()
     )
     results = []
-    counts = {"configured": len(configured), "abnormal": 0, "normal": 0, "insufficient_baseline": 0, "no_data": 0}
+    counts = {
+        "configured": len(configured), "abnormal": 0, "normal": 0,
+        "insufficient_baseline": 0, "no_data": 0, "error": 0,
+    }
     for cfg in configured:
         metric = db.get(Metric, cfg.metric_id)
         if metric is None or metric.status != "active":
@@ -239,6 +242,9 @@ def detect_for_project(db: Session, user: User, project_id: int | None = None) -
             r = detect_for_metric(db, user, metric)
         except BusinessError:
             counts["no_data"] += 1
+            continue
+        except Exception:  # noqa: BLE001 - 单指标计算异常不拖垮整批扫描（如数据文件缺失）
+            counts["error"] += 1
             continue
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
         if r["verdict"] == "abnormal":

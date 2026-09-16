@@ -259,10 +259,10 @@ const anomalyBanner = ref([]);
 
 async function loadAnomalyBanner() {
   try {
-    const scan = await anomalyScan(projectStore.lockedId);
+    const scan = await anomalyScan(projectStore.lockedId, { silent: true });
     anomalyBanner.value = scan?.anomalies ?? [];
   } catch {
-    anomalyBanner.value = []; // 扫描失败不阻塞看板
+    anomalyBanner.value = []; // 扫描失败不阻塞看板、不弹全局提示
   }
 }
 

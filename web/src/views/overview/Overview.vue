@@ -151,7 +151,7 @@ onMounted(fetchScan);
         <p class="page-header__subtitle">看板不等人来找问题 · 异动限量呈现，宁缺毋滥</p>
       </div>
       <div class="page-header__actions">
-        <el-button @click="openManage">管理检测指标</el-button>
+        <el-button @click="openManage" :disabled="loading">管理检测指标</el-button>
         <el-button @click="fetchScan" :loading="loading">重新扫描</el-button>
       </div>
     </div>

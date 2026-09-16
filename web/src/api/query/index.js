@@ -56,18 +56,37 @@ export const breakdownDimensions = (data) =>
 export const anomalyDetect = (data) => request.post("/query/anomaly", data);
 
 /** 项目批量异动扫描（B10-1，总览页/看板黄条数据源）。
- *  逐指标序列计算，配置指标多时较慢——放宽超时至 3 分钟。 */
-export const anomalyScan = (projectId) =>
-  request.get("/query/anomalies", {
-    params: projectId ? { project_id: projectId } : undefined,
-    timeout: 180000,
-  });
+ *  逐指标序列计算，配置指标多时较慢——放宽超时至 3 分钟。
+ *  skipErrorToast: 后台辅助场景（看板黄条）静默失败，不弹全局提示。 */
+export const anomalyScan = (projectId, { silent = false } = {}) =>
+  request.get(
+    "/query/anomalies",
+    {
+      params: projectId ? { project_id: projectId } : undefined,
+      timeout: 180000,
+      skipErrorToast: silent,
+    },
+  );
 
 /** 一键开启项目内全部 active 指标的异动检测（默认保守档，幂等）。 */
 export const anomalyEnableAll = (projectId) =>
   request.post("/query/anomalies/enable-all", null, {
     params: projectId ? { project_id: projectId } : undefined,
   });
+
+/** 检测指标清单（管理对话框数据源）：项目内全部 active 指标 + 配置状态。 */
+export const anomalyConfigsList = (projectId) =>
+  request.get("/query/anomalies/configs", {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
+
+/** 整组替换检测指标集合：列表内开启、列表外停用。 */
+export const anomalyConfigsSave = (metricIds, projectId) =>
+  request.post(
+    "/query/anomalies/configs",
+    { metric_ids: metricIds },
+    { params: projectId ? { project_id: projectId } : undefined },
+  );
 
 /** 单层归因（B10-2）：变化量按维度拆贡献（加性指标）。 */
 export const attributeDelta = (data) => request.post("/query/attribute", data);

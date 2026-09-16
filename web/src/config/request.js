@@ -46,7 +46,9 @@ instance.interceptors.response.use(
     if (body.code === 0) {
       return body.data;
     }
-    ElMessage.error(body.message || "请求失败");
+    if (!response.config.skipErrorToast) {
+      ElMessage.error(body.message || "请求失败");
+    }
     return Promise.reject(new Error(body.message || "请求失败"));
   },
   (error) => {
@@ -55,6 +57,10 @@ instance.interceptors.response.use(
     if (status === 401 || body?.code === 40100) {
       ElMessage.error(body?.message || "登录已过期，请重新登录");
       gotoLogin();
+      return Promise.reject(error);
+    }
+    // 静默请求（后台辅助数据，如看板黄条/通知计数）：失败不弹全局提示
+    if (error.config?.skipErrorToast) {
       return Promise.reject(error);
     }
     // 请求超时：后端可能仍在处理并成功入库（尤其大文件上传解析），提示用户核实而非断言失败
