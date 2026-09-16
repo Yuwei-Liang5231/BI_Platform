@@ -22,6 +22,7 @@ const projectStore = useProjectStore();
 
 const navItems = [
   { path: "/overview", label: "经营总览" },
+  { path: "/reports", label: "报告中心", writeOnly: true },
   { path: "/dashboard", label: "统一看板" },
   { path: "/ask", label: "AI 问数" },
   { path: "/metrics", label: "指标目录" },

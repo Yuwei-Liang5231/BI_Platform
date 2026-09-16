@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import app
-from app.api.routes import auth, datasets, health, llm, metrics, notifications, projects, query, templates
+from app.api.routes import auth, datasets, health, llm, metrics, notifications, projects, query, reports, templates
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.core.response import (
@@ -100,6 +100,7 @@ def create_app() -> FastAPI:
     application.include_router(query.router, prefix=settings.api_prefix)
     application.include_router(notifications.router, prefix=settings.api_prefix)
     application.include_router(templates.router, prefix=settings.api_prefix)
+    application.include_router(reports.router, prefix=settings.api_prefix)
     application.include_router(llm.router, prefix=settings.api_prefix)
     _register_exception_handlers(application)
 

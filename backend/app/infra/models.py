@@ -316,3 +316,24 @@ class Notification(Base):
     abnormality: Mapped[float | None] = mapped_column(nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+
+
+class ReportTemplate(Base):
+    """报告模板（B12-1）：周期类型 × 指标集 × 章节开关。
+
+    B10 规矩：新表挂 project_id。sections 开关（JSON）：overview/mom/yoy/
+    anomaly/attribution；结论一律由平台计算（compute 单点出口），
+    LLM 叙述层（B12-2）只引用结论 ref，不产数字。
+    """
+
+    __tablename__ = "report_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    period_type: Mapped[str] = mapped_column(String(10))  # daily / weekly / monthly
+    metric_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    sections_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_by: Mapped[str] = mapped_column(String(50), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
