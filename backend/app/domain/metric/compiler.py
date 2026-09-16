@@ -28,6 +28,7 @@ from app.domain.metric.schema import (
     CalcRuleError,
     FilterCondition,
     Operand,
+    RelativeDate,
     parse_calc_rule,
 )
 
@@ -88,6 +89,13 @@ def _q(identifier: str) -> str:
 
 
 def _literal_sql(value) -> str:
+    if isinstance(value, RelativeDate):
+        # $__today__ 由执行侧绑定计算当天日期；偏移渲染为固定 INTERVAL 文本，
+        # SQL 仍确定性（缓存键另含 today 锚点，见 query 服务）
+        if value.offset_days == 0:
+            return "$__today__"
+        sign = "+" if value.offset_days > 0 else "-"
+        return f"($__today__ {sign} INTERVAL {abs(value.offset_days)} DAY)"
     if value is True:
         return "TRUE"
     if value is False:
@@ -103,6 +111,11 @@ def _condition_sql(column_ref: str, cond: FilterCondition) -> str:
     if cond.op == "is_not_null":
         return f"{column_ref} IS NOT NULL"
     return f"{column_ref} {cond.op} {_literal_sql(cond.literal)}"
+
+
+def _uses_today(operand: Operand) -> bool:
+    """口径 filter 是否引用相对日期字面量（today）——缓存键须含当天锚点。"""
+    return any(isinstance(c.literal, RelativeDate) for c in operand.filter)
 
 
 def _agg_sql(operand: Operand, column_ref: str) -> str:

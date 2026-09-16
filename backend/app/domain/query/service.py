@@ -147,10 +147,20 @@ def _cache_key(
     sql_digest = hashlib.sha1(compiled.sql.encode("utf-8")).hexdigest()[:12]
     # 覆盖端点参与键：部分周期值入库后，数据补录（覆盖变化）→ 键变化 → 自然失效
     cov_tag = f"{cov_start.isoformat()}~{cov_end.isoformat()}" if cov_start and cov_end else "nocov"
-    return metric_cache.make_key(
+    parts = [
         "metric", metric.id, metric.ver, dataset_vers,
         start.isoformat(), end.isoformat(), sql_digest, cov_tag,
-    )
+    ]
+    if "__today__" in compiled.sql:
+        # 时点性指标（filter 引用 today）：值随计算日滚动，锚点必须参与键——
+        # 否则昨天的缓存今天仍命中，相对条件永远停在旧日期
+        parts.append(f"today:{_today_anchor().isoformat()}")
+    return metric_cache.make_key(*parts)
+
+
+def _today_anchor() -> date:
+    """相对日期字面量的锚点：计算当天（本地时区）。独立函数便于测试替身。"""
+    return date.today()
 
 
 def _compute_range(
@@ -188,9 +198,11 @@ def _compute_range(
 
     # B8：分片目录数据集展开为 glob（存量单文件原样）
     views = {name: view_target(info["parquet_path"]) for name, info in runtime.items()}
-    # 常数指标 SQL 无 $__start__/__end__ 占位符，绑定空参数（DuckDB 对未使用
-    # 的命名参数不保证容忍，缺参/多参都不冒这个险）
+    # 常数指标 SQL 无 $__start__/__end__ 占位符；时点性指标（filter 引用 today）
+    # 无关是否常数都需绑定当天锚点——DuckDB 对缺参/多参不保证容忍，按需精确绑定
     params: dict = {} if is_constant else {"__start__": start, "__end__": end}
+    if "__today__" in compiled.sql:
+        params["__today__"] = _today_anchor()
     with duckdb_views(views) as con:
         row = con.execute(compiled.sql, params).fetchone()
     if is_constant:
@@ -452,10 +464,13 @@ def _breakdown_cache_key(
     filt_digest = hashlib.sha1(filt_json.encode("utf-8")).hexdigest()[:12]
     cov_tag = f"{cov_start.isoformat()}~{cov_end.isoformat()}" if cov_start and cov_end else "nocov"
     # compare 必须参与键：缓存内容含基期组值，none/mom/yoy 三种请求互不串值
-    return metric_cache.make_key(
+    parts = [
         "brkdwn", metric.id, metric.ver, dataset_vers,
         start.isoformat(), end.isoformat(), sql_digest, compare, filt_digest, cov_tag,
-    )
+    ]
+    if "__today__" in compiled.sql:
+        parts.append(f"today:{_today_anchor().isoformat()}")  # 时点性指标按天滚动
+    return metric_cache.make_key(*parts)
 
 
 def _exec_breakdown(
@@ -464,6 +479,8 @@ def _exec_breakdown(
     """执行拆解 SQL → {维度值(str): 组值}。SQL 端 LIMIT 防高基数拖爆内存。"""
     views = {name: view_target(info["parquet_path"]) for name, info in runtime.items()}
     params: dict = {} if compiled.is_constant else {"__start__": start, "__end__": end}
+    if "__today__" in compiled.sql:
+        params["__today__"] = _today_anchor()
     with duckdb_views(views) as con:
         rows = con.execute(compiled.sql + f" LIMIT {MAX_BREAKDOWN_ROWS}", params).fetchall()
     # 统一列序：dimension, value（flat 与 expression 两种形态均如此）
@@ -724,6 +741,8 @@ def list_dimension_values(db: Session, *, metric_ref, column: str, user: User) -
     runtime = _dataset_runtime(db, compiled)
     views = {name: view_target(info["parquet_path"]) for name, info in runtime.items()}
     params = {"__start__": compiled.coverage_start, "__end__": compiled.coverage_end}
+    if "__today__" in compiled.sql:
+        params["__today__"] = _today_anchor()
     values: list[str] = []
     seen: set[str] = set()
     with duckdb_views(views) as con:

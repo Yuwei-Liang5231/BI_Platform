@@ -30,8 +30,13 @@ filter 文法（合取范式，v1 算子清单）：
     condition (AND condition)*
     condition := column ( = | != | <> | > | >= | < | <= ) literal
                | column IS [NOT] NULL
-    literal   := 数字 | '字符串' | true | false
+    literal   := 数字 | '字符串' | true | false | today | today±N d
     column    := 标识符 | "带空格/特殊字符的列名"（双引号，"" 转义）
+
+相对日期字面量（2026-09-16）：today（计算当天）、today+N d / today-N d
+（偏移 N 天，如 today+15d）。不加引号（与字符串区分）。编译为 $__today__
+命名参数，执行时绑定计算当天日期——值随自然日滚动（时点性指标）。
+它不是 SQL 函数/表达式，只是受限文法内的相对字面量，红线不破。
 
 明确不支持（保存即拒绝）：OR / NOT / 括号分组、嵌套聚合、窗口函数、
 自定义 SQL 片段、group_by/cohort 等任何结构外字段。
@@ -59,11 +64,29 @@ class CalcRuleError(ValueError):
 # ---------------------------------------------------------------- 数据结构
 
 
+@dataclass(frozen=True)
+class RelativeDate:
+    """相对日期字面量：today（计算当天）或 today±N d（偏移 N 天）。
+
+    编译为 $__today__ 命名参数（执行时绑定计算当天日期），指标值随自然日
+    滚动（时点性指标）。它不是 SQL 函数/表达式，只是受限文法内的相对
+    字面量——保存即拒绝的红线（禁函数/自定义 SQL）不破。"""
+
+    offset_days: int = 0
+
+    def render(self) -> str:
+        """还原为文法文本（round-trip：FilterCondition → 字符串）。"""
+        if self.offset_days == 0:
+            return "today"
+        sign = "+" if self.offset_days > 0 else "-"
+        return f"today{sign}{abs(self.offset_days)}d"
+
+
 @dataclass
 class FilterCondition:
     column: str
     op: str  # = / != / > / >= / < / <= / is_null / is_not_null
-    literal: str | int | float | bool | None = None
+    literal: str | int | float | bool | RelativeDate | None = None
 
 
 @dataclass
@@ -137,6 +160,44 @@ def _unquote_string(raw: str) -> str:
     return raw[1:-1].replace("''", "'")
 
 
+def _parse_relative_date(
+    tokens: list[tuple[str, str]], i: int, column: str
+) -> tuple[RelativeDate, int]:
+    """解析相对日期字面量。tokens[i] 为 today 记号（大小写不敏感）。
+    三种形态：today / today+N d（op+number）/ today-N d（词法把无空格的
+    "-N" 并进 number，故负偏移直接表现为负数 number）。返回
+    (RelativeDate, 下一个未消费索引)；写法不完整即 CalcRuleError。"""
+    err = (
+        f"字段 {column} 的相对日期写法不完整：应为 today、today+N d 或 today-N d"
+        f"（N 为整数天数，如 today+15d）"
+    )
+    j = i + 1
+    if j >= len(tokens):
+        return RelativeDate(0), j
+    k2, v2 = tokens[j]
+    if k2 == "number":
+        if not v2.startswith("-"):
+            raise CalcRuleError(err)  # `today 15 d`：缺符号
+        offset = int(v2)  # today-15d（无空格，词法合并为负数 number）
+        if "." in v2:
+            raise CalcRuleError(err)
+        j += 1
+    elif k2 == "op" and v2 in ("+", "-"):
+        j += 1
+        if j >= len(tokens) or tokens[j][0] != "number":
+            raise CalcRuleError(err)
+        num = tokens[j][1]
+        if "." in num or int(num) < 0:
+            raise CalcRuleError(err)
+        offset = -int(num) if v2 == "-" else int(num)
+        j += 1
+    else:
+        return RelativeDate(0), j  # 纯 today（后接 AND / 条件结束等）
+    if j >= len(tokens) or tokens[j][0] != "ident" or tokens[j][1].lower() != "d":
+        raise CalcRuleError(err)
+    return RelativeDate(offset), j + 1
+
+
 # ---------------------------------------------------------------- filter 文法
 
 
@@ -174,19 +235,24 @@ def parse_filter(text: str) -> list[FilterCondition]:
             if i >= len(tokens):
                 raise CalcRuleError(f"比较符 {op} 后缺少比较值（字段 {column}）")
             lkind, lvalue = tokens[i]
-            if lkind == "number":
+            if lkind == "ident" and lvalue.lower() == "today":
+                literal, i = _parse_relative_date(tokens, i, column)
+            elif lkind == "number":
                 literal: str | float = float(lvalue) if "." in lvalue else int(lvalue)
+                i += 1
             elif lkind == "string":
                 literal = _unquote_string(lvalue)
+                i += 1
             elif lkind == "keyword" and lvalue in ("true", "false"):
                 literal = lvalue == "true"
+                i += 1
             elif lkind == "keyword" and lvalue == "null":
                 raise CalcRuleError(f"不支持 {column} = NULL 写法，请使用 {column} IS NULL")
             else:
                 raise CalcRuleError(
-                    f"字段 {column} 的比较值应为数字、'字符串' 或 true/false，实际是 {lvalue!r}"
+                    f"字段 {column} 的比较值应为数字、'字符串'、true/false 或 today±N d，"
+                    f"实际是 {lvalue!r}"
                 )
-            i += 1
             conditions.append(FilterCondition(column, "!=" if op == "<>" else op, literal))
         if i < len(tokens):
             if tokens[i] == ("keyword", "and"):
