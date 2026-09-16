@@ -3,6 +3,7 @@
 import { onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { Folder, ArrowDown, User as UserIcon } from "@element-plus/icons-vue";
 
 import PwcLogo from "@/components/base/PwcLogo.vue";
 import { useAuthStore } from "@/stores/auth";
@@ -37,6 +38,11 @@ function handleLogout() {
   auth.logout();
   ElMessage.success("已退出登录");
   router.push({ name: "Login" });
+}
+
+function onUserCommand(command) {
+  if (command === "manage-projects") openManage();
+  else if (command === "logout") handleLogout();
 }
 
 /* ---------- 项目工作区（B9.3）：全局切换器 + 项目管理 ---------- */
@@ -126,19 +132,41 @@ async function handleDeleteProject(p) {
           {{ item.label }}
         </router-link>
       </nav>
-      <div class="layout__user">
+      <div class="layout__context">
+        <!-- B9.3 项目上下文：图标 + 固定宽切换器，与导航区拉开层级 -->
         <el-select
           :model-value="projectStore.currentId ?? ALL_PROJECTS"
           class="layout__project"
           @update:model-value="switchProject"
         >
+          <template #label="{ label }">
+            <span class="layout__project-label">
+              <el-icon class="layout__project-icon"><Folder /></el-icon>{{ label }}
+            </span>
+          </template>
           <el-option label="全部项目（浏览）" :value="ALL_PROJECTS" />
           <el-option v-for="p in projectStore.projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <el-button v-if="auth.isAdmin" text @click="openManage">管理项目</el-button>
-        <span class="layout__user-name">{{ auth.user?.username }}</span>
-        <span class="pwc-badge pwc-badge--grey">{{ auth.role }}</span>
-        <el-button text @click="handleLogout">退出</el-button>
+      </div>
+      <div class="layout__user">
+        <el-dropdown trigger="click" @command="onUserCommand">
+          <span class="layout__user-trigger" role="button">
+            <el-icon class="layout__user-avatar"><UserIcon /></el-icon>
+            <span class="layout__user-name">{{ auth.user?.username }}</span>
+            <el-icon class="layout__user-caret"><ArrowDown /></el-icon>
+          </span>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item disabled>
+                角色：{{ auth.role }}
+              </el-dropdown-item>
+              <el-dropdown-item v-if="auth.isAdmin" divided command="manage-projects">
+                管理项目…
+              </el-dropdown-item>
+              <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </header>
     <main class="layout__main">
@@ -243,14 +271,61 @@ async function handleDeleteProject(p) {
   border-bottom-color: var(--pwc-bg-brand);
 }
 
+.layout__context {
+  display: flex;
+  align-items: center;
+  padding-left: var(--pwc-space-6);
+  border-left: 1px solid var(--pwc-border-subtle);
+}
+
+.layout__project {
+  width: 200px;
+}
+
+.layout__project-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+}
+
+.layout__project-icon {
+  color: var(--pwc-bg-brand);
+}
+
 .layout__user {
   display: flex;
   align-items: center;
   gap: var(--pwc-space-3);
 }
 
-.layout__project {
-  width: 170px;
+.layout__user-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+  padding: var(--pwc-space-2) var(--pwc-space-3);
+  border-radius: var(--pwc-radius-sm, 4px);
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.15s;
+}
+
+.layout__user-trigger:hover {
+  background: var(--pwc-bg-layer-2, rgba(0, 0, 0, 0.04));
+}
+
+.layout__user-avatar {
+  font-size: 18px;
+  color: var(--pwc-bg-brand);
+}
+
+.layout__user-name {
+  font-size: var(--pwc-font-body-m);
+  font-weight: 500;
+}
+
+.layout__user-caret {
+  font-size: 12px;
+  color: var(--pwc-text-secondary);
 }
 
 .proj-manage__create {
@@ -263,11 +338,6 @@ async function handleDeleteProject(p) {
   margin-top: var(--pwc-space-3);
   font-size: var(--pwc-font-body-s);
   color: var(--pwc-text-secondary);
-}
-
-.layout__user-name {
-  font-size: var(--pwc-font-body-m);
-  font-weight: 500;
 }
 
 .layout__main {
