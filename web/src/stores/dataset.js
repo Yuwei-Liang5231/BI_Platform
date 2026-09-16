@@ -13,6 +13,7 @@ import {
   renameDataset as renameApi,
   uploadDataset as uploadApi,
 } from "@/api/datasets";
+import { useProjectStore } from "@/stores/project";
 
 export const useDatasetStore = defineStore("dataset", () => {
   const list = ref([]);
@@ -25,7 +26,14 @@ export const useDatasetStore = defineStore("dataset", () => {
   async function fetchList(params) {
     loading.value = true;
     try {
-      const res = await listApi(params);
+      // B9.3：默认按当前项目过滤（全部项目视图 currentId=null → 不过滤看全部）；
+      // 调用方显式传 project_id 时以调用方为准
+      const projectStore = useProjectStore();
+      const merged = {
+        ...(projectStore.currentId ? { project_id: projectStore.currentId } : {}),
+        ...params,
+      };
+      const res = await listApi(merged);
       list.value = Array.isArray(res) ? res : (res?.list ?? []);
       return list.value;
     } finally {

@@ -11,7 +11,7 @@ export const uploadDataset = (formData, onProgress) =>
     },
   });
 
-export const listDatasets = () => request.get("/datasets");
+export const listDatasets = (params) => request.get("/datasets", { params });
 
 export const getDataset = (datasetId) => request.get(`/datasets/${datasetId}`);
 
