@@ -172,9 +172,10 @@ def get_metric_changes(db: DbDep, metric_id: int, user: CurrentUser):
 class AnomalyConfigRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    z_threshold: float | None = None   # 1.0~10.0，缺省 3.0（保守档）
-    min_samples: int | None = None     # 同星期几基准样本下限，缺省 8
-    enabled: bool | None = None        # false = 不参与批量异动扫描
+    z_threshold: float | None = None      # 1.0~10.0，缺省 3.0（保守档）
+    min_samples: int | None = None        # 同星期几基准样本下限，缺省 8
+    materiality_pct: float | None = None  # B10-2 要紧度：|变化率|% 低于此不构成结论，缺省 5.0
+    enabled: bool | None = None           # false = 不参与批量异动扫描
 
 
 @router.get("/{metric_id}/anomaly-config")
@@ -197,6 +198,7 @@ def put_anomaly_config(db: DbDep, metric_id: int, body: AnomalyConfigRequest, us
         metric,
         z_threshold=body.z_threshold,
         min_samples=body.min_samples,
+        materiality_pct=body.materiality_pct,
         enabled=body.enabled,
     )
     return ok_response(
@@ -204,6 +206,7 @@ def put_anomaly_config(db: DbDep, metric_id: int, body: AnomalyConfigRequest, us
             "metric_id": metric_id,
             "z_threshold": cfg.z_threshold,
             "min_samples": cfg.min_samples,
+            "materiality_pct": cfg.materiality_pct,
             "enabled": bool(cfg.enabled),
         },
         message="异动检测配置已保存",

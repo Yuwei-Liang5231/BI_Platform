@@ -97,13 +97,15 @@ def migrate_project_columns() -> None:
       不到旧约束时迁移为空操作。
     """
     with get_engine().begin() as conn:
-        for table in ("datasets", "metrics", "ask_conversations"):
+        for table in ("datasets", "metrics", "ask_conversations", "anomaly_configs"):
             rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
             if not rows:
                 continue  # 表尚不存在：create_all 已按新结构处理
             cols = {r[1] for r in rows}
             if "project_id" not in cols:
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN project_id INTEGER")
+            if table == "anomaly_configs" and "materiality_pct" not in cols:
+                conn.exec_driver_sql("ALTER TABLE anomaly_configs ADD COLUMN materiality_pct REAL DEFAULT 5.0")
         conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_metrics_project_id ON metrics (project_id)"
         )

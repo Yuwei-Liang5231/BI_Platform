@@ -15,6 +15,7 @@ from app.infra.repository import Repository
 # 保守档默认值（指标级可配覆盖）
 DEFAULT_Z_THRESHOLD = 3.0
 DEFAULT_MIN_SAMPLES = 8
+DEFAULT_MATERIALITY_PCT = 5.0
 MAX_BASELINE_WEEKS = 52  # 同星期几基准最多回看周数（min_samples 上限）
 
 
@@ -34,6 +35,7 @@ def get_effective_config(db: Session, metric_id: int) -> dict:
     return {
         "z_threshold": cfg.z_threshold if cfg else DEFAULT_Z_THRESHOLD,
         "min_samples": cfg.min_samples if cfg else DEFAULT_MIN_SAMPLES,
+        "materiality_pct": cfg.materiality_pct if cfg else DEFAULT_MATERIALITY_PCT,
         "enabled": bool(cfg.enabled) if cfg else True,
         "customized": cfg is not None,
     }
@@ -45,13 +47,16 @@ def upsert_config(
     *,
     z_threshold: float | None = None,
     min_samples: int | None = None,
+    materiality_pct: float | None = None,
     enabled: bool | None = None,
 ) -> AnomalyConfig:
-    """创建/更新指标级配置（PUT 整体语义由路由层组参）。"""
+    """创建/更新指标级配置。"""
     if z_threshold is not None and not 1.0 <= z_threshold <= 10.0:
         raise BusinessError("z_threshold 须在 1.0~10.0 之间（越大越保守）", 40000)
     if min_samples is not None and not 1 <= min_samples <= MAX_BASELINE_WEEKS:
         raise BusinessError(f"min_samples 须在 1~{MAX_BASELINE_WEEKS} 之间", 40000)
+    if materiality_pct is not None and not 0 <= materiality_pct <= 100000:
+        raise BusinessError("materiality_pct 须在 0~100000 之间（变化率百分比）", 40000)
     cfg = get_config(db, metric.id)
     if cfg is None:
         cfg = AnomalyConfig(
@@ -59,6 +64,9 @@ def upsert_config(
             project_id=metric.project_id,
             z_threshold=z_threshold if z_threshold is not None else DEFAULT_Z_THRESHOLD,
             min_samples=min_samples if min_samples is not None else DEFAULT_MIN_SAMPLES,
+            materiality_pct=(
+                materiality_pct if materiality_pct is not None else DEFAULT_MATERIALITY_PCT
+            ),
             enabled=int(enabled) if enabled is not None else 1,
         )
         return Repository(AnomalyConfig, db).add(cfg)
@@ -66,6 +74,8 @@ def upsert_config(
         cfg.z_threshold = z_threshold
     if min_samples is not None:
         cfg.min_samples = min_samples
+    if materiality_pct is not None:
+        cfg.materiality_pct = materiality_pct
     if enabled is not None:
         cfg.enabled = int(enabled)
     Repository(AnomalyConfig, db).update(cfg)
@@ -149,13 +159,21 @@ def detect_for_metric(
 
     abnormal, abnormality, mean, stdev = _judge(current, samples, cfg["z_threshold"])
     delta = current - mean
+    # B10-2 要紧度：第二道判断——反常但幅度小于 materiality_pct 的不构成结论
+    delta_pct = round(delta / abs(mean) * 100, 4) if mean else None
+    material = (
+        (abs(delta_pct) >= cfg["materiality_pct"])
+        if (abnormal and delta_pct is not None)
+        else None
+    )
     reason = None
     if abnormal:
-        reason = (
-            f"偏离同星期几基准 {abnormality:.2f} 倍标准差（阈值 {cfg['z_threshold']}）"
-            if abnormality is not None
-            else "基准恒定（方差 0），出现偏离即反常"
-        )
+        if abnormality is not None:
+            reason = f"偏离同星期几基准 {abnormality:.2f} 倍标准差（阈值 {cfg['z_threshold']}）"
+        else:
+            reason = "基准恒定（方差 0），出现偏离即反常"
+        if material is False:
+            reason += f"；但变化幅度 {abs(delta_pct):.1f}% 低于要紧度阈值 {cfg['materiality_pct']}%，不构成异动结论"
     return {
         "metric_id": resolved.id,
         "metric_code": resolved.code,
@@ -169,10 +187,11 @@ def detect_for_metric(
             "kind": "same_weekday",
         },
         "delta": delta,
-        "delta_pct": round(delta / abs(mean) * 100, 4) if mean else None,
+        "delta_pct": delta_pct,
         "direction": "up" if delta > 0 else ("down" if delta < 0 else "flat"),
         "abnormality": abnormality,
         "abnormal": abnormal,
+        "material": material,  # B10-2 要紧度：三道判断之二（None=无法判定）
         "verdict": "abnormal" if abnormal else "normal",
         "reason": reason,
         "config": cfg,

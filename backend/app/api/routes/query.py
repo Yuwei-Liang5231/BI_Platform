@@ -16,7 +16,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from app.api.deps import CurrentUser, DbDep
-from app.core.response import ok_response
+from app.core.response import BusinessError, ok_response
 from app.domain.ask import conversations as ask_conversations
 from app.domain.ask import service as ask_service
 from app.domain.query import service
@@ -309,3 +309,46 @@ def anomaly_scan(db: DbDep, user: CurrentUser, project_id: int | None = None):
     from app.domain.anomaly import service as anomaly_service
 
     return ok_response(anomaly_service.detect_for_project(db, user, project_id=project_id))
+
+
+class AttributeRequest(BaseModel):
+    """单层归因请求（B10-2）：变化量按维度拆贡献（加性指标）。
+
+    compare=mom/yoy（基期 = 上一等长周期 / 去年同起止）；top_n 取贡献最大的
+    前 N 个来源，其余合并为「其他」。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str | int
+    start: str
+    end: str
+    dimension: str
+    compare: str = "mom"
+    top_n: int = 10
+
+
+@router.post("/attribute")
+def attribute(db: DbDep, body: AttributeRequest, user: CurrentUser):
+    """单层归因分解（B10-2）：独立归因服务，供异动结论与报告中心复用。
+
+    加性守恒：各维组贡献合计 ≈ 单值口径总变化（守恒偏差在响应中如实给出）。
+    """
+    from app.domain.anomaly import attribution
+
+    if body.compare not in ("mom", "yoy"):
+        raise BusinessError("归因基期 compare 仅支持 mom / yoy（无基期则无变化可拆）", 40000)
+    if not 1 <= body.top_n <= 50:
+        raise BusinessError("top_n 须在 1~50 之间", 40000)
+    return ok_response(
+        attribution.attribute_delta(
+            db,
+            user,
+            metric_ref=body.metric,
+            start=body.start,
+            end=body.end,
+            dimension=body.dimension,
+            compare=body.compare,
+            top_n=body.top_n,
+        )
+    )

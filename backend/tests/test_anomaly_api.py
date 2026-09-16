@@ -188,3 +188,145 @@ class TestAnomalyScan:
         top = scan["anomalies"][0]
         assert top["verdict"] == "abnormal"
         assert {"current", "baseline", "delta", "direction", "abnormality"} <= set(top.keys())
+
+
+# ---------------------------------------------------------------- B10-2 要紧度 + 单层归因
+
+
+class TestMateriality:
+    def test_material_field_present(self, client, anomaly_env):
+        """要紧度字段进检测结果：突刺（5000 vs 基准 ~120）远超 5% → material=True。"""
+        body = client.post("/api/query/anomaly", json={
+            "metric": anomaly_env["metric"]["id"], "date": SPIKE_SUNDAY.isoformat(),
+        }).json()["data"]
+        assert body["abnormal"] is True
+        assert body["material"] is True
+
+    def test_materiality_config_gates(self, client, anomaly_env):
+        """要紧度阈值调高（>变化率）→ material=False，异动不构成结论。"""
+        mid = anomaly_env["metric"]["id"]
+        client.put(f"/api/metrics/{mid}/anomaly-config", json={"materiality_pct": 10000})
+        body = client.post("/api/query/anomaly", json={
+            "metric": mid, "date": SPIKE_SUNDAY.isoformat(),
+        }).json()["data"]
+        assert body["abnormal"] is True
+        assert body["material"] is False
+        assert "要紧度" in body["reason"]
+        client.put(f"/api/metrics/{mid}/anomaly-config", json={"materiality_pct": 5.0})
+
+
+@pytest.fixture(scope="module")
+def attr_env(client):
+    """归因夹具：两维度组（paid/churn），本期 paid 涨、churn 跌——手算可对账。
+
+    基期（2026-01-10~01-11，紧邻上一等长周期）：paid=300, churn=100 → 总 400
+    本期（2026-01-12~01-13）：paid=450, churn=40  → 总 490，总变化 +90
+    贡献：paid=+150（166.7%），churn=-60（-66.7%），合计 +90 守恒。
+    """
+    sfx = _suffix()
+    ds_name = f"attr_ds_{sfx}"
+    rows = ["d,channel,amount"]
+    for d, ch, v in [
+        ("2026-01-10", "paid", 150), ("2026-01-10", "churn", 100),
+        ("2026-01-11", "paid", 150), ("2026-01-11", "churn", 0),
+        ("2026-01-12", "paid", 250), ("2026-01-12", "churn", 20),
+        ("2026-01-13", "paid", 200), ("2026-01-13", "churn", 20),
+    ]:
+        rows.append(f"{d},{ch},{v}")
+    resp = client.post(
+        "/api/datasets/upload",
+        files={"file": (f"{ds_name}.csv", io.BytesIO(("\n".join(rows) + "\n").encode("utf-8")), "text/csv")},
+        data={"name": ds_name},
+    )
+    assert resp.status_code == 200, resp.text
+    resp = client.post("/api/metrics", json={
+        "code": f"attr_sum_{sfx}",
+        "name": "归因求和",
+        "calc_rule": {
+            "base_aggregation": "sum",
+            "source": {"table": ds_name, "column": "amount"},
+        },
+    })
+    assert resp.status_code == 200, resp.text
+    metric = resp.json()["data"]
+    yield {"metric": metric, "sfx": sfx}
+    client.delete(f"/api/metrics/{metric['id']}")
+    ds_id = next(
+        d["id"] for d in client.get("/api/datasets").json()["data"] if d["name"] == ds_name
+    )
+    client.delete(f"/api/datasets/{ds_id}")
+
+
+class TestAttribution:
+    def test_contribution_conservation(self, client, attr_env):
+        """核心验收：各维贡献合计 = 总变化（手算 +90：paid+150/churn-60）。"""
+        resp = client.post("/api/query/attribute", json={
+            "metric": attr_env["metric"]["id"],
+            "start": "2026-01-12", "end": "2026-01-13",
+            "dimension": "channel", "compare": "mom",
+        })
+        assert resp.status_code == 200, resp.text
+        body = resp.json()["data"]
+        assert body["delta"] == 90
+        assert body["current_total"] == 490 and body["prev_total"] == 400
+        tops = {c["value"]: c for c in body["top_dimensions"]}
+        assert tops["paid"]["contribution"] == 150
+        assert tops["churn"]["contribution"] == -60
+        assert tops["paid"]["contribution_pct"] == pytest.approx(166.6667)
+        assert body["explained_delta"] == pytest.approx(body["delta"])
+        assert body["conservation_deviation_pct"] == pytest.approx(0, abs=0.5)
+
+    def test_top_n_and_others_bucket(self, client, attr_env):
+        """top_n=1 时其余组合并为「其他」桶，Top1+其他 = 总变化。"""
+        body = client.post("/api/query/attribute", json={
+            "metric": attr_env["metric"]["id"],
+            "start": "2026-01-12", "end": "2026-01-13",
+            "dimension": "channel", "compare": "mom", "top_n": 1,
+        }).json()["data"]
+        assert len(body["top_dimensions"]) == 2  # Top1 + 其他
+        assert body["top_dimensions"][0]["value"] == "paid"
+        total = sum(c["contribution"] for c in body["top_dimensions"])
+        assert total == pytest.approx(body["delta"])
+
+    def test_ratio_metric_rejected(self, client, attr_env):
+        """比率类指标归因明确拒绝（率差不守恒）。"""
+        sfx = _suffix()
+        resp = client.post("/api/metrics", json={
+            "code": f"attr_ratio_{sfx}",
+            "name": "归因比率",
+            "calc_rule": {
+                "expression": "A / B",
+                "operands": {
+                    "A": {"table": f"attr_ds_{attr_env['sfx']}", "column": "amount",
+                           "aggregation": "sum"},
+                    "B": {"table": f"attr_ds_{attr_env['sfx']}", "column": "amount",
+                           "aggregation": "count_distinct"},
+                },
+            },
+        })
+        assert resp.status_code == 200, resp.text
+        ratio = resp.json()["data"]
+        resp = client.post("/api/query/attribute", json={
+            "metric": ratio["id"],
+            "start": "2026-01-12", "end": "2026-01-13",
+            "dimension": "channel",
+        })
+        assert resp.status_code == 400
+        assert "比率类" in resp.json()["message"]
+        client.delete(f"/api/metrics/{ratio['id']}")
+
+    def test_compare_none_rejected(self, client, attr_env):
+        resp = client.post("/api/query/attribute", json={
+            "metric": attr_env["metric"]["id"],
+            "start": "2026-01-12", "end": "2026-01-13",
+            "dimension": "channel", "compare": "none",
+        })
+        assert resp.status_code == 400
+
+    def test_no_data_400(self, client, attr_env):
+        resp = client.post("/api/query/attribute", json={
+            "metric": attr_env["metric"]["id"],
+            "start": "2030-01-01", "end": "2030-01-02",
+            "dimension": "channel",
+        })
+        assert resp.status_code == 400

@@ -288,5 +288,6 @@ class AnomalyConfig(Base):
     project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     z_threshold: Mapped[float] = mapped_column(default=3.0)
     min_samples: Mapped[int] = mapped_column(Integer, default=8)
+    materiality_pct: Mapped[float] = mapped_column(default=5.0)  # B10-2 要紧度：|变化率| 低于此%的异动不构成结论
     enabled: Mapped[int] = mapped_column(Integer, default=1)  # 1=参与批量检测
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
