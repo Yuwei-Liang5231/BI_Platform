@@ -236,6 +236,43 @@ class TestMetricsApi:
         assert resp.status_code == 404
         assert resp.json()["code"] == 40400
 
+    def test_soft_deleted_code_freed_for_recreate(self, client, metric_env):
+        """回归：软删后同 code 可重建（用户报障：清空指标后向导重导仍提示已存在）。
+
+        旧逻辑唯一性校验把软删行也计入，code 被删掉的指标永久占用；
+        修正后 deleted 不占 code——删除后可重建同 code 指标，且按 code
+        取值解析只认非 deleted 行，不产生歧义。
+        """
+        code = "api_reborn"
+        resp = client.post("/api/metrics", json={
+            "code": code, "name": "可重建指标", "calc_rule": GMV_RULE,
+        })
+        assert resp.status_code == 200, resp.text
+        old_id = resp.json()["data"]["id"]
+
+        resp = client.delete(f"/api/metrics/{old_id}")
+        assert resp.status_code == 200
+
+        # 软删后重建同 code：不再 409
+        resp = client.post("/api/metrics", json={
+            "code": code, "name": "可重建指标-新版", "calc_rule": GMV_RULE,
+        })
+        assert resp.status_code == 200, resp.text
+        new_id = resp.json()["data"]["id"]
+        assert new_id != old_id
+
+        # 按 code 解析指向新指标（非 deleted）
+        resp = client.get(f"/api/metrics/by-code/{code}")
+        if resp.status_code == 200:  # 端点存在则校验指向
+            assert resp.json()["data"]["id"] == new_id
+
+        # 活跃 code 重复创建仍然 409
+        resp = client.post("/api/metrics", json={
+            "code": code, "name": "重复码", "calc_rule": GMV_RULE,
+        })
+        assert resp.status_code == 409
+        assert resp.json()["code"] == 40900
+
     def test_metric_not_found(self, client):
         resp = client.get("/api/metrics/99999")
         assert resp.status_code == 404

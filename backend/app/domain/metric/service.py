@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.response import BusinessError
@@ -181,8 +182,17 @@ def create_metric(
         raise BusinessError("name 必须是非空字符串", 40000)
     proj_id = resolve_project_id(db, project_id)
     repo = Repository(Metric, db)
-    # B9.3：code 唯一性收敛到项目内（不同项目可同名 code；软删 code 同项目仍占用）
-    if repo.count(code=code, project_id=proj_id):
+    # B9.3：code 唯一性收敛到项目内（不同项目可同名 code）；
+    # 软删（status=deleted）不占用 code——删除后可重建同 code 指标
+    # （按 code 取值解析只认非 deleted 行，不会产生歧义）。
+    dup_count = db.scalar(
+        select(func.count()).select_from(Metric).where(
+            Metric.code == code,
+            Metric.project_id == proj_id,
+            Metric.status != "deleted",
+        )
+    )
+    if dup_count:
         raise BusinessError(f"指标 code {code!r} 在当前项目中已存在", 40900)
 
     compiled = compile_for_db(db, calc_rule)  # 保存即拒绝：编译不过不允许创建
