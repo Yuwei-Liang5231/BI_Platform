@@ -152,6 +152,38 @@ def delete_metric(
     )
 
 
+class BatchDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[int] = Field(min_length=1)
+    reason: str = ""
+    operator_id: str | None = None
+
+
+@router.post("/batch-delete")
+def batch_delete_metrics(db: DbDep, body: BatchDeleteRequest, user: WriterUser):
+    """批量软删除：逐条执行、单条失败不影响其余（返回失败清单）。
+
+    用于指标管理页多选/全选删除（如清理建模向导批量入库的噪音候选）。"""
+    deleted: list[int] = []
+    failed: list[dict] = []
+    for mid in dict.fromkeys(body.ids):  # 去重保序
+        try:
+            service.delete_metric(
+                db, mid, reason=body.reason or "批量删除",
+                operator_id=body.operator_id or user.username,
+            )
+            db.commit()  # 逐条提交：失败 rollback 只丢当前条，不连带撤销已成功的
+            deleted.append(mid)
+        except BusinessError as exc:
+            db.rollback()
+            failed.append({"id": mid, "error": str(exc)})
+    return ok_response(
+        {"deleted": deleted, "failed": failed},
+        message=f"已删除 {len(deleted)} 个指标" + (f"，{len(failed)} 个失败" if failed else ""),
+    )
+
+
 @router.get("/{metric_id}/sql")
 def get_metric_sql(db: DbDep, metric_id: int, user: CurrentUser):
     """当前版本的编译存档 SQL（详情页折叠区展示，与实际执行一致）。"""

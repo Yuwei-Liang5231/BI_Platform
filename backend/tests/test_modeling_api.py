@@ -340,3 +340,66 @@ class TestLlmRelationReview:
                 assert "llm_review" not in r
         finally:
             _cleanup(client, env)
+
+
+class TestDatasetParticipationNotes:
+    """B13-2 补充：每张表附「是否参与关系建议 + 原因」，向导明示缺席原因。"""
+
+    def test_notes_carry_reasons(self, client):
+        env = _mk_env(client)
+        try:
+            data = _suggestions(client, env)
+            notes = {n["name"]: n for n in data["datasets"]}
+            assert set(notes) == {env["orders"]["name"], env["products"]["name"], env["logs"]["name"]}
+            # logs：device 列与上两者零重叠、命名无关 → 明示未参与原因
+            logs_note = notes[env["logs"]["name"]]
+            assert logs_note["relation_note"], "logs 未参与但无说明"
+            # orders/products 参与建议 → 无缺席说明
+            assert notes[env["orders"]["name"]]["relation_note"] == ""
+            assert notes[env["products"]["name"]]["relation_note"] == ""
+            # 列数统计可用（前端展示）
+            assert notes[env["orders"]["name"]]["date_columns"] == 1
+        finally:
+            _cleanup(client, env)
+
+
+class TestMetricBatchDelete:
+    """指标管理多选/全选删除：逐条成功提交、失败不拖垮其余。"""
+
+    def _mk_metrics(self, client, pid, table, n=3):
+        ids = []
+        for i in range(n):
+            resp = client.post(
+                "/api/metrics",
+                json={
+                    "code": f"b13bd_{uuid.uuid4().hex[:8]}_{i}",
+                    "name": f"批量删除样例{i}",
+                    "calc_rule": {
+                        "base_aggregation": "sum",
+                        "source": {"table": table, "column": "amount"},
+                        "time_field": "d",
+                    },
+                    "project_id": pid,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            ids.append(resp.json()["data"]["id"])
+        return ids
+
+    def test_batch_delete_mixed_success_and_failure(self, client):
+        env = _mk_env(client)
+        try:
+            pid = env["pid"]
+            ids = self._mk_metrics(client, pid, env["orders"]["name"])
+            # 1 个不存在 id 混入 → 失败单列，不拖垮其余
+            resp = client.post("/api/metrics/batch-delete", json={"ids": ids + [99999999]})
+            assert resp.status_code == 200, resp.text
+            body = resp.json()["data"]
+            assert sorted(body["deleted"]) == sorted(ids)
+            assert len(body["failed"]) == 1 and body["failed"][0]["id"] == 99999999
+            # 删除生效：列表 active 不再可见
+            listing = client.get(f"/api/metrics?project_id={pid}").json()["data"]
+            items = listing if isinstance(listing, list) else listing.get("items", [])
+            assert all(m["id"] not in ids for m in items)
+        finally:
+            _cleanup(client, env)

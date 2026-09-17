@@ -116,15 +116,31 @@ def _sample_distinct(
     return samples, sampled_keys
 
 
-def suggest_relations(db: Session, project_id: int) -> list[dict]:
+def suggest_relations(db: Session, project_id: int) -> tuple[list[dict], list[dict]]:
     """表关系建议：值域重叠 + 命名相似，双向去重、已登记关系标注 existing。
 
     B13-2：护栏外列截断采样参与（sampled 标注置信降级）；同数据集对间孤立
     建议降权警示（抑制枚举巧合误报）；配置 LLM 时附语义复审结论。
+    返回 (建议列表, 每表参与说明)——说明用于向导明示"为什么某张表没有建议"。
     """
     datasets = _datasets_of(db, project_id)
+
+    def _base_note(r) -> dict:
+        cols = r.columns_map or {}
+        return {
+            "name": r.name,
+            "text_columns": sum(1 for t in cols.values() if t in ("string", "mixed")),
+            "date_columns": sum(1 for t in cols.values() if t in ("date", "datetime")),
+            "relation_note": "",
+        }
+
     if len(datasets) < 2:
-        return []
+        notes = []
+        for r in datasets:
+            note = _base_note(r)
+            note["relation_note"] = "项目内数据集不足 2 张，无法建议跨表关系"
+            notes.append(note)
+        return [], notes
     views = {r.name: view_target(r.parquet_path) for r in datasets}
     text_cols = {
         r.name: [c for c, t in r.columns_map.items() if t in ("string", "mixed")]
@@ -200,7 +216,21 @@ def suggest_relations(db: Session, project_id: int) -> list[dict]:
 
     out = sorted(raw.values(), key=lambda x: -x["score"])[:MAX_SUGGEST_RELATIONS]
     _llm_relation_review(db, out)
-    return out
+
+    # 每表参与说明：让"某张表为什么没有建议"在向导里可见可解释
+    participating = {d for it in out for d in (it["from_dataset"], it["to_dataset"])}
+    notes: list[dict] = []
+    for r in datasets:
+        note = _base_note(r)
+        tcols = text_cols.get(r.name, [])
+        if not tcols:
+            note["relation_note"] = "无文本列（纯数值/日期表），没有可关联的键列"
+        elif not any(k[0] == r.name for k in samples):
+            note["relation_note"] = "文本列均无有效非空值，无法参与匹配"
+        elif r.name not in participating:
+            note["relation_note"] = "文本列与其他表无 ≥50% 值域重叠且无同名列，未产生建议"
+        notes.append(note)
+    return out, notes
 
 
 def _llm_relation_review(db: Session, suggestions: list[dict]) -> None:
@@ -361,9 +391,11 @@ def suggest_metrics(db: Session, project_id: int) -> list[dict]:
 
 def all_suggestions(db: Session, project_id: int | None = None) -> dict:
     pid = resolve_project_id(db, project_id)
+    relations, dataset_notes = suggest_relations(db, pid)
     return {
         "project_id": pid,
-        "relations": suggest_relations(db, pid),
+        "relations": relations,
+        "datasets": dataset_notes,
         "metrics": suggest_metrics(db, pid),
         "disclaimer": "以上为自动建议，未经人工确认不会写入任何配置（B13 铁律）",
     }

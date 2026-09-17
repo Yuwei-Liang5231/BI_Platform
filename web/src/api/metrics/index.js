@@ -12,6 +12,9 @@ export const updateMetric = (metricId, data) =>
 
 export const deleteMetric = (metricId) => request.delete(`/metrics/${metricId}`);
 
+/** 批量软删除（指标管理多选/全选）。body: { ids: number[], reason? } */
+export const batchDeleteMetrics = (data) => request.post("/metrics/batch-delete", data);
+
 export const getMetricSql = (metricId) => request.get(`/metrics/${metricId}/sql`);
 
 export const getMetricChanges = (metricId) =>

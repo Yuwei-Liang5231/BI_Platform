@@ -8,6 +8,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
+  batchDeleteMetrics,
   createMetric as createApi,
   deleteMetric as deleteApi,
   updateMetric as updateApi,
@@ -654,6 +655,28 @@ async function handleDelete(row) {
   await fetchData();
 }
 
+/* ---------- 批量删除（多选/全选） ---------- */
+const selectedMetrics = ref([]);
+
+async function handleBatchDelete() {
+  const rows = selectedMetrics.value;
+  if (!rows.length) return;
+  await ElMessageBox.confirm(
+    `确定删除选中的 ${rows.length} 个指标？删除后目录与搜索不可见（软删除，留痕保留）。`,
+    "批量删除确认",
+    { type: "warning", confirmButtonText: "全部删除", cancelButtonText: "取消" },
+  );
+  const res = await batchDeleteMetrics({ ids: rows.map((r) => r.id) });
+  const { deleted = [], failed = [] } = res ?? {};
+  if (failed.length) {
+    ElMessage.warning(`已删除 ${deleted.length} 个，${failed.length} 个失败：${failed.map((f) => f.id).join("、")}`);
+  } else {
+    ElMessage.success(`已删除 ${deleted.length} 个指标`);
+  }
+  selectedMetrics.value = [];
+  await fetchData();
+}
+
 /* ---------- 受限可见性 ---------- */
 const restrictionVisible = ref(false);
 const restrictionTarget = ref(null);
@@ -772,8 +795,22 @@ onMounted(async () => {
             <el-option label="已停用" value="disabled" />
           </el-select>
           <el-button type="primary" @click="fetchData">搜索</el-button>
+          <el-button
+            type="danger"
+            plain
+            :disabled="!selectedMetrics.length"
+            @click="handleBatchDelete"
+          >
+            批量删除{{ selectedMetrics.length ? `（${selectedMetrics.length}）` : "" }}
+          </el-button>
         </div>
-        <el-table v-loading="metricStore.loading" :data="metricStore.list">
+        <el-table
+          v-loading="metricStore.loading"
+          :data="metricStore.list"
+          row-key="id"
+          @selection-change="selectedMetrics = $event"
+        >
+          <el-table-column type="selection" width="42" reserve-selection />
           <el-table-column prop="code" label="编码" min-width="160" />
           <el-table-column prop="name" label="名称" min-width="160" />
           <el-table-column prop="topic" label="主题" width="120" />

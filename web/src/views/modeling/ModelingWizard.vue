@@ -35,6 +35,7 @@ const RELATION_TYPES = [
 
 const relationRows = ref([]);
 const metricRows = ref([]);
+const skippedDatasets = ref([]); // 未参与关系建议的表及原因（明示"为什么没有建议"）
 const relTableRef = ref(null);
 const metricTableRef = ref(null);
 
@@ -99,6 +100,7 @@ async function generate() {
         r.score >= 0.72 &&
         r.llm_review?.verdict !== "unlikely",
     }));
+    skippedDatasets.value = (sug.datasets ?? []).filter((d) => d.relation_note);
     metricRows.value = (sug.metrics ?? []).map((m) => ({
       ...m,
       code: genCode(m),
@@ -221,13 +223,21 @@ onMounted(async () => {
         <span class="pwc-badge pwc-badge--grey">已登记关系标注「已存在」，默认不勾选</span>
       </div>
       <el-alert
-        v-if="!relationRows.length"
+        v-if="!relationRows.length && !skippedDatasets.length"
         type="info"
         :closable="false"
         title="未发现可信关系候选：需至少两个数据集且存在值域重叠/命名相似的文本列"
       />
+      <el-alert
+        v-for="d in skippedDatasets"
+        :key="d.name"
+        type="info"
+        :closable="false"
+        style="margin-bottom: 6px"
+        :title="`「${d.name}」未参与关系建议：${d.relation_note}（文本列 ${d.text_columns} 个 / 日期列 ${d.date_columns} 个）`"
+      />
       <el-table
-        v-else
+        v-if="relationRows.length"
         ref="relTableRef"
         :data="relationRows"
         row-key="key"
