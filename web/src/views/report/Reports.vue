@@ -40,9 +40,24 @@
     <!-- 报告预览 -->
     <div v-if="report" ref="reportRef" class="reports__doc">
       <header class="reports__doc-head">
-        <h2 class="reports__doc-title">{{ report.title }}</h2>
+        <h2 class="reports__doc-title">
+          {{ report.title }}
+          <el-tag
+            :type="report.narrative_source === 'llm' ? 'success' : 'info'"
+            size="small"
+            class="reports__src-tag"
+          >
+            {{ report.narrative_source === "llm" ? "AI 叙述（数字平台回填）" : "规则叙述" }}
+          </el-tag>
+          <el-tooltip
+            v-if="report.llm_degraded?.length"
+            :content="`以下章节 LLM 输出未通过数字审计，已降级为规则句：${report.llm_degraded.join('、')}`"
+          >
+            <el-tag type="warning" size="small">部分降级</el-tag>
+          </el-tooltip>
+        </h2>
         <p class="reports__doc-sub">
-          生成时间 {{ generatedAt }} · 本报告所有数字均由指标计算出口产生，可逐项对账
+          生成时间 {{ generatedAt }} · 所有数字均由指标计算出口产生，LLM 只组织文字、引用占位符回填，可逐项对账
         </p>
       </header>
 
@@ -328,6 +343,13 @@ onMounted(async () => {
 .reports__doc-title {
   font-size: var(--pwc-font-title-m);
   margin-bottom: var(--pwc-space-1);
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+}
+
+.reports__src-tag {
+  font-weight: 400;
 }
 
 .reports__doc-sub {

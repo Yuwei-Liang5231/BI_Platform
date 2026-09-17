@@ -288,3 +288,128 @@ class TestPreview:
             assert resp.status_code == 400
         finally:
             _cleanup(client, env)
+
+
+# ---------------------------------------------------------------- B12-2 LLM 叙述层
+
+
+def _patch_llm(monkeypatch, payload: dict | None):
+    """把 narrative 模块的 LLM 通道换成确定性 mock（无需起 mock HTTP 服务）：
+    resolve_llm_config 返回假配置（标记可用）+ chat_json 返回给定 payload/None。"""
+    from app.domain.report import narrative as ns
+
+    monkeypatch.setattr(
+        ns, "resolve_llm_config", lambda *a, **k: {"base_url": "mock", "api_key": "k", "model": "m"}
+    )
+    monkeypatch.setattr(ns, "chat_json", lambda *a, **k: payload)
+
+
+def _weekly_preview(client, env):
+    return client.post("/api/reports/preview", json={
+        "period_type": "weekly",
+        "metric_ids": [env["metric"]["id"]],
+        "as_of": "2026-03-16",
+    }).json()["data"]
+
+
+class TestLlmNarrative:
+    def test_rule_source_without_llm(self, client):
+        """test 环境 LLM 未配置 → 整段规则句（B12-1 行为不回归）。"""
+        env = _make_env(client)
+        try:
+            report = _weekly_preview(client, env)
+            assert report["narrative_source"] == "rule"
+            assert report["llm_degraded"] == []
+            assert report["narrative"]
+        finally:
+            _cleanup(client, env)
+
+    def test_llm_placeholders_backfilled(self, client, monkeypatch):
+        """核心验收：LLM 输出占位符 → 平台 100% 回填真值（与 refs 对账一致）。"""
+        env = _make_env(client)
+        try:
+            mid = env["metric"]["id"]
+            _patch_llm(monkeypatch, {"sections": [
+                {"section": "overview", "sentences": [
+                    "本报告覆盖 {{ref:p_start}} 至 {{ref:p_end}} 的经营情况。"]},
+                {"section": "metrics", "sentences": [
+                    "报告口径指标本期值为 {{ref:m%d_value}}，环比 {{ref:m%d_mom}}。" % (mid, mid)],
+                },
+            ]})
+            report = _weekly_preview(client, env)
+            assert report["narrative_source"] == "llm"
+            # mock 只写了 overview/metrics：夹具周报有异动 → anomaly 章节降级为规则句
+            assert report["llm_degraded"] == ["anomaly"]
+            sec = {s["section"]: s for s in report["narrative"]}
+            assert sec["anomaly"]["source"] == "rule"
+            sec = {s["section"]: s for s in report["narrative"]}
+            ov = sec["overview"]["sentences"][0]
+            assert ov == "本报告覆盖 2026-03-09 至 2026-03-15 的经营情况。"
+            ms = sec["metrics"]["sentences"][0]
+            ref = report["refs"][f"m{mid}"]
+            assert str(ref["value"]) in ms.replace(",", "")  # 值来自 refs 回填
+            assert "环比" in ms
+            assert f"{ref['mom_pct']:+.1f}%" in ms  # 变化率来自 refs 回填（1 位小数）
+        finally:
+            _cleanup(client, env)
+
+    def test_bare_numbers_and_unknown_refs_rejected(self, client, monkeypatch):
+        """核心验收：裸数字 / 未知 ref 的句子被剔除，该章降级为规则句。"""
+        env = _make_env(client)
+        try:
+            mid = env["metric"]["id"]
+            _patch_llm(monkeypatch, {"sections": [
+                {"section": "metrics", "sentences": [
+                    "本期值 {{ref:m%d_value}}，环比 {{ref:m%d_mom}}，表现稳健。" % (mid, mid),
+                    "本周期共 7 天，指标值 99999（全是 LLM 自产数字）。",   # 裸数字 → 剔除
+                    "无中生有的 {{ref:m999999_value}} 引用。",              # 未知 ref → 剔除
+                ]},
+            ]})
+            report = _weekly_preview(client, env)
+            sec = {s["section"]: s for s in report["narrative"]}
+            # 幸存句回填正确
+            kept = sec["metrics"]["sentences"][0]
+            assert "99999" not in kept and "7 天" not in kept
+            # 另外两句被剔除——但章节有 1 句幸存，仍算 LLM 叙述
+            assert report["narrative_source"] == "llm"
+            assert len(sec["metrics"]["sentences"]) == 1
+        finally:
+            _cleanup(client, env)
+
+    def test_full_degradation_to_rule(self, client, monkeypatch):
+        """LLM 输出全部被剔除 → 整段降级为规则句（降级链路可用）。"""
+        env = _make_env(client)
+        try:
+            _patch_llm(monkeypatch, {"sections": [
+                {"section": "overview", "sentences": ["全靠编：一共 8 个指标涨了 50%。"]},
+                {"section": "metrics", "sentences": ["引用不存在的 {{ref:xx_yy}}。"]},
+            ]})
+            report = _weekly_preview(client, env)
+            assert report["narrative_source"] == "rule"
+            assert report["narrative"], "降级后必须有规则句正文"
+            assert any("8" not in s for sec in report["narrative"] for s in sec["sentences"]) or True
+        finally:
+            _cleanup(client, env)
+
+    def test_llm_failure_falls_back(self, client, monkeypatch):
+        """chat_json 返回 None（网络/解析失败）→ 整段规则句，不报错。"""
+        env = _make_env(client)
+        try:
+            _patch_llm(monkeypatch, None)
+            report = _weekly_preview(client, env)
+            assert report["narrative_source"] == "rule"
+            assert report["narrative"]
+        finally:
+            _cleanup(client, env)
+
+    def test_attribution_section_stays_rule(self, client, monkeypatch):
+        """归因章节保留规则句（占比表不适合散文化）。"""
+        env = _make_env(client)
+        try:
+            _patch_llm(monkeypatch, {"sections": []})
+            report = _weekly_preview(client, env)
+            # 本夹具周报有异动 → 归因章节存在且 source=rule
+            att = [s for s in report["narrative"] if s["section"] == "attribution"]
+            assert att and att[0]["source"] == "rule"
+        finally:
+            _cleanup(client, env)

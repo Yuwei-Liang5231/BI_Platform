@@ -418,7 +418,12 @@ def generate_report(
         db, user, metrics=metrics, start=start, end=end, sections=sections
     )
     period_info = {"type": period_type, "start": start.isoformat(), "end": end.isoformat(), "label": label}
-    narrative = build_narrative(result, sections, period_info)
+    # B12-2：规则句先算好（既是无 LLM 时的正文，也是 LLM 章节级降级的兜底）
+    rule = build_narrative(result, sections, period_info)
+    result["rule_narrative"] = rule
+    from app.domain.report.narrative import try_narrative
+
+    narr = try_narrative(db, result, sections, period_info)
     return {
         "title": f"{PERIOD_LABELS[period_type]} · {period_info['label']}",
         "period": period_info,
@@ -426,6 +431,8 @@ def generate_report(
         "conclusions": result["conclusions"],
         "anomalies": result["anomalies"],
         "attributions": result["attributions"],
-        "narrative": narrative,
+        "narrative": narr["narrative"],
+        "narrative_source": narr["narrative_source"],
+        "llm_degraded": narr["llm_degraded"],
         "refs": result["refs"],  # B12-2 占位符回填对账基础
     }
