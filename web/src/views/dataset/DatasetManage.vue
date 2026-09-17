@@ -407,9 +407,15 @@ onMounted(fetchData);
       :close-on-press-escape="!uploading"
       :show-close="!uploading"
     >
-      <el-form label-width="90px">
+      <!-- submit.prevent：表单仅一个文本输入框时回车会触发原生隐式提交导致页面重载（"回车即退出"） -->
+      <el-form label-width="90px" @submit.prevent>
         <el-form-item label="数据集名">
-          <el-input v-model="uploadName" placeholder="如 orders" :disabled="uploading" />
+          <el-input
+            v-model="uploadName"
+            placeholder="如 orders"
+            :disabled="uploading"
+            @keyup.enter="handleUpload"
+          />
         </el-form-item>
         <el-form-item label="文件">
           <el-upload
@@ -556,8 +562,9 @@ onMounted(fetchData);
       :close-on-click-modal="!importing"
       :close-on-press-escape="!importing"
       :show-close="!importing"
+      @keyup.enter="handleImport"
     >
-      <el-form label-width="90px">
+      <el-form label-width="90px" @submit.prevent>
         <el-form-item label="目标">
           <span>{{ selected?.name }}（当前 v{{ detail?.dataset_ver }} · {{ detail?.row_count }} 行）</span>
         </el-form-item>

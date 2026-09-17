@@ -489,9 +489,21 @@ def import_data_file(
             data={"missing_columns": missing, "extra_columns": extra},
         )
 
-    # 按现有 schema 顺序重排列；类型沿用现有 schema（不重新推断）
-    col_types = [existing_types[n] for n in existing_names]
+    # 按现有 schema 顺序重排列
     reorder = [header.index(n) for n in existing_names]
+    if mode == "replace":
+        # 全量覆盖：数据全新，类型按本次文件重新推断并更新 schema（append 必须
+        # 沿用现有类型保证分片可拼接；replace 若沿用旧 schema，会因存量坏类型
+        # 卡死修正性重传——如 xlsx 日期序列号修复后 MONTH_END int → date）
+        file_stats = {s.name: s for s in stats}
+        col_types = [file_stats[n].final_type() for n in existing_names]
+        new_schema = json.dumps(
+            [file_stats[n].to_dict() for n in existing_names], ensure_ascii=False
+        )
+    else:
+        # append：类型沿用现有 schema（不重新推断），保证分片 schema 一致
+        col_types = [existing_types[n] for n in existing_names]
+        new_schema = None
 
     def reordered(rows: Iterator[list[str]]) -> Iterator[list[str]]:
         for row in rows:
@@ -549,6 +561,8 @@ def import_data_file(
         rows_added = row_count
     dataset.file_encoding = encoding
     dataset.dataset_ver += 1
+    if new_schema is not None:
+        dataset.schema_json = new_schema
 
     table = read_dataset_table(dataset)
     refresh_coverage_from_table(session, dataset, table)

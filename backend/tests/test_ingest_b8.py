@@ -226,6 +226,44 @@ class TestIncrementalImport:
         # 空数据行先于 mode 校验被拦截也可，但 mode 非法必须在任何落盘前报 400
         assert resp.status_code == 400
 
+    def test_replace_reinfers_column_types(self, client):
+        """全量覆盖允许列类型按新文件重推（存量坏类型卡死修正性重传场景：
+        xlsx 日期序列号修复后 MONTH_END int → date）；append 仍沿用现有类型。"""
+        resp = _upload(
+            client,
+            _csv_bytes(["k", "MONTH_END"], [["a", "1"], ["b", "2"]]),
+            "ri1.csv",
+            name="ing_ri_types",
+        )
+        assert resp.status_code == 200, resp.text
+        ds = resp.json()["data"]
+        try:
+            assert {c["name"]: c["type"] for c in ds["columns"]}["MONTH_END"] == "int"
+            # 旧逻辑：按 int 强转日期串 → 400 卡死；replace 现在重推为 date
+            resp2 = _append(
+                client,
+                ds["id"],
+                _csv_bytes(["k", "MONTH_END"], [["a", "2026-09-30"], ["b", "2026-10-31"]]),
+                "ri2.csv",
+                mode="replace",
+            )
+            assert resp2.status_code == 200, resp2.text
+            cols = {c["name"]: c for c in resp2.json()["data"]["columns"]}
+            assert cols["MONTH_END"]["type"] == "date"
+            prev = client.get(f"/api/datasets/{ds['id']}/preview").json()["data"]
+            assert prev["rows"][0]["MONTH_END"] == "2026-09-30"
+            # append 模式沿用 replace 后的 schema：日期值合法，int 值被拒
+            resp3 = _append(
+                client, ds["id"], _csv_bytes(["k", "MONTH_END"], [["c", "2026-11-30"]]), "ri3.csv"
+            )
+            assert resp3.status_code == 200, resp3.text
+            resp4 = _append(
+                client, ds["id"], _csv_bytes(["k", "MONTH_END"], [["d", "7"]]), "ri4.csv"
+            )
+            assert resp4.status_code == 400
+        finally:
+            client.delete(f"/api/datasets/{ds['id']}")
+
     def test_viewer_forbidden(self, client, ds_id):
         from tests.conftest import create_test_user
 
