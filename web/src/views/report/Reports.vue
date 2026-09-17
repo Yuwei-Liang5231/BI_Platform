@@ -10,6 +10,14 @@
         <el-button type="primary" :disabled="!selectedTemplateId" :loading="previewing" @click="doPreview">
           生成报告
         </el-button>
+        <el-button
+          type="success"
+          :disabled="!selectedTemplateId"
+          :loading="archiving"
+          @click="doGenerate"
+        >
+          生成并存档
+        </el-button>
       </div>
     </div>
 
@@ -42,6 +50,7 @@
       <header class="reports__doc-head">
         <h2 class="reports__doc-title">
           {{ report.title }}
+          <el-tag v-if="viewingInstanceId" size="small" type="warning">历史快照</el-tag>
           <el-tag
             :type="report.narrative_source === 'llm' ? 'success' : 'info'"
             size="small"
@@ -109,6 +118,36 @@
       </footer>
     </div>
 
+    <!-- 历史存档（B12-3） -->
+    <section v-if="selectedTemplateId" class="reports__history">
+      <h3 class="reports__sec-title">历史存档（最近 100 份，快照不受口径变更影响）</h3>
+      <el-table :data="instances" size="small" max-height="280" @row-click="(row) => viewInstance(row)">
+        <el-table-column label="周期" min-width="180">
+          <template #default="{ row }">{{ row.period_start }} ~ {{ row.period_end }}</template>
+        </el-table-column>
+        <el-table-column label="版本" width="72">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">v{{ row.version }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="叙述" width="110">
+          <template #default="{ row }">
+            {{ row.narrative_source === "llm" ? "AI 叙述" : "规则叙述" }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_by" label="生成人" width="100" />
+        <el-table-column label="生成时间" min-width="160">
+          <template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="150">
+          <template #default="{ row }">
+            <el-button text size="small" @click.stop="viewInstance(row)">查看</el-button>
+            <el-button text size="small" @click.stop="doRegenerate(row)">重新生成</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
     <el-empty
       v-else
       description="选择左侧模板并点击「生成报告」；每个数字与指标计算接口对账一致"
@@ -150,14 +189,18 @@
 
 <!-- pwc-regime: product-ui -->
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
   createReportTemplate,
   deleteReportTemplate,
+  generateReport,
+  getReportInstance,
+  listReportInstances,
   listReportTemplates,
   previewReport,
+  regenerateReport,
   updateReportTemplate,
 } from "@/api/reports";
 import { useAuthStore } from "@/stores/auth";
@@ -210,10 +253,57 @@ async function doPreview() {
   try {
     report.value = await previewReport({ template_id: selectedTemplateId.value });
     generatedAt.value = new Date().toLocaleString();
+    viewingInstanceId.value = null;
   } finally {
     previewing.value = false;
   }
 }
+
+/* ---------- 存档与历史（B12-3） ---------- */
+const archiving = ref(false);
+const instances = ref([]);
+const viewingInstanceId = ref(null);
+
+async function fetchInstances() {
+  if (!selectedTemplateId.value) {
+    instances.value = [];
+    return;
+  }
+  instances.value = await listReportInstances({ template_id: selectedTemplateId.value });
+}
+
+async function doGenerate() {
+  if (!selectedTemplateId.value) return;
+  archiving.value = true;
+  try {
+    const res = await generateReport({ template_id: selectedTemplateId.value });
+    report.value = res.content;
+    generatedAt.value = new Date().toLocaleString();
+    viewingInstanceId.value = res.id;
+    ElMessage.success(`已存档为版本 v${res.version}`);
+    await fetchInstances();
+  } finally {
+    archiving.value = false;
+  }
+}
+
+async function viewInstance(row) {
+  const detail = await getReportInstance(row.id);
+  report.value = detail.content;
+  generatedAt.value = new Date(detail.created_at).toLocaleString();
+  viewingInstanceId.value = detail.id;
+}
+
+async function doRegenerate(row) {
+  const res = await regenerateReport(row.id);
+  report.value = res.content;
+  generatedAt.value = new Date().toLocaleString();
+  viewingInstanceId.value = res.id;
+  ElMessage.success(`已重新生成（版本 v${res.version}），历史快照保留`);
+  await fetchInstances();
+}
+
+watch(selectedTemplateId, fetchInstances);
 
 function openTemplateDialog(tpl = null) {
   editingId.value = tpl?.id ?? null;
@@ -331,6 +421,10 @@ onMounted(async () => {
   margin-top: var(--pwc-space-2);
   display: flex;
   gap: var(--pwc-space-1);
+}
+
+.reports__history {
+  margin-top: var(--pwc-space-5);
 }
 
 .reports__doc {

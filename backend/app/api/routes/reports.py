@@ -5,6 +5,8 @@ B12-2 的 LLM 叙述层只允许引用 refs，禁止自产数字。
 """
 
 from typing import Any
+import json
+from datetime import date
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
@@ -97,4 +99,73 @@ def preview_report(db: DbDep, body: ReportPreviewRequest, user: CurrentUser):
             as_of=body.as_of,
             project_id=body.project_id,
         )
+    )
+
+
+# ---------------------------------------------------------------- 存档与历史（B12-3）
+
+
+class ReportGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template_id: int
+    as_of: str | None = None  # YYYY-MM-DD；缺省=今天锚点
+
+
+@router.post("/generate")
+def generate_and_archive(db: DbDep, body: ReportGenerateRequest, user: CurrentUser):
+    """生成报告并实例化存档：同模板×周期重复生成版本 +1（历史快照不覆盖）。"""
+    as_of_date = date.fromisoformat(body.as_of) if body.as_of else None
+    report = report_service.generate_report(
+        db, user, template_id=body.template_id, as_of=body.as_of
+    )
+    instance = report_service.archive_report(
+        db, user=user, template_id=body.template_id, report=report, as_of=as_of_date
+    )
+    content = report | {"version": instance.version, "instance_id": instance.id}
+    return ok_response(
+        {**report_service.instance_meta(instance), "content": content},
+        message=f"报告已生成并存档（版本 {instance.version}）",
+    )
+
+
+@router.get("/instances")
+def list_report_instances(
+    db: DbDep,
+    user: CurrentUser,
+    template_id: int | None = None,
+    project_id: int | None = None,
+):
+    """历史存档列表（最近 100 份，元信息不含正文）。"""
+    return ok_response(
+        [
+            report_service.instance_meta(i)
+            for i in report_service.list_instances(
+                db, template_id=template_id, project_id=project_id
+            )
+        ]
+    )
+
+
+@router.get("/instances/{instance_id}")
+def get_report_instance(db: DbDep, instance_id: int, user: CurrentUser):
+    """查看历史存档（快照正文，不受后续口径变更影响）。"""
+    i = report_service.get_instance(db, instance_id)
+    return ok_response({**report_service.instance_meta(i), "content": json.loads(i.content_json)})
+
+
+@router.post("/instances/{instance_id}/regenerate")
+def regenerate_report(db: DbDep, instance_id: int, user: CurrentUser):
+    """重新生成历史报告：同模板同周期锚点重算（数字可能是新口径/新数据），版本 +1。"""
+    i = report_service.get_instance(db, instance_id)
+    as_of = i.as_of_date.isoformat() if i.as_of_date else None
+    report = report_service.generate_report(
+        db, user, template_id=i.template_id, as_of=as_of
+    )
+    new_instance = report_service.archive_report(
+        db, user=user, template_id=i.template_id, report=report, as_of=i.as_of_date
+    )
+    return ok_response(
+        {**report_service.instance_meta(new_instance), "content": report},
+        message=f"已重新生成（版本 {new_instance.version}）",
     )

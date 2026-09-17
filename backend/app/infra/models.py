@@ -337,3 +337,29 @@ class ReportTemplate(Base):
     created_by: Mapped[str] = mapped_column(String(50), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, onupdate=local_now)
+
+
+class ReportInstance(Base):
+    """报告存档实例（B12-3）：模板×周期一次生成即一份快照。
+
+    快照语义（验收红线）：content_json 存当时算出的全部数字与叙述——后续
+    口径变更/数据重传不影响历史报告（要最新值就重新生成，版本 +1）。
+    version 按 (template_id, period_start, period_end) 递增；template_id
+    不设 FK（模板删除后历史仍可查看）；as_of_date 记录生成锚点供重生成对齐。
+    """
+
+    __tablename__ = "report_instances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    template_id: Mapped[int] = mapped_column(Integer, index=True)
+    template_name: Mapped[str] = mapped_column(String(100), default="")  # 快照：模板当时名称
+    period_type: Mapped[str] = mapped_column(String(10))
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    as_of_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    narrative_source: Mapped[str] = mapped_column(String(10), default="rule")
+    content_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_by: Mapped[str] = mapped_column(String(50), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)

@@ -413,3 +413,114 @@ class TestLlmNarrative:
             assert att and att[0]["source"] == "rule"
         finally:
             _cleanup(client, env)
+
+
+# ---------------------------------------------------------------- B12-3 存档与历史
+
+
+class TestArchive:
+    def test_generate_archive_and_versioning(self, client):
+        """核心验收：生成即存档；同模板×周期重生成版本递增（历史保留）。"""
+        env = _make_env(client)
+        try:
+            tpl = client.post("/api/reports/templates", json={
+                "name": "存档周报", "period_type": "weekly",
+                "metric_ids": [env["metric"]["id"]],
+            }).json()["data"]
+
+            r1 = client.post("/api/reports/generate", json={
+                "template_id": tpl["id"], "as_of": "2026-03-16",
+            }).json()["data"]
+            assert r1["version"] == 1
+            assert r1["content"]["period"]["start"] == "2026-03-09"
+
+            r2 = client.post("/api/reports/generate", json={
+                "template_id": tpl["id"], "as_of": "2026-03-16",
+            }).json()["data"]
+            assert r2["version"] == 2
+
+            # 不同周期互不干扰（各自从 v1 起）
+            r3 = client.post("/api/reports/generate", json={
+                "template_id": tpl["id"], "as_of": "2026-03-23",
+            }).json()["data"]
+            assert r3["version"] == 1
+            assert r3["content"]["period"]["start"] == "2026-03-16"
+
+            # 历史列表：模板过滤，倒序
+            listed = client.get(
+                "/api/reports/instances", params={"template_id": tpl["id"]}
+            ).json()["data"]
+            assert [i["version"] for i in listed] == [1, 2, 1]  # id 倒序：v2, v1(03-09), v1(03-16)
+            assert all("content" not in i for i in listed)
+
+            # 查看历史：快照正文完整（id 倒序首条 = 03-16 周期 v1）
+            detail = client.get(f"/api/reports/instances/{listed[0]['id']}").json()["data"]
+            assert detail["content"]["period"]["start"] == "2026-03-16"
+            detail_v2 = client.get(f"/api/reports/instances/{listed[1]['id']}").json()["data"]
+            assert detail_v2["content"]["period"]["start"] == "2026-03-09"
+            assert (
+                detail_v2["content"]["conclusions"][0]["value"]
+                == r2["content"]["conclusions"][0]["value"]
+            )
+        finally:
+            _cleanup(client, env)
+
+    def test_snapshot_immune_to_rule_change(self, client):
+        """核心验收：历史数字不受后续口径变更影响（快照语义）。"""
+        env = _make_env(client)
+        try:
+            tpl = client.post("/api/reports/templates", json={
+                "name": "快照周报", "period_type": "weekly",
+                "metric_ids": [env["metric"]["id"]],
+            }).json()["data"]
+            v1 = client.post("/api/reports/generate", json={
+                "template_id": tpl["id"], "as_of": "2026-03-16",
+            }).json()["data"]
+            old_value = v1["content"]["conclusions"][0]["value"]
+
+            # 口径变更：sum → avg（ver +1，同周期重算结果必然不同）
+            resp = client.patch(f"/api/metrics/{env['metric']['id']}", json={
+                "calc_rule": {
+                    "base_aggregation": "avg",
+                    "source": {"table": env["ds_name"], "column": "amount"},
+                },
+                "reason": "测试口径变更",
+            })
+            assert resp.status_code == 200, resp.text
+
+            v2 = client.post(
+                f"/api/reports/instances/{v1['id']}/regenerate", json={}
+            ).json()["data"]
+            assert v2["version"] == 2
+            new_value = v2["content"]["conclusions"][0]["value"]
+
+            # v1 历史快照原封不动
+            detail = client.get(f"/api/reports/instances/{v1['id']}").json()["data"]
+            assert detail["content"]["conclusions"][0]["value"] == old_value
+            # v2 是新口径结果（avg 周均值必然远小于 sum）
+            assert new_value != old_value
+        finally:
+            _cleanup(client, env)
+
+    def test_instance_view_survives_template_deletion(self, client):
+        """模板删除后历史存档仍可查看（template_id 无 FK）。"""
+        env = _make_env(client)
+        try:
+            tpl = client.post("/api/reports/templates", json={
+                "name": "待删模板", "period_type": "weekly",
+                "metric_ids": [env["metric"]["id"]],
+            }).json()["data"]
+            inst = client.post("/api/reports/generate", json={
+                "template_id": tpl["id"], "as_of": "2026-03-16",
+            }).json()["data"]
+            client.delete(f"/api/reports/templates/{tpl['id']}")
+            detail = client.get(f"/api/reports/instances/{inst['id']}")
+            assert detail.status_code == 200
+            assert detail.json()["data"]["template_name"] == "待删模板"
+            # 快照正文仍完整可读
+            assert detail.json()["data"]["content"]["conclusions"]
+        finally:
+            _cleanup(client, env)
+
+    def test_missing_instance_404(self, client):
+        assert client.get("/api/reports/instances/999999").status_code == 404

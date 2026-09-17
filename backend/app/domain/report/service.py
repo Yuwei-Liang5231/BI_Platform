@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from app.core.response import BusinessError
-from app.infra.models import Metric, ReportTemplate, User
+from app.infra.models import Metric, ReportInstance, ReportTemplate, User
 from app.infra.repository import Repository
 
 PERIOD_TYPES = ("daily", "weekly", "monthly")
@@ -436,3 +436,83 @@ def generate_report(
         "llm_degraded": narr["llm_degraded"],
         "refs": result["refs"],  # B12-2 占位符回填对账基础
     }
+
+
+# ---------------------------------------------------------------- 存档与历史（B12-3）
+
+
+def instance_meta(i: ReportInstance) -> dict:
+    return {
+        "id": i.id,
+        "template_id": i.template_id,
+        "template_name": i.template_name,
+        "period_type": i.period_type,
+        "period_start": i.period_start.isoformat(),
+        "period_end": i.period_end.isoformat(),
+        "version": i.version,
+        "narrative_source": i.narrative_source,
+        "created_by": i.created_by,
+        "created_at": i.created_at,
+    }
+
+
+def list_instances(
+    db: Session, *, template_id: int | None = None, project_id: int | None = None
+) -> list[ReportInstance]:
+    query = db.query(ReportInstance)
+    if template_id is not None:
+        query = query.filter(ReportInstance.template_id == template_id)
+    if project_id is not None:
+        query = query.filter(ReportInstance.project_id == project_id)
+    return query.order_by(ReportInstance.id.desc()).limit(100).all()
+
+
+def get_instance(db: Session, instance_id: int) -> ReportInstance:
+    i = db.get(ReportInstance, instance_id)
+    if i is None:
+        raise BusinessError(f"报告存档 {instance_id} 不存在", 40400)
+    return i
+
+
+def _next_version(db: Session, template_id: int, start: date, end: date) -> int:
+    last = (
+        db.query(ReportInstance.version)
+        .filter(
+            ReportInstance.template_id == template_id,
+            ReportInstance.period_start == start,
+            ReportInstance.period_end == end,
+        )
+        .order_by(ReportInstance.version.desc())
+        .first()
+    )
+    return (last[0] + 1) if last else 1
+
+
+def archive_report(
+    db: Session,
+    *,
+    user: User,
+    template_id: int,
+    report: dict,
+    as_of: date | None,
+) -> ReportInstance:
+    """预览结果实例化存档：快照整体入 content_json，版本按模板×周期递增。"""
+    t = get_template(db, template_id)
+    period = report["period"]
+    instance = ReportInstance(
+        project_id=t.project_id,
+        template_id=template_id,
+        template_name=t.name,
+        period_type=period["type"],
+        period_start=date.fromisoformat(period["start"]),
+        period_end=date.fromisoformat(period["end"]),
+        as_of_date=as_of,
+        version=_next_version(db, template_id, date.fromisoformat(period["start"]), date.fromisoformat(period["end"])),
+        narrative_source=report.get("narrative_source", "rule"),
+        content_json=json.dumps(report, ensure_ascii=False, default=str),
+        created_by=user.username,
+    )
+    db.add(instance)
+    db.commit()
+    db.refresh(instance)
+    return instance
