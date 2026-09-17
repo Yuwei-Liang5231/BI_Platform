@@ -277,3 +277,37 @@ class TestMetricsApi:
         resp = client.get("/api/metrics/99999")
         assert resp.status_code == 404
         assert resp.json()["code"] == 40400
+
+
+class TestMetricBatchStatus:
+    """指标管理批量停用/启用：逐条提交、失败不拖垮其余、非法 status 拒绝。"""
+
+    def test_batch_disable_enable_mixed(self, client, metric_env):
+        codes = ["api_bs_a", "api_bs_b"]
+        ids = []
+        for i, code in enumerate(codes):
+            resp = client.post("/api/metrics", json={
+                "code": code, "name": f"批量状态样例{i}", "calc_rule": GMV_RULE,
+            })
+            assert resp.status_code == 200, resp.text
+            ids.append(resp.json()["data"]["id"])
+
+        # 批量停用（混入不存在 id → 失败单列）
+        resp = client.post("/api/metrics/batch-status", json={"ids": ids + [99999999], "status": "disabled"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()["data"]
+        assert sorted(body["updated"]) == sorted(ids)
+        assert len(body["failed"]) == 1 and body["failed"][0]["id"] == 99999999
+        listing = client.get("/api/metrics", params={"status": "disabled"}).json()["data"]
+        assert {m["id"] for m in listing} >= set(ids)
+
+        # 批量启用恢复
+        resp = client.post("/api/metrics/batch-status", json={"ids": ids, "status": "active"})
+        assert resp.status_code == 200, resp.text
+        assert sorted(resp.json()["data"]["updated"]) == sorted(ids)
+        listing = client.get("/api/metrics", params={"status": "active"}).json()["data"]
+        assert {m["id"] for m in listing} >= set(ids)
+
+        # 非法 status（deleted 走删除接口）→ 400
+        resp = client.post("/api/metrics/batch-status", json={"ids": ids, "status": "deleted"})
+        assert resp.status_code == 400

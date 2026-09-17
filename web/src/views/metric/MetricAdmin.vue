@@ -9,6 +9,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
   batchDeleteMetrics,
+  batchUpdateStatus,
   createMetric as createApi,
   deleteMetric as deleteApi,
   updateMetric as updateApi,
@@ -44,6 +45,7 @@ const form = reactive({
   definition: "",
   topic: "general",
   parent_id: null,
+  status: "active",
 });
 
 /* ---------- 口径分歧（disambiguation）编辑 ---------- */
@@ -84,6 +86,7 @@ function removeDisOption(i) {
 
 /* ---------- 编辑态基线（判断 calc_rule 是否真变更，避免无谓的 reason 要求） ---------- */
 const originalRule = ref(null);
+const originalStatus = ref("active"); // 编辑时对比状态是否变化
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -544,10 +547,12 @@ function openCreate() {
     definition: "",
     topic: "general",
     parent_id: null,
+    status: "active",
   });
   fillBuilderFromRule(null);
   resetDisambiguation(null);
   originalRule.value = null;
+  originalStatus.value = "active";
   if (!datasetStore.list.length) datasetStore.fetchList();
   dialogVisible.value = true;
 }
@@ -561,10 +566,12 @@ function openEdit(row) {
     definition: row.definition ?? "",
     topic: row.topic ?? "general",
     parent_id: row.parent_id ?? null,
+    status: row.status ?? "active",
   });
   fillBuilderFromRule(row.calc_rule);
   resetDisambiguation(row.disambiguation);
   originalRule.value = row.calc_rule ?? null;
+  originalStatus.value = row.status ?? "active";
   if (!datasetStore.list.length) datasetStore.fetchList();
   dialogVisible.value = true;
 }
@@ -630,6 +637,10 @@ async function handleSave() {
       // disambiguation 传 null 不清空（后端 exclude_none），空对象可清空。
       const { code: _ignored, calc_rule: _rule, ...rest } = payload;
       const updatable = { ...rest, disambiguation: disResult.value ?? { question: "", options: [] } };
+      // 状态变化单独透传（active/disabled；删除走删除按钮）
+      if (originalStatus.value && form.status !== originalStatus.value) {
+        updatable.status = form.status;
+      }
       if (reason) {
         updatable.calc_rule = parsed.rule;
         updatable.reason = reason;
@@ -655,14 +666,14 @@ async function handleDelete(row) {
   await fetchData();
 }
 
-/* ---------- 批量删除（多选/全选） ---------- */
+/* ---------- 批量删除/停用/启用（多选/全选） ---------- */
 const selectedMetrics = ref([]);
 
 async function handleBatchDelete() {
   const rows = selectedMetrics.value;
   if (!rows.length) return;
   await ElMessageBox.confirm(
-    `确定删除选中的 ${rows.length} 个指标？删除后目录与搜索不可见（软删除，留痕保留）。`,
+    `确定删除选中的 ${rows.length} 个指标？删除后目录与搜索不可见（软删除，留痕保留，code 将被释放可重建）。`,
     "批量删除确认",
     { type: "warning", confirmButtonText: "全部删除", cancelButtonText: "取消" },
   );
@@ -672,6 +683,30 @@ async function handleBatchDelete() {
     ElMessage.warning(`已删除 ${deleted.length} 个，${failed.length} 个失败：${failed.map((f) => f.id).join("、")}`);
   } else {
     ElMessage.success(`已删除 ${deleted.length} 个指标`);
+  }
+  selectedMetrics.value = [];
+  await fetchData();
+}
+
+async function handleBatchStatus(status) {
+  const rows = selectedMetrics.value;
+  if (!rows.length) return;
+  const label = status === "disabled" ? "停用" : "启用";
+  const tip =
+    status === "disabled"
+      ? "停用后目录默认不可见、code 仍被占用，可随时再启用。"
+      : "启用后指标恢复可见可用。";
+  await ElMessageBox.confirm(
+    `确定${label}选中的 ${rows.length} 个指标？${tip}`,
+    `批量${label}确认`,
+    { type: "warning", confirmButtonText: `全部${label}`, cancelButtonText: "取消" },
+  );
+  const res = await batchUpdateStatus({ ids: rows.map((r) => r.id), status });
+  const { updated = [], failed = [] } = res ?? {};
+  if (failed.length) {
+    ElMessage.warning(`已${label} ${updated.length} 个，${failed.length} 个失败：${failed.map((f) => f.id).join("、")}`);
+  } else {
+    ElMessage.success(`已${label} ${updated.length} 个指标`);
   }
   selectedMetrics.value = [];
   await fetchData();
@@ -796,6 +831,20 @@ onMounted(async () => {
           </el-select>
           <el-button type="primary" @click="fetchData">搜索</el-button>
           <el-button
+            plain
+            :disabled="!selectedMetrics.length"
+            @click="handleBatchStatus('disabled')"
+          >
+            批量停用{{ selectedMetrics.length ? `（${selectedMetrics.length}）` : "" }}
+          </el-button>
+          <el-button
+            plain
+            :disabled="!selectedMetrics.length"
+            @click="handleBatchStatus('active')"
+          >
+            批量启用{{ selectedMetrics.length ? `（${selectedMetrics.length}）` : "" }}
+          </el-button>
+          <el-button
             type="danger"
             plain
             :disabled="!selectedMetrics.length"
@@ -848,6 +897,13 @@ onMounted(async () => {
         </el-form-item>
         <el-form-item label="主题">
           <el-input v-model="form.topic" placeholder="general" />
+        </el-form-item>
+        <el-form-item v-if="editingId" label="状态">
+          <el-radio-group v-model="form.status">
+            <el-radio value="active">启用中</el-radio>
+            <el-radio value="disabled">已停用</el-radio>
+          </el-radio-group>
+          <div class="form-hint">停用 = 保留编码占位、目录默认不可见，可随时切回；删除才会释放编码。</div>
         </el-form-item>
         <el-form-item label="口径说明">
           <el-input v-model="form.definition" type="textarea" :rows="2" />
@@ -1186,6 +1242,13 @@ onMounted(async () => {
 .admin__hint {
   color: var(--pwc-text-secondary);
   font-size: var(--pwc-font-body-s);
+}
+
+.form-hint {
+  color: var(--pwc-text-secondary);
+  font-size: var(--pwc-font-body-s);
+  line-height: 1.5;
+  margin-top: 2px;
 }
 
 .admin__hint--warn {

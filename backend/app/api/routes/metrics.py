@@ -160,6 +160,44 @@ class BatchDeleteRequest(BaseModel):
     operator_id: str | None = None
 
 
+class BatchStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[int] = Field(min_length=1)
+    status: str  # 仅允许 active / disabled（删除走 batch-delete）
+    reason: str = ""
+    operator_id: str | None = None
+
+
+@router.post("/batch-status")
+def batch_status_metrics(db: DbDep, body: BatchStatusRequest, user: WriterUser):
+    """批量停用/启用：逐条执行、单条失败不影响其余（返回失败清单）。
+
+    停用（disabled）= 保留 code 占位、目录默认不可见但可再启用；
+    与删除（deleted，释放 code）语义区分。"""
+    if body.status not in ("active", "disabled"):
+        raise BusinessError("status 只允许 active / disabled（删除请用 batch-delete）", 40000)
+    updated: list[int] = []
+    failed: list[dict] = []
+    label = "停用" if body.status == "disabled" else "启用"
+    for mid in dict.fromkeys(body.ids):  # 去重保序
+        try:
+            service.update_metric(
+                db, mid, {"status": body.status},
+                reason=body.reason or f"批量{label}",
+                operator_id=body.operator_id or user.username,
+            )
+            db.commit()  # 逐条提交：失败 rollback 只丢当前条，不连带撤销已成功的
+            updated.append(mid)
+        except BusinessError as exc:
+            db.rollback()
+            failed.append({"id": mid, "error": str(exc)})
+    return ok_response(
+        {"updated": updated, "failed": failed},
+        message=f"已{label} {len(updated)} 个指标" + (f"，{len(failed)} 个失败" if failed else ""),
+    )
+
+
 @router.post("/batch-delete")
 def batch_delete_metrics(db: DbDep, body: BatchDeleteRequest, user: WriterUser):
     """批量软删除：逐条执行、单条失败不影响其余（返回失败清单）。
