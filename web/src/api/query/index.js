@@ -91,6 +91,9 @@ export const anomalyConfigsSave = (metricIds, projectId) =>
 /** 单层归因（B10-2）：变化量按维度拆贡献（加性指标）。 */
 export const attributeDelta = (data) => request.post("/query/attribute", data);
 
+/** 逐层下钻归因（B14）：dimensions 有序层级 + path 已下钻路径 → 该节点子层贡献。 */
+export const attributeTreeNode = (data) => request.post("/query/attribute-tree", data);
+
 /** 理解卡筛选值候选（B9.2-2）：{ metric, column } → 维度列真实取值清单（≤50）。 */
 export const askDimensionValues = (data) => request.post("/query/ask/dimension-values", data);
 

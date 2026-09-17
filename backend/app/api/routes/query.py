@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import CurrentUser, DbDep
 from app.core.response import BusinessError, ok_response
@@ -442,6 +442,51 @@ def attribute(db: DbDep, body: AttributeRequest, user: CurrentUser):
             start=body.start,
             end=body.end,
             dimension=body.dimension,
+            compare=body.compare,
+            top_n=body.top_n,
+        )
+    )
+
+
+class AttributionTreeNodeRequest(BaseModel):
+    """逐层下钻归因请求（B14）：按维度层级树逐层拆贡献。
+
+    dimensions 为有序层级（如 品类→区域→渠道）；path 为已下钻路径
+    （须与层级严格前缀对齐），返回该节点的子层贡献拆解。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str | int
+    start: str
+    end: str
+    dimensions: list[str]
+    path: list[dict] = Field(default_factory=list)
+    compare: str = "mom"
+    top_n: int = 10
+
+
+@router.post("/attribute-tree")
+def attribute_tree(db: DbDep, body: AttributionTreeNodeRequest, user: CurrentUser):
+    """逐层下钻归因（B14）：根节点总值与看板单值口径对账，子层贡献加性守恒。
+
+    组数超 50 截断时守恒偏差如实上报；叶子层（path 深度 = 层数-1）不可再下钻。
+    """
+    from app.domain.anomaly import attribution
+
+    if body.compare not in ("mom", "yoy"):
+        raise BusinessError("归因基期 compare 仅支持 mom / yoy（无基期则无变化可拆）", 40000)
+    if not 1 <= body.top_n <= 50:
+        raise BusinessError("top_n 须在 1~50 之间", 40000)
+    return ok_response(
+        attribution.attribute_tree_node(
+            db,
+            user,
+            metric_ref=body.metric,
+            start=body.start,
+            end=body.end,
+            dimensions=body.dimensions,
+            path=body.path,
             compare=body.compare,
             top_n=body.top_n,
         )

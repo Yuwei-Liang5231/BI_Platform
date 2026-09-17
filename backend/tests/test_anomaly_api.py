@@ -460,3 +460,135 @@ class TestNotifications:
         listing = client.get("/api/notifications", params={"project_id": p["id"]}).json()["data"]
         assert listing == []
         client.delete(f"/api/projects/{p['id']}")
+
+
+# ---------------------------------------------------------------- B14 多层归因
+
+
+@pytest.fixture(scope="module")
+def tree_env(client):
+    """B14 归因树夹具：两层维度（category→channel），手算可对账。
+
+    基期（01-10~11）：A,paid=200 A,churn=100 B,paid=100 B,churn=0 → 总 400
+    本期（01-12~13）：A,paid=300 A,churn=60  B,paid=140 B,churn=50 → 总 550
+    总变化 +150；一层（category）：A=+60（360-300）、B=+90（190-100），合计 150；
+    下钻 A（channel）：paid=+100（300-200）、churn=-40（60-100），合计 +60 = A 节点 delta。
+    """
+    sfx = _suffix()
+    ds_name = f"tree_ds_{sfx}"
+    rows = ["d,category,channel,amount"]
+    for d, cat, ch, v in [
+        ("2026-01-10", "A", "paid", 100), ("2026-01-10", "A", "churn", 50),
+        ("2026-01-11", "A", "paid", 100), ("2026-01-11", "A", "churn", 50),
+        ("2026-01-10", "B", "paid", 80), ("2026-01-10", "B", "churn", 0),
+        ("2026-01-11", "B", "paid", 20), ("2026-01-11", "B", "churn", 0),
+        ("2026-01-12", "A", "paid", 150), ("2026-01-12", "A", "churn", 30),
+        ("2026-01-13", "A", "paid", 150), ("2026-01-13", "A", "churn", 30),
+        ("2026-01-12", "B", "paid", 70), ("2026-01-12", "B", "churn", 25),
+        ("2026-01-13", "B", "paid", 70), ("2026-01-13", "B", "churn", 25),
+    ]:
+        rows.append(f"{d},{cat},{ch},{v}")
+    resp = client.post(
+        "/api/datasets/upload",
+        files={"file": (f"{ds_name}.csv", io.BytesIO(("\n".join(rows) + "\n").encode("utf-8")), "text/csv")},
+        data={"name": ds_name},
+    )
+    assert resp.status_code == 200, resp.text
+    resp = client.post("/api/metrics", json={
+        "code": f"tree_sum_{sfx}",
+        "name": "归因树求和",
+        "calc_rule": {
+            "base_aggregation": "sum",
+            "source": {"table": ds_name, "column": "amount"},
+        },
+    })
+    assert resp.status_code == 200, resp.text
+    metric = resp.json()["data"]
+    yield {"metric": metric, "sfx": sfx}
+    client.delete(f"/api/metrics/{metric['id']}")
+    ds_id = next(
+        d["id"] for d in client.get("/api/datasets").json()["data"] if d["name"] == ds_name
+    )
+    client.delete(f"/api/datasets/{ds_id}")
+
+
+class TestAttributionTree:
+    def _post(self, client, env, **kw):
+        base = {
+            "metric": env["metric"]["id"],
+            "start": "2026-01-12", "end": "2026-01-13",
+            "dimensions": ["category", "channel"], "compare": "mom",
+        }
+        base.update(kw)
+        return client.post("/api/query/attribute-tree", json=base)
+
+    def test_root_conservation_and_handcheck(self, client, tree_env):
+        """核心验收：根 delta = 单值口径总变化；子贡献合计 = 根 delta。"""
+        resp = self._post(client, tree_env)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()["data"]
+        assert body["current_total"] == 550 and body["prev_total"] == 400
+        assert body["delta"] == 150
+        by_val = {c["value"]: c for c in body["children"]}
+        assert by_val["B"]["contribution"] == 90
+        assert by_val["A"]["contribution"] == 60
+        assert body["explained_delta"] == pytest.approx(150)
+        assert body["conservation_deviation_pct"] == pytest.approx(0, abs=0.5)
+        assert body["children_dimension"] == "category"
+        assert body["next_dimension"] == "channel" and body["has_next"] is True
+
+    def test_drilldown_conservation(self, client, tree_env):
+        """逐层守恒：下钻 A 后子贡献合计 = A 节点 delta；B 同理。"""
+        for cat, a_delta, b_paid, b_churn in (("A", 60, 100, -40), ("B", 90, 40, 50)):
+            resp = self._post(client, tree_env, path=[{"dimension": "category", "value": cat}])
+            assert resp.status_code == 200, resp.text
+            body = resp.json()["data"]
+            assert body["delta"] == a_delta, cat
+            by_val = {c["value"]: c for c in body["children"]}
+            assert by_val["paid"]["contribution"] == b_paid, cat
+            assert by_val["churn"]["contribution"] == b_churn, cat
+            assert body["explained_delta"] == pytest.approx(a_delta)
+            assert body["conservation_deviation_pct"] == pytest.approx(0, abs=0.5)
+            # 叶子层：不能再下钻
+            assert body["has_next"] is False and body["next_dimension"] is None
+
+    def test_leaf_path_rejected(self, client, tree_env):
+        resp = self._post(
+            client, tree_env,
+            path=[{"dimension": "category", "value": "A"}, {"dimension": "channel", "value": "paid"}],
+        )
+        assert resp.status_code == 400
+        assert "叶子" in resp.json()["message"]
+
+    def test_path_misaligned_rejected(self, client, tree_env):
+        resp = self._post(client, tree_env, path=[{"dimension": "channel", "value": "paid"}])
+        assert resp.status_code == 400
+        assert "前缀" in resp.json()["message"]
+
+    def test_invalid_dimensions_rejected(self, client, tree_env):
+        assert self._post(client, tree_env, dimensions=["category"]).status_code == 400
+        assert self._post(client, tree_env, dimensions=["category", "category"]).status_code == 400
+        assert self._post(
+            client, tree_env, dimensions=[f"{i}" for i in range(1, 6)]
+        ).status_code == 400
+
+    def test_ratio_metric_rejected(self, client, tree_env):
+        sfx = tree_env["sfx"]
+        table = f"tree_ds_{sfx}"
+        resp = client.post("/api/metrics", json={
+            "code": f"tree_ratio_{sfx}",
+            "name": "归因树比率",
+            "calc_rule": {
+                "expression": "A / B",
+                "operands": {
+                    "A": {"table": table, "column": "amount", "aggregation": "sum"},
+                    "B": {"table": table, "column": "amount", "aggregation": "count_distinct"},
+                },
+            },
+        })
+        assert resp.status_code == 200, resp.text
+        ratio = resp.json()["data"]
+        resp = self._post(client, tree_env, metric=ratio["id"])
+        assert resp.status_code == 400
+        assert "比率类" in resp.json()["message"]
+        client.delete(f"/api/metrics/{ratio['id']}")

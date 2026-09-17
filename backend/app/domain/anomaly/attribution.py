@@ -158,6 +158,176 @@ def _ensure_additive(metric: Metric) -> None:
         )
 
 
+# ---------------------------------------------------------------- 多层归因（B14）
+
+MAX_TREE_DEPTH = 4
+
+
+def attribute_tree_node(
+    db: Session,
+    user: User,
+    *,
+    metric_ref,
+    start: str,
+    end: str,
+    dimensions: list[str],
+    path: list[dict] | None = None,
+    compare: str = "mom",
+    top_n: int = 10,
+) -> dict:
+    """逐层下钻归因（B14）：返回指定节点的子层贡献拆解。
+
+    - dimensions：有序维度层级（如 品类→区域→渠道），2~4 层、不重复；
+    - path：已下钻路径 [{dimension, value}, ...]，必须与 dimensions 严格前缀对齐；
+    - 根节点（path 空）总值走 compute_metric_value 单点出口；
+    - 子层贡献：compute_metric_breakdown（top_n 拉满）叠加 path 请求级过滤——
+      完全复用既有编译/权限/周期完整性契约/缓存，零改动 query 服务；
+    - 守恒：Σ子贡献 = 节点 delta（组数超 MAX_BREAKDOWN_TOP_N 截断时偏差如实上报）。
+    """
+    metric: Metric = _resolve_metric(db, metric_ref)
+    from app.domain.auth.service import ensure_metric_visible
+
+    ensure_metric_visible(db, user, metric)
+    _ensure_additive(metric)
+
+    dims = [str(d or "").strip() for d in (dimensions or [])]
+    dims = [d for d in dims if d]
+    if len(dims) < 2:
+        raise BusinessError("dimensions（层级维度）至少 2 层——单层归因请用 /query/attribute", 40000)
+    if len(dims) > MAX_TREE_DEPTH:
+        raise BusinessError(f"dimensions 最多 {MAX_TREE_DEPTH} 层", 40000)
+    if len(set(dims)) != len(dims):
+        raise BusinessError("dimensions 内存在重复维度", 40000)
+
+    norm_path: list[dict] = []
+    for i, step in enumerate(path or []):
+        if not isinstance(step, dict) or not str(step.get("value") or "").strip():
+            raise BusinessError(f"path[{i}] 须为 {{dimension, value}} 且 value 非空", 40000)
+        dim = str(step.get("dimension") or "").strip()
+        if dim != dims[i]:
+            raise BusinessError(
+                f"path[{i}].dimension={dim!r} 与层级第 {i + 1} 层 {dims[i]!r} 不一致（须严格前缀对齐）",
+                40000,
+            )
+        norm_path.append({"dimension": dim, "value": str(step["value"]).strip()})
+    if len(norm_path) >= len(dims):
+        raise BusinessError("已到叶子层：path 深度须小于层级数（叶子无下一维可拆）", 40000)
+
+    if compare not in ("mom", "yoy"):
+        raise BusinessError("归因基期 compare 仅支持 mom / yoy", 40000)
+
+    # 节点过滤条件（父路径 → breakdown 请求级 filters）
+    conds = [
+        {"column": s["dimension"], "op": "=", "value": s["value"]} for s in norm_path
+    ]
+
+    from app.domain.query.service import _previous_range
+
+    prev_start, prev_end = _previous_range(_parse_iso(start), _parse_iso(end), compare)
+
+    # 下一层（子层）维度 = path 深度；节点 current/prev = 子层拆解合计
+    # （compute_metric_value 不支持请求级过滤；根节点用单值出口保证精确）
+    child_dim = dims[len(norm_path)]
+    child_rows = compute_metric_breakdown(
+        db,
+        metric_ref=metric.id,
+        start=start,
+        end=end,
+        compare=compare,
+        dimension=child_dim,
+        filters=conds or None,
+        top_n=MAX_BREAKDOWN_TOP_N,
+        user=user,
+    )
+
+    contributions = []
+    for row in child_rows["rows"]:
+        contributions.append(
+            {
+                "value": row["dimension"],
+                "current": row["value"],
+                "prev": row["prev_value"],
+                "contribution": (row["value"] or 0) - (row["prev_value"] or 0),
+            }
+        )
+    contributions.sort(key=lambda c: -abs(c["contribution"]))
+
+    node_current = sum((c["current"] or 0) for c in contributions)
+    node_prev = sum((c["prev"] or 0) for c in contributions)
+    if not norm_path:
+        # 根节点：单值出口对账（口径与看板完全一致）
+        cur = compute_metric_value(
+            db, metric_ref=metric.id, start=start, end=end, compare="none", user=user
+        )
+        prv = compute_metric_value(
+            db,
+            metric_ref=metric.id,
+            start=prev_start.isoformat(),
+            end=prev_end.isoformat(),
+            compare="none",
+            user=user,
+        )
+        if cur["value"] is not None:
+            node_current = cur["value"]
+        if prv["value"] is not None:
+            node_prev = prv["value"]
+
+    node_delta = node_current - node_prev
+
+    picked = contributions[:top_n]
+    others = contributions[top_n:]
+    others_contribution = sum(c["contribution"] for c in others)
+    denom = node_delta if node_delta != 0 else None
+    for c in picked:
+        c["contribution_pct"] = (
+            round(c["contribution"] / node_delta * 100, 4) if denom is not None else None
+        )
+    if others:
+        picked.append(
+            {
+                "value": "（其他）",
+                "current": None,
+                "prev": None,
+                "contribution": others_contribution,
+                "contribution_pct": (
+                    round(others_contribution / node_delta * 100, 4)
+                    if denom is not None
+                    else None
+                ),
+            }
+        )
+
+    explained = sum(c["contribution"] for c in contributions)
+    deviation = (
+        round((explained - node_delta) / abs(node_delta) * 100, 4)
+        if node_delta
+        else None
+    )
+    has_next = len(norm_path) + 1 < len(dims)
+    return {
+        "metric_id": metric.id,
+        "metric_code": metric.code,
+        "name": metric.name,
+        "dimensions": dims,
+        "path": norm_path,
+        "compare": compare,
+        "start": start,
+        "end": end,
+        "prev_start": prev_start.isoformat(),
+        "prev_end": prev_end.isoformat(),
+        "current_total": node_current,
+        "prev_total": node_prev,
+        "delta": node_delta,
+        "next_dimension": None if not has_next else dims[len(norm_path) + 1],
+        "has_next": has_next,
+        "children_dimension": child_dim,
+        "children": picked,
+        "children_total_count": len(contributions),
+        "explained_delta": explained,
+        "conservation_deviation_pct": deviation,
+    }
+
+
 def _parse_iso(raw: str):
     from datetime import date
 

@@ -8,8 +8,9 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import * as echarts from "echarts";
 
-import { exportCsvBlob } from "@/api/query";
+import { exportCsvBlob, attributeTreeNode } from "@/api/query";
 import TrendBadge from "@/components/business/TrendBadge.vue";
+import { ElMessage } from "element-plus";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
@@ -52,6 +53,77 @@ watch(dateRange, () => {
   if (!metricId.value) return;
   loadCurrent();
   loadTrend();
+  // 归因树与统计周期同源：区间变更后按当前层级重取（路径保留，节点值随区间变）
+  if (treeDims.value.length >= 2) loadTreeNode();
+});
+
+/* ── 归因下钻（B14）：维度层级树逐层拆贡献 ──
+   层级来自指标 dimensions 配置（可自选 2~4 层）；行点击逐层下钻，
+   面包屑回退；贡献合计 ≈ 节点变化（守恒偏差如实展示）。 */
+const dimCandidates = computed(() => {
+  const raw = metric.value?.dimensions ?? [];
+  const cols = raw.map((d) => (typeof d === "string" ? d : d?.column)).filter(Boolean);
+  return [...new Set(cols)];
+});
+const treeDims = ref([]);
+const treePath = ref([]); // [{dimension, value}]
+const treeNode = ref(null);
+const treeLoading = ref(false);
+
+function addTreeDim(col) {
+  if (!col || treeDims.value.includes(col) || treeDims.value.length >= 4) return;
+  treeDims.value = [...treeDims.value, col];
+  treeNode.value = null;
+  treePath.value = [];
+}
+
+function removeTreeDim(idx) {
+  treeDims.value = treeDims.value.filter((_, i) => i !== idx);
+  treeNode.value = null;
+  treePath.value = [];
+}
+
+async function loadTreeNode(path = treePath.value) {
+  if (treeDims.value.length < 2) {
+    ElMessage.warning("请先选择至少 2 个维度层级");
+    return;
+  }
+  treeLoading.value = true;
+  try {
+    treeNode.value = await attributeTreeNode({
+      metric: metricId.value,
+      start: range.value.start,
+      end: range.value.end,
+      dimensions: treeDims.value,
+      path,
+      compare: "mom",
+      top_n: 10,
+    });
+    treePath.value = path;
+  } finally {
+    treeLoading.value = false;
+  }
+}
+
+function drillChild(row) {
+  if (!treeNode.value?.has_next || row.value === "（其他）") return;
+  loadTreeNode([...treePath.value, { dimension: treeNode.value.children_dimension, value: row.value }]);
+}
+
+function jumpTo(idx) {
+  loadTreeNode(treePath.value.slice(0, idx));
+}
+
+function fmtSigned(v) {
+  if (v == null) return "—";
+  const n = Number(v);
+  return `${n > 0 ? "▲ +" : n < 0 ? "▼ " : ""}${formatMetricValue(n)}`;
+}
+
+const attrNodeLabel = computed(() => {
+  if (!treeNode.value) return "";
+  const pathDesc = treeNode.value.path.map((s) => s.value).join(" · ");
+  return `${treeNode.value.children_dimension}（${pathDesc || "全部"}）`;
 });
 
 /* ── 变更历史：后端存 before/after 快照，前端生成可读摘要 ──
@@ -332,6 +404,136 @@ onMounted(async () => {
           <p v-else class="metric-empty">—</p>
         </section>
 
+        <!-- 归因下钻（B14） -->
+        <section class="pwc-card col-span-12">
+          <div class="pwc-card__header">
+            <h4>
+              归因下钻
+              <span v-if="treeNode" class="pwc-badge pwc-badge--grey">
+                {{ treeNode.dimensions.join(" → ") }}
+              </span>
+            </h4>
+          </div>
+          <!-- 层级选择：指标 dimensions 配置里选 2~4 层（按顺序） -->
+          <div class="attr__builder">
+            <span class="attr__label">维度层级：</span>
+            <el-tag
+              v-for="(d, i) in treeDims"
+              :key="d"
+              closable
+              @close="removeTreeDim(i)"
+            >{{ i + 1 }}. {{ d }}</el-tag>
+            <el-dropdown
+              v-if="dimCandidates.length > treeDims.length && treeDims.length < 4"
+              trigger="click"
+              @command="addTreeDim"
+            >
+              <el-button size="small" plain>+ 添加层级</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="c in dimCandidates.filter((c) => !treeDims.includes(c))"
+                    :key="c"
+                    :command="c"
+                  >{{ c }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-button
+              v-if="dimCandidates.length"
+              type="primary"
+              size="small"
+              :disabled="treeDims.length < 2"
+              :loading="treeLoading"
+              @click="loadTreeNode([])"
+            >
+              {{ treeNode ? "重新生成" : "生成归因" }}
+            </el-button>
+            <span v-if="!dimCandidates.length" class="attr__hint">
+              该指标未配置常用维度（dimensions），可在「编辑指标」中补充后使用归因下钻
+            </span>
+          </div>
+
+          <template v-if="treeNode">
+            <!-- 节点概要 + 面包屑 -->
+            <div class="attr__node">
+              <el-breadcrumb separator="›">
+                <el-breadcrumb-item>
+                  <el-link :underline="false" @click="jumpTo(0)">总计</el-link>
+                </el-breadcrumb-item>
+                <el-breadcrumb-item v-for="(s, i) in treeNode.path" :key="s.dimension">
+                  <el-link v-if="i < treeNode.path.length - 1" :underline="false" @click="jumpTo(i + 1)">
+                    {{ s.dimension }} = {{ s.value }}
+                  </el-link>
+                  <span v-else>{{ s.dimension }} = {{ s.value }}</span>
+                </el-breadcrumb-item>
+              </el-breadcrumb>
+              <span class="attr__delta">
+                变化：
+                <b :class="treeNode.delta > 0 ? 'pwc-num--up' : treeNode.delta < 0 ? 'pwc-num--down' : ''">
+                  {{ fmtSigned(treeNode.delta) }}
+                </b>
+                <span class="attr__totals">
+                  （{{ treeNode.prev_total }} → {{ treeNode.current_total }}）
+                </span>
+              </span>
+              <span
+                v-if="treeNode.conservation_deviation_pct != null && Math.abs(treeNode.conservation_deviation_pct) > 0.5"
+                class="attr__hint"
+              >守恒偏差 {{ treeNode.conservation_deviation_pct }}%（组数超上限截断所致）</span>
+            </div>
+            <!-- 子层贡献表 -->
+            <el-table
+              :data="treeNode.children"
+              v-loading="treeLoading"
+              style="width: 100%"
+              :row-class-name="({ row }) => (row.value === '（其他）' || !treeNode.has_next ? '' : 'attr__row--clickable')"
+              @row-click="drillChild"
+            >
+              <el-table-column :label="attrNodeLabel" prop="value" min-width="160" />
+              <el-table-column label="本期" width="120">
+                <template #default="{ row }">{{ row.current == null ? "—" : formatMetricValue(row.current) }}</template>
+              </el-table-column>
+              <el-table-column label="基期" width="120">
+                <template #default="{ row }">{{ row.prev == null ? "—" : formatMetricValue(row.prev) }}</template>
+              </el-table-column>
+              <el-table-column label="贡献" width="150">
+                <template #default="{ row }">
+                  <span :class="row.contribution > 0 ? 'pwc-num--up' : row.contribution < 0 ? 'pwc-num--down' : ''">
+                    {{ fmtSigned(row.contribution) }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column label="贡献占比" min-width="200">
+                <template #default="{ row }">
+                  <div v-if="row.contribution_pct != null" class="attr__bar-wrap">
+                    <div
+                      class="attr__bar"
+                      :class="row.contribution >= 0 ? 'attr__bar--up' : 'attr__bar--down'"
+                      :style="{ width: `${Math.min(Math.abs(row.contribution_pct), 100)}%` }"
+                    />
+                    <span class="attr__bar-label">
+                      {{ row.contribution_pct > 0 ? "▲" : row.contribution_pct < 0 ? "▼" : "" }} {{ Math.abs(row.contribution_pct).toFixed(1) }}%
+                    </span>
+                  </div>
+                  <span v-else>—</span>
+                </template>
+              </el-table-column>
+              <el-table-column width="90">
+                <template #default="{ row }">
+                  <el-tag v-if="row.value !== '（其他）' && treeNode.has_next" size="small" type="info" effect="plain">
+                    下钻 ›
+                  </el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+            <p v-if="treeNode.has_next" class="attr__hint">
+              点击行可继续按「{{ treeNode.next_dimension }}」下钻（贡献合计 = 节点变化，逐层守恒）
+            </p>
+            <p v-else class="attr__hint">已到叶子层（{{ treeNode.children_dimension }} 为最后一层）</p>
+          </template>
+        </section>
+
         <!-- 变更历史 -->
         <section class="pwc-card col-span-12">
           <div class="pwc-card__header">
@@ -416,5 +618,74 @@ onMounted(async () => {
   font-family: Consolas, Monaco, monospace;
   font-size: 13px;
   white-space: pre-wrap;
+}
+
+/* ── 归因下钻（B14） ── */
+.attr__builder {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--pwc-space-3);
+}
+
+.attr__label {
+  color: var(--pwc-text-secondary);
+}
+
+.attr__hint {
+  color: var(--pwc-text-secondary);
+  font-size: var(--pwc-font-body-s);
+}
+
+.attr__node {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--pwc-space-3);
+}
+
+.attr__delta b {
+  font-size: var(--pwc-font-body-l);
+}
+
+.attr__totals {
+  color: var(--pwc-text-secondary);
+  font-size: var(--pwc-font-body-s);
+}
+
+:deep(.attr__row--clickable) {
+  cursor: pointer;
+}
+
+.attr__bar-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 18px;
+  background: var(--pwc-bg-layer-2, rgba(0, 0, 0, 0.04));
+  border-radius: 2px;
+}
+
+.attr__bar {
+  height: 100%;
+  border-radius: 2px;
+  opacity: 0.75;
+}
+
+.attr__bar--up {
+  background: var(--pwc-up, #d62222);
+}
+
+.attr__bar--down {
+  background: var(--pwc-down, #059669);
+}
+
+.attr__bar-label {
+  position: absolute;
+  left: 6px;
+  font-size: 12px;
+  color: var(--pwc-text-primary);
 }
 </style>
