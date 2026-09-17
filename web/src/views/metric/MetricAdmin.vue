@@ -46,6 +46,7 @@ const form = reactive({
   topic: "general",
   parent_id: null,
   status: "active",
+  dimensions: [], // 常用维度（列名有序数组，2~4 层）：归因下钻层级来源
 });
 
 /* ---------- 口径分歧（disambiguation）编辑 ---------- */
@@ -439,6 +440,26 @@ const flatDateCols = computed(() =>
   (datasetColumns[builder.flat.table] ?? []).filter((c) => c.isDate),
 );
 
+/* 常用维度候选：规则引用到的数据集列并集（flat 主表 / expr 各操作数表）。
+   列信息未加载时也允许手动输入列名（allow-create）。 */
+const dimensionOptions = computed(() => {
+  const tables = new Set();
+  if (builder.mode === "flat" && builder.flat.table) tables.add(builder.flat.table);
+  if (builder.mode === "expr")
+    builder.expr.operands.forEach((o) => o.table && tables.add(o.table));
+  const seen = new Set();
+  const opts = [];
+  tables.forEach((t) => {
+    (datasetColumns[t] ?? []).forEach((c) => {
+      if (!seen.has(c.name)) {
+        seen.add(c.name);
+        opts.push({ name: c.name, table: t, isDate: c.isDate });
+      }
+    });
+  });
+  return opts;
+});
+
 const flatTimePlaceholder = computed(() => {
   const n = flatDateCols.value.length;
   if (n > 1) return `时间字段（该数据集有 ${n} 个日期列；留空则全期汇总，不按时间过滤）`;
@@ -548,6 +569,7 @@ function openCreate() {
     topic: "general",
     parent_id: null,
     status: "active",
+    dimensions: [],
   });
   fillBuilderFromRule(null);
   resetDisambiguation(null);
@@ -567,6 +589,10 @@ function openEdit(row) {
     topic: row.topic ?? "general",
     parent_id: row.parent_id ?? null,
     status: row.status ?? "active",
+    // dimensions 兼容两种存法：字符串列名 或 {dataset, column} 对象 → 归一为列名
+    dimensions: (row.dimensions ?? [])
+      .map((d) => (typeof d === "string" ? d : (d?.column ?? "")))
+      .filter(Boolean),
   });
   fillBuilderFromRule(row.calc_rule);
   resetDisambiguation(row.disambiguation);
@@ -616,6 +642,11 @@ async function handleSave() {
       return; // 用户取消
     }
   }
+  // 常用维度：整组替换；条数 0~4 合法，归因下钻需 2~4 层（不足时详情页会提示）
+  if (form.dimensions.length > 4) {
+    ElMessage.error("常用维度最多 4 个（归因下钻层级上限）");
+    return;
+  }
   saving.value = true;
   try {
     const payload = {
@@ -628,6 +659,7 @@ async function handleSave() {
       definition: form.definition,
       topic: form.topic,
       parent_id: form.parent_id,
+      dimensions: form.dimensions.map((d) => String(d).trim()).filter(Boolean),
       calc_rule: parsed.rule,
       // B9.3：归入当前项目；「全部项目」视图下新建 → 默认项目（后端缺省语义）
       ...(projectStore.currentId ? { project_id: projectStore.currentId } : {}),
@@ -897,6 +929,27 @@ onMounted(async () => {
         </el-form-item>
         <el-form-item label="主题">
           <el-input v-model="form.topic" placeholder="general" />
+        </el-form-item>
+        <el-form-item label="常用维度">
+          <div class="rule-builder">
+            <el-select
+              v-model="form.dimensions"
+              multiple filterable allow-create default-first-option
+              placeholder="选择或输入维度列名（有序，2~4 个），如：品类、区域、渠道"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="c in dimensionOptions"
+                :key="c.table + '.' + c.name"
+                :label="c.isDate ? (c.name + '（日期列）') : c.name"
+                :value="c.name"
+              />
+            </el-select>
+            <div class="form-hint">
+              归因下钻的层级来源：选择顺序即层级顺序（第 1 个为最上层）；归因下钻需 2~4 个。
+              候选列来自计算规则引用的数据集，也可直接输入该数据集中存在的其他列名。
+            </div>
+          </div>
         </el-form-item>
         <el-form-item v-if="editingId" label="状态">
           <el-radio-group v-model="form.status">
