@@ -264,6 +264,45 @@ class TestIsolatedPairDownweight:
             _cleanup(client, env)
 
 
+class TestMetricTimeField:
+    """B13-2.1 修复回归：多日期列数据集的候选必须携带 time_field，
+    否则向导入库触发「保存即编译拒绝」400（用户实测报障）。"""
+
+    def test_candidates_carry_time_field_and_import_succeeds(self, client):
+        sfx = _suffix()
+        pid = client.post("/api/projects", json={"name": f"b13tf_{sfx}"}).json()["data"]["id"]
+        csv = (
+            "ar_amount,snapshot_date,due_date\n"
+            "100,2026-01-01,2026-02-01\n"
+            "200,2026-01-02,2026-02-02\n"
+            "350,2026-01-03,2026-02-03\n"
+        )
+        env = {"pid": pid, "wip": _upload(client, f"b13tf_wip_{sfx}", csv, pid)}
+        try:
+            data = _suggestions(client, env)
+            cand = next(
+                c for c in data["metrics"]
+                if c["dataset"] == env["wip"]["name"] and c["column"] == "ar_amount"
+            )
+            assert cand["date_columns"] == ["snapshot_date", "due_date"]
+            assert cand["time_field"] == "snapshot_date"
+            # 向导同构 payload（带显式 time_field）应创建成功
+            resp = client.post("/api/metrics", json={
+                "code": f"b13tf_{sfx}_ar_sum",
+                "name": "AR 合计",
+                "calc_rule": {
+                    "base_aggregation": "sum",
+                    "source": {"table": env["wip"]["name"], "column": "ar_amount"},
+                    "time_field": cand["time_field"],
+                },
+                "definition": "向导入库",
+                "project_id": pid,
+            })
+            assert resp.status_code == 200, resp.text
+        finally:
+            _cleanup(client, env)
+
+
 class TestLlmRelationReview:
     """B13-2：配置 LLM 时对关系建议附语义复审结论（mock）。"""
 

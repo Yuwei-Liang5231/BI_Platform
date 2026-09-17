@@ -102,6 +102,7 @@ async function generate() {
     metricRows.value = (sug.metrics ?? []).map((m) => ({
       ...m,
       code: genCode(m),
+      time_field: m.time_field ?? "", // 多日期列数据集必须显式指定，否则保存即编译拒绝
       autoSelect: true,
     }));
     step.value = 1;
@@ -120,6 +121,11 @@ async function generate() {
 const idByName = computed(() =>
   Object.fromEntries(datasets.value.map((d) => [d.name, d.id])),
 );
+
+// 后端契约：HTTP 400 等业务错误经拦截器 reject 的是 axios error，
+// 真实 message 在 response.data.message（skipErrorToast 静默时须自行提取）
+const errMsg = (e) =>
+  e?.response?.data?.message || e?.message || "失败";
 
 async function runImport() {
   if (!selectedRelations.value.length && !selectedMetrics.value.length) {
@@ -140,22 +146,24 @@ async function runImport() {
       }, { skipErrorToast: true });
       results.value.push({ type: "表关系", label, ok: true });
     } catch (e) {
-      results.value.push({ type: "表关系", label, ok: false, message: e?.message ?? "失败" });
+      results.value.push({ type: "表关系", label, ok: false, message: errMsg(e) });
     }
   }
   for (const m of selectedMetrics.value) {
     const label = `${m.name}（${m.dataset}.${m.column} ${m.aggregation}）`;
     try {
+      const rule = { base_aggregation: m.aggregation, source: { table: m.dataset, column: m.column } };
+      if (m.time_field) rule.time_field = m.time_field;
       await createMetric({
         code: m.code,
         name: m.name,
-        calc_rule: { base_aggregation: m.aggregation, source: { table: m.dataset, column: m.column } },
+        calc_rule: rule,
         definition: m.reason || "建模建议向导入库",
         project_id: projectStore.currentId ?? null,
       }, { skipErrorToast: true });
       results.value.push({ type: "指标", label, ok: true });
     } catch (e) {
-      results.value.push({ type: "指标", label, ok: false, message: e?.message ?? "失败" });
+      results.value.push({ type: "指标", label, ok: false, message: errMsg(e) });
     }
   }
   importing.value = false;
@@ -306,6 +314,19 @@ onMounted(async () => {
         <el-table-column label="code" min-width="160">
           <template #default="{ row }">
             <el-input v-model="row.code" size="small" maxlength="99" />
+          </template>
+        </el-table-column>
+        <el-table-column label="时间列" min-width="140">
+          <template #default="{ row }">
+            <el-select
+              v-if="(row.date_columns?.length ?? 0) > 1"
+              v-model="row.time_field"
+              size="small"
+              placeholder="选择时间列"
+            >
+              <el-option v-for="c in row.date_columns" :key="c" :label="c" :value="c" />
+            </el-select>
+            <span v-else class="mw__evidence">{{ row.time_field || "全期常数" }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="reason" label="依据" min-width="200" show-overflow-tooltip />

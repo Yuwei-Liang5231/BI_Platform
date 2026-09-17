@@ -334,12 +334,29 @@ def _llm_metric_candidates(db: Session, datasets: list[Dataset]) -> list[dict]:
 
 
 def suggest_metrics(db: Session, project_id: int) -> list[dict]:
-    """指标候选 = 启发式 + 可选 LLM 提议（去重：同表同列同聚合留启发式在前）。"""
+    """指标候选 = 启发式 + 可选 LLM 提议（去重：同表同列同聚合留启发式在前）。
+
+    B13-2.1 修复：候选统一附 time_field/date_columns——多日期列数据集
+    （快照表常见）未显式 time_field 会被「保存即编译拒绝」400，向导入库
+    必须带上；date_columns 供向导下拉调整（默认取首个日期列）。
+    """
     heur = _heuristic_metric_candidates(db, project_id)
     llm = _llm_metric_candidates(db, _datasets_of(db, project_id))
     seen = {(h["dataset"], h["column"], h["aggregation"]) for h in heur}
     extra = [c for c in llm if (c["dataset"], c["column"], c["aggregation"]) not in seen]
-    return [*heur, *extra]
+    out = [*heur, *extra]
+
+    date_map: dict[str, list[str]] = {}
+    for r in _datasets_of(db, project_id):
+        cols = [c for c, t in r.columns_map.items() if t in ("date", "datetime")]
+        if cols:
+            date_map[r.name] = cols
+    for c in out:
+        cols = date_map.get(c["dataset"], [])
+        c["date_columns"] = cols
+        if cols:
+            c.setdefault("time_field", cols[0])
+    return out
 
 
 def all_suggestions(db: Session, project_id: int | None = None) -> dict:
