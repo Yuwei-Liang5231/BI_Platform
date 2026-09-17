@@ -589,10 +589,11 @@ onMounted(async () => {
   margin-top: var(--pwc-space-5);
 }
 
-/* 打印/导出 PDF：只保留正文文档 */
+/* 打印/导出 PDF：只保留正文文档（含顶部导航与操作按钮一并隐藏） */
 @media print {
   .reports__side,
-  .page-header {
+  .page-header,
+  .reports__doc-foot {
     display: none;
   }
 
@@ -603,6 +604,19 @@ onMounted(async () => {
   .reports__doc {
     border: none;
     padding: 0;
+  }
+}
+</style>
+
+<style>
+/* 非 scoped：打印时隐藏全局顶栏（scoped 选择器够不到 DefaultLayout） */
+@media print {
+  .layout__header {
+    display: none !important;
+  }
+
+  .layout__main {
+    padding: 0 !important;
   }
 }
 </style>
