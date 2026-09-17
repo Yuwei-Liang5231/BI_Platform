@@ -5,6 +5,7 @@
  * 受限可见性配置（role/department 负向登记，整组替换）。
  */
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
@@ -818,13 +819,41 @@ async function doImport() {
 
 const canManage = computed(() => auth.canWrite);
 
+const route = useRoute();
+const router = useRouter();
+
+/* 深链编辑：?edit={id}（来自指标详情「归因下钻」提示等场景）→ 列表就绪后自动弹出编辑对话框。
+   当前列表找不到时兜底按 当前项目+all 重拉一次；用完即清参数，防止刷新/翻页重复弹出。 */
+async function openFromQuery() {
+  const editId = Number(route.query.edit);
+  if (!editId) return;
+  let row = metricStore.list.find((m) => m.id === editId);
+  if (!row) {
+    const pid = projectStore.currentId;
+    await metricStore.fetchList({ status: "all", ...(pid ? { project_id: pid } : {}) });
+    row = metricStore.list.find((m) => m.id === editId);
+  }
+  if (row) openEdit(row);
+  else ElMessage.warning("未找到指定指标（可能已被删除或不属于当前项目）");
+  router.replace({ query: {} });
+}
+
 onMounted(async () => {
   if (!canManage.value) {
     ElMessage.warning("当前角色无权进入指标管理");
     return;
   }
   await fetchData();
+  openFromQuery();
 });
+
+// 已在本页时 query 变化（如从详情页返回携带参数）也能响应
+watch(
+  () => route.query.edit,
+  (v) => {
+    if (v) openFromQuery();
+  },
+);
 </script>
 
 <template>

@@ -14,12 +14,22 @@ import { ElMessage } from "element-plus";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
+import { useAuthStore } from "@/stores/auth";
 import { useQueryStore } from "@/stores/query";
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const metricStore = useMetricStore();
 const queryStore = useQueryStore();
+
+// 可写角色（analyst/admin）才提供「编辑指标」深链（指标管理页仅可写角色可进）
+const canManage = computed(() => auth.canWrite);
+
+// 跳转指标管理页并自动弹出编辑对话框（?edit={id}，由管理页消费）
+function goEditMetric() {
+  router.push({ path: "/metrics/admin", query: { edit: metricId.value } });
+}
 
 const metricId = computed(() => route.params.id);
 const metric = computed(() => metricStore.detail);
@@ -450,7 +460,8 @@ onMounted(async () => {
               {{ treeNode ? "重新生成" : "生成归因" }}
             </el-button>
             <span v-if="!dimCandidates.length" class="attr__hint">
-              该指标未配置常用维度（dimensions），可在「编辑指标」中补充后使用归因下钻
+              该指标未配置常用维度（dimensions），<template v-if="canManage">点
+              <el-link type="primary" class="attr__edit-link" @click="goEditMetric">「编辑指标」</el-link></template><template v-else>在「编辑指标」中</template>补充后使用归因下钻
             </span>
           </div>
 
@@ -635,6 +646,11 @@ onMounted(async () => {
 
 .attr__hint {
   color: var(--pwc-text-secondary);
+  font-size: var(--pwc-font-body-s);
+}
+/* 行内「编辑指标」深链与提示文字基线对齐 */
+.attr__edit-link {
+  vertical-align: baseline;
   font-size: var(--pwc-font-body-s);
 }
 
