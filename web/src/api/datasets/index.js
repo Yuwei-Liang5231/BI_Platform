@@ -40,8 +40,8 @@ export const getColumnAnomalies = (datasetId, columnName) =>
 export const deleteDataset = (datasetId) =>
   request.delete(`/datasets/${datasetId}`);
 
-export const addRelation = (datasetId, data) =>
-  request.post(`/datasets/${datasetId}/relations`, data);
+export const addRelation = (datasetId, data, config) =>
+  request.post(`/datasets/${datasetId}/relations`, data, config);
 
 export const listRelations = (datasetId) =>
   request.get(`/datasets/${datasetId}/relations`);

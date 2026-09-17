@@ -1,6 +1,6 @@
 import request from "@/config/request";
 
-export const createMetric = (data) => request.post("/metrics", data);
+export const createMetric = (data, config) => request.post("/metrics", data, config);
 
 /** params: { search?, topic?, status? } */
 export const listMetrics = (params) => request.get("/metrics", { params });

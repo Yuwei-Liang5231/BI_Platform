@@ -65,6 +65,12 @@ const routes = [
         meta: { title: "数据集与表关系" },
       },
       {
+        path: "modeling",
+        name: "ModelingWizard",
+        component: () => import("@/views/modeling/ModelingWizard.vue"),
+        meta: { title: "建模建议向导" },
+      },
+      {
         path: "llm-models",
         name: "LlmModels",
         component: () => import("@/views/llm/LlmModels.vue"),

@@ -2,8 +2,18 @@
 
 铁律：只出建议、绝不自动入库——入库必须走人工确认（B13-2 确认流）。
 
+B13-2 修正（预研结论落地）：
+- 高基数兜底：护栏外列不再整列排除，改截断采样（各取前 N 个 distinct 估算
+  重叠率），evidence.sampled=true 置信降级（score × 0.95）——修复 user_id 类漏检；
+- 孤立巧合降权：同数据集对之间仅一条建议时（无其他关联佐证）score × 0.9 并
+  标注 isolated_pair——抑制跨表枚举巧合误报（如两个不同业务的 region）；
+- LLM 语义复审（可选）：配置了 LLM 时对关系建议批量判断"两列是否业务同一
+  实体键"，结果附 llm_review.verdict（likely/unlikely/uncertain），仅供参考；
+- 指标候选噪音：布尔列（distinct ≤ 2）与枚举/等级类数值列（distinct ≤ 12 且
+  列名含等级/状态等词）排除 sum 候选。
+
 表关系建议算法（行业无关、可解释）：
-- 候选列：文本列且基数 ≤ 5000（与拆解维度同一硬护栏，ID 类极端列排除）；
+- 候选列：文本列（string/mixed），护栏内全量值域、护栏外截断采样；
 - 值域重叠：两列 distinct 值交集 / 较小基数（dim 侧覆盖率）；
 - 命名相似：归一化后相等 1.0 / 包含 0.7 / 词元 Jaccard；
 - 综合分 = 0.6×值域重叠 + 0.4×命名相似；方向按基数定（大→小 = many_to_one）；
@@ -52,6 +62,12 @@ def _datasets_of(db: Session, project_id: int) -> list[Dataset]:
 
 MAX_SUGGEST_RELATIONS = 20
 HIGH_CARD_DISTINCT = 100  # 文本列基数超过此值 → count_distinct 指标候选
+SAMPLE_RELATION_LIMIT = 50000  # 关系建议截断采样上限（护栏外列的值域采样条数）
+ENUM_NAME_RE = re.compile(
+    r"(level|grade|tier|type|status|state|flag|is_|has_|gender|sex|category|rank"
+    r"|等级|级别|类型|状态|标志|类别|性别|星)",
+    re.IGNORECASE,
+)
 
 
 def _norm(name: str) -> str:
@@ -73,26 +89,39 @@ def _name_similarity(a: str, b: str) -> float:
     return len(toks_a & toks_b) / len(toks_a | toks_b)
 
 
-def _sample_distinct(views: dict, text_cols: dict[str, list[str]]) -> dict[tuple[str, str], set]:
-    """逐列取 distinct 值集合（上限 = 护栏 +1，超出标记不参与）。"""
+def _sample_distinct(
+    views: dict, text_cols: dict[str, list[str]]
+) -> tuple[dict[tuple[str, str], set], set[tuple[str, str]]]:
+    """逐列取 distinct 值集合（B13-2：护栏外列截断采样，不再整列排除）。
+
+    返回 (samples, sampled_keys)：sampled_keys 中的列基数超过护栏
+    （BREAKDOWN_MAX_CARDINALITY），以扩展窗口（SAMPLE_RELATION_LIMIT）截断采样，
+    重叠率为估算值，evidence.sampled=true 置信降级。
+    """
     samples: dict[tuple[str, str], set] = {}
+    sampled_keys: set[tuple[str, str]] = set()
+    limit = SAMPLE_RELATION_LIMIT + 1
     with duckdb_views(views) as con:
         for name, cols in text_cols.items():
             for col in cols:
                 rows = con.execute(
                     f"SELECT DISTINCT {_quote_ident(col)} FROM {_quote_ident(name)} "
-                    f"LIMIT {BREAKDOWN_MAX_CARDINALITY + 1}"
+                    f"LIMIT {limit}"
                 ).fetchall()
                 if len(rows) > BREAKDOWN_MAX_CARDINALITY:
-                    continue  # 超护栏列（如外部引用码）不参与关系建议
+                    sampled_keys.add((name, col))
                 vals = {str(r[0]) for r in rows if r[0] is not None and str(r[0]).strip() != ""}
                 if vals:
                     samples[(name, col)] = vals
-    return samples
+    return samples, sampled_keys
 
 
 def suggest_relations(db: Session, project_id: int) -> list[dict]:
-    """表关系建议：值域重叠 + 命名相似，双向去重、已登记关系标注 existing。"""
+    """表关系建议：值域重叠 + 命名相似，双向去重、已登记关系标注 existing。
+
+    B13-2：护栏外列截断采样参与（sampled 标注置信降级）；同数据集对间孤立
+    建议降权警示（抑制枚举巧合误报）；配置 LLM 时附语义复审结论。
+    """
     datasets = _datasets_of(db, project_id)
     if len(datasets) < 2:
         return []
@@ -101,7 +130,7 @@ def suggest_relations(db: Session, project_id: int) -> list[dict]:
         r.name: [c for c, t in r.columns_map.items() if t in ("string", "mixed")]
         for r in datasets
     }
-    samples = _sample_distinct(views, text_cols)
+    samples, sampled_keys = _sample_distinct(views, text_cols)
 
     id_to_name = {r.id: r.name for r in datasets}
     existing = {
@@ -137,6 +166,9 @@ def suggest_relations(db: Session, project_id: int) -> list[dict]:
                     else:
                         key = (nb, cb, na, ca)
                         card_from, card_to = len(vb), len(va)
+                    is_sampled = (na, ca) in sampled_keys or (nb, cb) in sampled_keys
+                    if is_sampled:
+                        score *= 0.95  # 截断采样估算，置信降级
                     item = {
                         "from_dataset": key[0], "from_column": key[1],
                         "to_dataset": key[2], "to_column": key[3],
@@ -147,6 +179,7 @@ def suggest_relations(db: Session, project_id: int) -> list[dict]:
                             "name_similarity": round(name_sim, 4),
                             "cardinality_from": card_from,
                             "cardinality_to": card_to,
+                            "sampled": is_sampled,
                         },
                         "existing": key in existing,
                     }
@@ -154,15 +187,75 @@ def suggest_relations(db: Session, project_id: int) -> list[dict]:
                     if prev is None or item["score"] > prev["score"]:
                         raw[key] = item
 
-    out = sorted(raw.values(), key=lambda x: -x["score"])
-    return out[:MAX_SUGGEST_RELATIONS]
+    # B13-2 孤立巧合降权：同数据集对之间仅此一条建议（无其他关联佐证）时，
+    # 大概率是跨表枚举值域巧合（如两个不同业务的 region），降权并警示。
+    by_pair: dict[frozenset, list[dict]] = {}
+    for item in raw.values():
+        by_pair.setdefault(frozenset((item["from_dataset"], item["to_dataset"])), []).append(item)
+    for group in by_pair.values():
+        if len(group) == 1:
+            item = group[0]
+            item["score"] = round(item["score"] * 0.9, 4)
+            item["evidence"]["isolated_pair"] = True
+
+    out = sorted(raw.values(), key=lambda x: -x["score"])[:MAX_SUGGEST_RELATIONS]
+    _llm_relation_review(db, out)
+    return out
+
+
+def _llm_relation_review(db: Session, suggestions: list[dict]) -> None:
+    """可选 LLM 语义复审：批量判断每对列是否业务同一实体键（就地附 llm_review）。
+
+    未配置 LLM / 调用失败 → 静默跳过（建议引擎本身不依赖 LLM）。
+    verdict：likely（同一实体键）/ unlikely（不同实体或非键列）/ uncertain。
+    """
+    if not suggestions:
+        return
+    from app.infra.llm import chat_json, resolve_llm_config
+
+    config = resolve_llm_config(db, get_settings())
+    if not config:
+        return
+    lines = [
+        f"{i}. {s['from_dataset']}.{s['from_column']} ↔ {s['to_dataset']}.{s['to_column']}"
+        f"（值域重叠 {s['evidence']['overlap_ratio']}）"
+        for i, s in enumerate(suggestions)
+    ]
+    system = (
+        "你是数据建模评审员。判断下列候选表关系里，两列是否为业务上同一实体的连接键"
+        "（如订单表的 user_id 与用户表的 user_id → likely；两个不同业务表的同名枚举列"
+        "如 region/等级 → unlikely；无法判断 → uncertain）。"
+        '只输出 JSON {"reviews":[{"index":序号,"verdict":"likely|unlikely|uncertain",'
+        '"reason":"一句话"}]}，序号必须来自给定清单。'
+    )
+    obj = chat_json(config, system, "\n".join(lines), timeout=60.0)
+    reviews = obj.get("reviews") if isinstance(obj, dict) else None
+    if not isinstance(reviews, list):
+        return
+    for r in reviews:
+        if not isinstance(r, dict):
+            continue
+        idx = r.get("index")
+        if not isinstance(idx, int) or not 0 <= idx < len(suggestions):
+            continue
+        verdict = r.get("verdict")
+        if verdict not in ("likely", "unlikely", "uncertain"):
+            continue
+        suggestions[idx]["llm_review"] = {
+            "verdict": verdict,
+            "reason": str(r.get("reason") or "")[:200],
+        }
 
 
 # ---------------------------------------------------------------- 指标候选
 
 
 def _heuristic_metric_candidates(db: Session, project_id: int) -> list[dict]:
-    """启发式指标候选：日期列 × 数值列 → sum；高基数文本列 → count_distinct。"""
+    """启发式指标候选：日期列 × 数值列 → sum；高基数文本列 → count_distinct。
+
+    B13-2 噪音过滤：布尔数值列（distinct ≤ 2）与枚举/等级类数值列
+    （distinct ≤ 12 且列名含等级/状态等词）排除 sum 候选（对 0/1、等级求和无业务意义）。
+    """
     datasets = _datasets_of(db, project_id)
     views = {r.name: view_target(r.parquet_path) for r in datasets}
     out: list[dict] = []
@@ -175,6 +268,11 @@ def _heuristic_metric_candidates(db: Session, project_id: int) -> list[dict]:
             numeric = [c for c, t in r.columns_map.items() if t in ("int", "float")]
             text = [c for c, t in r.columns_map.items() if t in ("string", "mixed")]
             for col in numeric:
+                distinct = con.execute(
+                    f"SELECT COUNT(DISTINCT {_quote_ident(col)}) FROM {_quote_ident(name)}"
+                ).fetchone()[0]
+                if distinct <= 2 or (distinct <= 12 and ENUM_NAME_RE.search(col)):
+                    continue  # 布尔/枚举列：sum 无业务意义（B13-2 噪音过滤）
                 out.append({
                     "dataset": name, "column": col, "aggregation": "sum",
                     "name": f"{col} 合计",

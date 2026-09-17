@@ -7,12 +7,14 @@
  */
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { useRouter } from "vue-router";
 
 import { getDatasetQuality, importDatasetData } from "@/api/datasets";
 import { useAuthStore } from "@/stores/auth";
 import { useDatasetStore } from "@/stores/dataset";
 import { useProjectStore } from "@/stores/project";
 
+const router = useRouter();
 const auth = useAuthStore();
 const datasetStore = useDatasetStore();
 const projectStore = useProjectStore();
@@ -304,6 +306,9 @@ onMounted(fetchData);
           @click="openRelation"
         >
           登记表关系
+        </el-button>
+        <el-button :disabled="!auth.isAdmin" @click="router.push('/modeling')">
+          建模建议向导
         </el-button>
       </div>
     </div>

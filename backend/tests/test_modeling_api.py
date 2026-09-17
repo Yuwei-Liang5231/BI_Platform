@@ -1,5 +1,8 @@
 """B13-1 自动建模建议测试：关系建议（值域重叠+命名相似）与指标候选启发。
 
+B13-2 追加：高基数截断采样（sampled 标注）、孤立巧合降权警示、
+布尔/枚举数值列 sum 噪音过滤、LLM 语义复审（mock）。
+
 验收主线：
 - 事实表↔维度表关系被建议（高值域重叠），方向 many_to_one 正确；
 - 无关列不产生建议（双低过滤）；
@@ -54,8 +57,10 @@ def _mk_env(client):
 
 
 def _cleanup(client, env):
-    for key in ("orders", "products", "logs"):
-        client.delete(f"/api/datasets/{env[key]['id']}")
+    for key, ds in env.items():
+        if key in ("pid", "sfx") or not isinstance(ds, dict):
+            continue
+        client.delete(f"/api/datasets/{ds['id']}")
     client.delete(f"/api/projects/{env['pid']}")
 
 
@@ -162,5 +167,137 @@ class TestMetricSuggestions:
                 assert rels == [] or rels is None or (
                     isinstance(rels, list) and len(rels) == 0
                 )
+        finally:
+            _cleanup(client, env)
+
+
+class TestSampledHighCardinality:
+    """B13-2：护栏外（>5000 基数）列截断采样参与关系建议，标注 sampled。"""
+
+    def test_high_cardinality_key_detected_with_sampled_flag(self, client):
+        sfx = _suffix()
+        pid = client.post("/api/projects", json={"name": f"b13hc_{sfx}"}).json()["data"]["id"]
+        # users.user_id 与 orders.user_id 各 5001 个不同值——旧护栏（5000）下两侧均被整列排除 → 漏检
+        n = 5001
+        users_csv = "user_id,region\n" + "\n".join(f"u{i},east" for i in range(n)) + "\n"
+        orders_csv = (
+            "order_id,user_id,amount,d\n"
+            + "\n".join(f"o{i},u{i},{100 + i},2026-01-01" for i in range(n))
+            + "\n"
+        )
+        env = {
+            "pid": pid,
+            "users": _upload(client, f"b13hc_users_{sfx}", users_csv, pid),
+            "orders": _upload(client, f"b13hc_orders_{sfx}", orders_csv, pid),
+        }
+        try:
+            data = _suggestions(client, env)
+            hits = [
+                r for r in data["relations"]
+                if {r["from_dataset"], r["to_dataset"]}
+                == {env["users"]["name"], env["orders"]["name"]}
+                and r["from_column"] == "user_id" and r["to_column"] == "user_id"
+            ]
+            assert hits, f"高基数键（>5000）经截断采样后应被建议：{data['relations']}"
+            ev = hits[0]["evidence"]
+            assert ev["sampled"] is True
+            assert ev["overlap_ratio"] >= 0.99
+        finally:
+            _cleanup(client, env)
+
+
+class TestMetricNoiseFilter:
+    """B13-2：布尔/枚举数值列排除 sum 候选。"""
+
+    def test_boolean_and_enum_numeric_excluded_from_sum(self, client):
+        sfx = _suffix()
+        pid = client.post("/api/projects", json={"name": f"b13nf_{sfx}"}).json()["data"]["id"]
+        csv = (
+            "order_id,amount,auto_renew,level,d\n"
+            + "\n".join(
+                f"o{i},{100 + i},{i % 2},{i % 5},2026-01-{(i % 28) + 1:02d}"
+                for i in range(100)
+            )
+            + "\n"
+        )
+        env = {"pid": pid, "orders": _upload(client, f"b13nf_orders_{sfx}", csv, pid)}
+        try:
+            data = _suggestions(client, env)
+            got = {
+                (c["column"], c["aggregation"])
+                for c in data["metrics"]
+                if c["dataset"] == env["orders"]["name"]
+            }
+            assert ("auto_renew", "sum") not in got, "布尔列（0/1）不应建议 sum"
+            assert ("level", "sum") not in got, "等级列（枚举数值）不应建议 sum"
+            assert ("amount", "sum") in got
+        finally:
+            _cleanup(client, env)
+
+
+class TestIsolatedPairDownweight:
+    """B13-2：同数据集对间仅一条建议（孤立）时标注 isolated_pair。"""
+
+    def test_isolated_enum_pair_flagged(self, client):
+        sfx = _suffix()
+        pid = client.post("/api/projects", json={"name": f"b13iso_{sfx}"}).json()["data"]["id"]
+        # 两个不同业务的表共享同名枚举列 region（值域巧合相同），无其他关联佐证
+        # （键列名故意错开：a_key/b_key 命名不相似、值域不重叠，避免产生第二条建议）
+        a_csv = "a_key,region\nx1,east\nx2,west\nx3,north\n"
+        b_csv = "b_key,region\ny1,east\ny2,west\ny3,north\n"
+        env = {
+            "pid": pid,
+            "a": _upload(client, f"b13iso_a_{sfx}", a_csv, pid),
+            "b": _upload(client, f"b13iso_b_{sfx}", b_csv, pid),
+        }
+        try:
+            data = _suggestions(client, env)
+            hits = [
+                r for r in data["relations"]
+                if {r["from_dataset"], r["to_dataset"]}
+                == {env["a"]["name"], env["b"]["name"]}
+                and r["from_column"] == "region"
+            ]
+            assert hits, "枚举巧合列应仍输出（交人工判断），只是降权警示"
+            assert hits[0]["evidence"].get("isolated_pair") is True
+        finally:
+            _cleanup(client, env)
+
+
+class TestLlmRelationReview:
+    """B13-2：配置 LLM 时对关系建议附语义复审结论（mock）。"""
+
+    def test_llm_review_attached(self, client, monkeypatch):
+        import app.infra.llm as llm_mod
+
+        monkeypatch.setattr(
+            llm_mod,
+            "resolve_llm_config",
+            lambda db, settings: {"base_url": "http://mock", "api_key": "k", "model": "mock"},
+        )
+
+        def fake_chat(config, system, user, timeout=30.0):
+            if "评审员" in system:  # 关系语义复审调用
+                return {"reviews": [{"index": 0, "verdict": "likely", "reason": "同实体键"}]}
+            return None  # 指标候选 LLM 提议调用：降级跳过
+
+        monkeypatch.setattr(llm_mod, "chat_json", fake_chat)
+
+        env = _mk_env(client)
+        try:
+            data = _suggestions(client, env)
+            assert data["relations"], "应至少有一条关系建议"
+            assert data["relations"][0]["llm_review"]["verdict"] == "likely"
+            assert data["relations"][0]["llm_review"]["reason"] == "同实体键"
+        finally:
+            _cleanup(client, env)
+
+    def test_no_llm_config_no_review(self, client):
+        """未配置 LLM：建议照常输出，不带 llm_review 字段。"""
+        env = _mk_env(client)
+        try:
+            data = _suggestions(client, env)
+            for r in data["relations"]:
+                assert "llm_review" not in r
         finally:
             _cleanup(client, env)
