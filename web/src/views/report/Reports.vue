@@ -21,32 +21,72 @@
       </div>
     </div>
 
-    <!-- 模板区 -->
-    <div class="reports__templates">
-      <div
-        v-for="t in templates"
-        :key="t.id"
-        class="reports__tpl"
-        :class="{ 'is-active': t.id === selectedTemplateId }"
-        role="button"
-        @click="selectedTemplateId = t.id"
-      >
-        <div class="reports__tpl-name">{{ t.name }}</div>
-        <div class="reports__tpl-meta">
-          {{ periodLabel(t.period_type) }} · {{ t.metric_ids.length }} 个指标
+    <!-- 左右两栏（方案 A）：左 = 模板 + 历史存档（常驻可见），右 = 报告正文 -->
+    <div class="reports__layout">
+      <aside class="reports__side">
+        <h3 class="reports__side-title">报告模板</h3>
+        <div class="reports__side-list">
+          <div
+            v-for="t in templates"
+            :key="t.id"
+            class="reports__side-item"
+            :class="{ 'is-active': t.id === selectedTemplateId }"
+            role="button"
+            @click="selectTemplate(t)"
+          >
+            <div class="reports__side-name">{{ t.name }}</div>
+            <div class="reports__side-meta">
+              {{ periodLabel(t.period_type) }} · {{ t.metric_ids.length }} 个指标
+            </div>
+            <div class="reports__side-actions">
+              <el-button text size="small" @click.stop="openTemplateDialog(t)">编辑</el-button>
+              <el-button v-if="auth.isAdmin" text size="small" type="danger" @click.stop="doDelete(t)">
+                删除
+              </el-button>
+            </div>
+          </div>
+          <p v-if="!templates.length" class="reports__side-empty">
+            暂无模板——点右上角「新建报告模板」
+          </p>
         </div>
-        <div class="reports__tpl-actions">
-          <el-button text size="small" @click.stop="openTemplateDialog(t)">编辑</el-button>
-          <el-button v-if="auth.isAdmin" text size="small" type="danger" @click.stop="doDelete(t)">
-            删除
-          </el-button>
-        </div>
-      </div>
-      <el-empty v-if="!templates.length" description="暂无报告模板——先新建一个（选择周期类型与指标集）" />
-    </div>
 
-    <!-- 报告预览 -->
-    <div v-if="report" ref="reportRef" class="reports__doc">
+        <template v-if="selectedTemplateId">
+          <h3 class="reports__side-title">
+            历史存档
+            <el-tooltip content="快照不受口径变更影响；点击查看，行内可重新生成新版本">
+              <el-icon class="reports__side-help"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </h3>
+          <div class="reports__side-list reports__side-list--scroll">
+            <div
+              v-for="i in instances"
+              :key="i.id"
+              class="reports__side-item reports__side-item--inst"
+              :class="{ 'is-active': i.id === viewingInstanceId }"
+              role="button"
+              @click="viewInstance(i)"
+            >
+              <div class="reports__side-name">
+                <el-tag size="small" type="info" class="reports__ver-tag">v{{ i.version }}</el-tag>
+                <span>{{ i.period_start }} ~ {{ i.period_end }}</span>
+              </div>
+              <div class="reports__side-meta">
+                {{ i.narrative_source === "llm" ? "AI 叙述" : "规则叙述" }} ·
+                {{ i.created_by }} · {{ shortTime(i.created_at) }}
+              </div>
+              <el-button text size="small" class="reports__regen" @click.stop="doRegenerate(i)">
+                重新生成
+              </el-button>
+            </div>
+            <p v-if="!instances.length" class="reports__side-empty">
+              尚无存档——点右上角「生成并存档」
+            </p>
+          </div>
+        </template>
+      </aside>
+
+      <section class="reports__main">
+        <div v-if="report" ref="reportRef" class="reports__doc">
       <header class="reports__doc-head">
         <h2 class="reports__doc-title">
           {{ report.title }}
@@ -116,42 +156,14 @@
         <el-button @click="copyReport">复制文本</el-button>
         <el-button type="primary" @click="printReport">打印 / 导出 PDF</el-button>
       </footer>
+        </div>
+
+        <el-empty
+          v-else
+          description="选择左侧模板生成报告，或点击历史存档查看快照；每个数字与指标计算接口对账一致"
+        />
+      </section>
     </div>
-
-    <!-- 历史存档（B12-3） -->
-    <section v-if="selectedTemplateId" class="reports__history">
-      <h3 class="reports__sec-title">历史存档（最近 100 份，快照不受口径变更影响）</h3>
-      <el-table :data="instances" size="small" max-height="280" @row-click="(row) => viewInstance(row)">
-        <el-table-column label="周期" min-width="180">
-          <template #default="{ row }">{{ row.period_start }} ~ {{ row.period_end }}</template>
-        </el-table-column>
-        <el-table-column label="版本" width="72">
-          <template #default="{ row }">
-            <el-tag size="small" type="info">v{{ row.version }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="叙述" width="110">
-          <template #default="{ row }">
-            {{ row.narrative_source === "llm" ? "AI 叙述" : "规则叙述" }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="created_by" label="生成人" width="100" />
-        <el-table-column label="生成时间" min-width="160">
-          <template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="150">
-          <template #default="{ row }">
-            <el-button text size="small" @click.stop="viewInstance(row)">查看</el-button>
-            <el-button text size="small" @click.stop="doRegenerate(row)">重新生成</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </section>
-
-    <el-empty
-      v-else
-      description="选择左侧模板并点击「生成报告」；每个数字与指标计算接口对账一致"
-    />
 
     <!-- 新建/编辑模板 -->
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑报告模板' : '新建报告模板'" width="560">
@@ -191,6 +203,7 @@
 <script setup>
 import { onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { QuestionFilled } from "@element-plus/icons-vue";
 
 import {
   createReportTemplate,
@@ -245,6 +258,15 @@ async function fetchTemplates() {
   templates.value = await listReportTemplates(
     projectStore.lockedId ? { project_id: projectStore.lockedId } : undefined,
   );
+}
+
+function selectTemplate(t) {
+  selectedTemplateId.value = t.id;
+}
+
+function shortTime(ts) {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString();
 }
 
 async function doPreview() {
@@ -303,7 +325,12 @@ async function doRegenerate(row) {
   await fetchInstances();
 }
 
-watch(selectedTemplateId, fetchInstances);
+// 切模板：历史列表重取 + 清空正文区（避免停留在上一份报告）
+watch(selectedTemplateId, () => {
+  report.value = null;
+  viewingInstanceId.value = null;
+  fetchInstances();
+});
 
 function openTemplateDialog(tpl = null) {
   editingId.value = tpl?.id ?? null;
@@ -384,47 +411,101 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.reports__templates {
+/* ---------- 左右两栏（方案 A）：左 = 模板 + 历史，右 = 正文 ---------- */
+.reports__layout {
   display: flex;
-  gap: var(--pwc-space-3);
-  flex-wrap: wrap;
-  margin-bottom: var(--pwc-space-5);
-  min-height: 72px;
+  gap: var(--pwc-space-5);
+  align-items: flex-start;
 }
 
-.reports__tpl {
-  position: relative;
-  width: 220px;
-  padding: var(--pwc-space-3) var(--pwc-space-4);
+.reports__side {
+  width: 280px;
+  flex-shrink: 0;
+}
+
+.reports__side-title {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-1);
+  font-size: var(--pwc-font-body-m);
+  font-weight: 600;
+  margin-bottom: var(--pwc-space-2);
+}
+
+.reports__side-help {
+  color: var(--pwc-text-secondary);
+  cursor: help;
+}
+
+.reports__side-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pwc-space-2);
+  margin-bottom: var(--pwc-space-5);
+}
+
+.reports__side-list--scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.reports__side-item {
   border: 1px solid var(--pwc-border-subtle);
   border-radius: var(--pwc-radius-m);
   background: var(--pwc-surface);
+  padding: var(--pwc-space-2) var(--pwc-space-3);
   cursor: pointer;
 }
 
-.reports__tpl.is-active {
+.reports__side-item:hover {
+  border-color: var(--pwc-primary);
+}
+
+.reports__side-item.is-active {
   border-color: var(--pwc-primary);
   box-shadow: 0 0 0 1px var(--pwc-primary);
 }
 
-.reports__tpl-name {
+.reports__side-name {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-1);
   font-weight: 600;
-  margin-bottom: var(--pwc-space-1);
+  font-size: var(--pwc-font-body-s);
 }
 
-.reports__tpl-meta {
+.reports__ver-tag {
+  flex-shrink: 0;
+}
+
+.reports__side-meta {
   font-size: var(--pwc-font-body-s);
   color: var(--pwc-text-secondary);
+  margin-top: 2px;
 }
 
-.reports__tpl-actions {
-  margin-top: var(--pwc-space-2);
+.reports__side-actions {
   display: flex;
   gap: var(--pwc-space-1);
+  margin-top: 2px;
 }
 
-.reports__history {
-  margin-top: var(--pwc-space-5);
+.reports__regen {
+  margin-top: 2px;
+  padding: 0;
+  height: auto;
+}
+
+.reports__side-empty {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
+  padding: var(--pwc-space-2) 0;
+}
+
+.reports__main {
+  flex: 1;
+  min-width: 0;
 }
 
 .reports__doc {
@@ -506,5 +587,22 @@ onMounted(async () => {
   justify-content: flex-end;
   gap: var(--pwc-space-3);
   margin-top: var(--pwc-space-5);
+}
+
+/* 打印/导出 PDF：只保留正文文档 */
+@media print {
+  .reports__side,
+  .page-header {
+    display: none;
+  }
+
+  .reports__layout {
+    display: block;
+  }
+
+  .reports__doc {
+    border: none;
+    padding: 0;
+  }
 }
 </style>
