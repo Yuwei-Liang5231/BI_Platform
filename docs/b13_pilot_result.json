@@ -1,0 +1,380 @@
+{
+ "uploaded": [
+  {
+   "dataset": "retail_channels",
+   "rows": 8,
+   "cols": 3
+  },
+  {
+   "dataset": "retail_products",
+   "rows": 240,
+   "cols": 6
+  },
+  {
+   "dataset": "retail_users",
+   "rows": 12500,
+   "cols": 7
+  },
+  {
+   "dataset": "retail_orders",
+   "rows": 100000,
+   "cols": 13
+  },
+  {
+   "dataset": "saas_plans",
+   "rows": 4,
+   "cols": 5
+  },
+  {
+   "dataset": "saas_accounts",
+   "rows": 2000,
+   "cols": 7
+  },
+  {
+   "dataset": "saas_subscriptions",
+   "rows": 100000,
+   "cols": 10
+  },
+  {
+   "dataset": "saas_usage_events",
+   "rows": 100000,
+   "cols": 8
+  }
+ ],
+ "suggestions": {
+  "project_id": 1,
+  "relations": [
+   {
+    "from_dataset": "retail_channels",
+    "from_column": "channel_id",
+    "to_dataset": "retail_orders",
+    "to_column": "channel_id",
+    "relation_type": "many_to_one",
+    "score": 1.0,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 1.0,
+     "cardinality_from": 8,
+     "cardinality_to": 8
+    },
+    "existing": false
+   },
+   {
+    "from_dataset": "retail_products",
+    "from_column": "product_id",
+    "to_dataset": "retail_orders",
+    "to_column": "product_id",
+    "relation_type": "many_to_one",
+    "score": 1.0,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 1.0,
+     "cardinality_from": 240,
+     "cardinality_to": 240
+    },
+    "existing": false
+   },
+   {
+    "from_dataset": "retail_users",
+    "from_column": "region",
+    "to_dataset": "saas_accounts",
+    "to_column": "region",
+    "relation_type": "many_to_one",
+    "score": 1.0,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 1.0,
+     "cardinality_from": 6,
+     "cardinality_to": 6
+    },
+    "existing": false
+   },
+   {
+    "from_dataset": "saas_plans",
+    "from_column": "plan_id",
+    "to_dataset": "saas_subscriptions",
+    "to_column": "plan_id",
+    "relation_type": "many_to_one",
+    "score": 1.0,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 1.0,
+     "cardinality_from": 4,
+     "cardinality_to": 4
+    },
+    "existing": false
+   },
+   {
+    "from_dataset": "saas_accounts",
+    "from_column": "account_id",
+    "to_dataset": "saas_subscriptions",
+    "to_column": "account_id",
+    "relation_type": "many_to_one",
+    "score": 1.0,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 1.0,
+     "cardinality_from": 2000,
+     "cardinality_to": 2000
+    },
+    "existing": false
+   },
+   {
+    "from_dataset": "saas_accounts",
+    "from_column": "account_id",
+    "to_dataset": "saas_usage_events",
+    "to_column": "account_id",
+    "relation_type": "many_to_one",
+    "score": 1.0,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 1.0,
+     "cardinality_from": 2000,
+     "cardinality_to": 2000
+    },
+    "existing": false
+   },
+   {
+    "from_dataset": "saas_subscriptions",
+    "from_column": "account_id",
+    "to_dataset": "saas_usage_events",
+    "to_column": "account_id",
+    "relation_type": "many_to_one",
+    "score": 1.0,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 1.0,
+     "cardinality_from": 2000,
+     "cardinality_to": 2000
+    },
+    "existing": false
+   },
+   {
+    "from_dataset": "saas_subscriptions",
+    "from_column": "billing_cycle",
+    "to_dataset": "saas_plans",
+    "to_column": "billing_unit",
+    "relation_type": "many_to_one",
+    "score": 0.7333,
+    "evidence": {
+     "overlap_ratio": 1.0,
+     "name_similarity": 0.3333,
+     "cardinality_from": 3,
+     "cardinality_to": 1
+    },
+    "existing": false
+   }
+  ],
+  "metrics": [
+   {
+    "dataset": "retail_users",
+    "column": "level",
+    "aggregation": "sum",
+    "name": "level 合计",
+    "reason": "数值列 × 时间列 register_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_users",
+    "column": "user_id",
+    "aggregation": "count_distinct",
+    "name": "user_id 数",
+    "reason": "高基数文本列（12500 个不同值，ID 类）× 时间列 register_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_users",
+    "column": "user_name",
+    "aggregation": "count_distinct",
+    "name": "user_name 数",
+    "reason": "高基数文本列（270 个不同值，ID 类）× 时间列 register_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_users",
+    "column": "external_ref",
+    "aggregation": "count_distinct",
+    "name": "external_ref 数",
+    "reason": "高基数文本列（10632 个不同值，ID 类）× 时间列 register_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "quantity",
+    "aggregation": "sum",
+    "name": "quantity 合计",
+    "reason": "数值列 × 时间列 order_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "unit_price",
+    "aggregation": "sum",
+    "name": "unit_price 合计",
+    "reason": "数值列 × 时间列 order_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "discount",
+    "aggregation": "sum",
+    "name": "discount 合计",
+    "reason": "数值列 × 时间列 order_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "pay_amount",
+    "aggregation": "sum",
+    "name": "pay_amount 合计",
+    "reason": "数值列 × 时间列 order_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "refund_amount",
+    "aggregation": "sum",
+    "name": "refund_amount 合计",
+    "reason": "数值列 × 时间列 order_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "order_id",
+    "aggregation": "count_distinct",
+    "name": "order_id 数",
+    "reason": "高基数文本列（100000 个不同值，ID 类）× 时间列 order_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "user_id",
+    "aggregation": "count_distinct",
+    "name": "user_id 数",
+    "reason": "高基数文本列（12495 个不同值，ID 类）× 时间列 order_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "product_id",
+    "aggregation": "count_distinct",
+    "name": "product_id 数",
+    "reason": "高基数文本列（240 个不同值，ID 类）× 时间列 order_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "retail_orders",
+    "column": "coupon_code",
+    "aggregation": "count_distinct",
+    "name": "coupon_code 数",
+    "reason": "高基数文本列（8687 个不同值，ID 类）× 时间列 order_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_accounts",
+    "column": "account_id",
+    "aggregation": "count_distinct",
+    "name": "account_id 数",
+    "reason": "高基数文本列（2000 个不同值，ID 类）× 时间列 signup_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_accounts",
+    "column": "account_name",
+    "aggregation": "count_distinct",
+    "name": "account_name 数",
+    "reason": "高基数文本列（2000 个不同值，ID 类）× 时间列 signup_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_accounts",
+    "column": "crm_ref",
+    "aggregation": "count_distinct",
+    "name": "crm_ref 数",
+    "reason": "高基数文本列（1679 个不同值，ID 类）× 时间列 signup_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_subscriptions",
+    "column": "mrr_amount",
+    "aggregation": "sum",
+    "name": "mrr_amount 合计",
+    "reason": "数值列 × 时间列 start_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_subscriptions",
+    "column": "seats",
+    "aggregation": "sum",
+    "name": "seats 合计",
+    "reason": "数值列 × 时间列 start_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_subscriptions",
+    "column": "auto_renew",
+    "aggregation": "sum",
+    "name": "auto_renew 合计",
+    "reason": "数值列 × 时间列 start_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_subscriptions",
+    "column": "subscription_id",
+    "aggregation": "count_distinct",
+    "name": "subscription_id 数",
+    "reason": "高基数文本列（100000 个不同值，ID 类）× 时间列 start_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_subscriptions",
+    "column": "account_id",
+    "aggregation": "count_distinct",
+    "name": "account_id 数",
+    "reason": "高基数文本列（2000 个不同值，ID 类）× 时间列 start_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_usage_events",
+    "column": "usage_count",
+    "aggregation": "sum",
+    "name": "usage_count 合计",
+    "reason": "数值列 × 时间列 event_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_usage_events",
+    "column": "duration_min",
+    "aggregation": "sum",
+    "name": "duration_min 合计",
+    "reason": "数值列 × 时间列 event_date（启发式）",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_usage_events",
+    "column": "event_id",
+    "aggregation": "count_distinct",
+    "name": "event_id 数",
+    "reason": "高基数文本列（100000 个不同值，ID 类）× 时间列 event_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_usage_events",
+    "column": "account_id",
+    "aggregation": "count_distinct",
+    "name": "account_id 数",
+    "reason": "高基数文本列（2000 个不同值，ID 类）× 时间列 event_date",
+    "source": "heuristic"
+   },
+   {
+    "dataset": "saas_usage_events",
+    "column": "response_ms",
+    "aggregation": "count_distinct",
+    "name": "response_ms 数",
+    "reason": "高基数文本列（2981 个不同值，ID 类）× 时间列 event_date",
+    "source": "heuristic"
+   }
+  ],
+  "disclaimer": "以上为自动建议，未经人工确认不会写入任何配置（B13 铁律）"
+ }
+}
