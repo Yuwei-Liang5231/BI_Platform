@@ -668,7 +668,13 @@ async function handleSave() {
     if (editingId.value) {
       // PATCH：口径未变不带 calc_rule（避免后端强制 reason）；变了才带规则 + reason。
       // disambiguation 传 null 不清空（后端 exclude_none），空对象可清空。
-      const { code: _ignored, calc_rule: _rule, ...rest } = payload;
+      // project_id 仅创建时归属，更新接口 schema 不接受（Extra inputs 400），须剔除。
+      const {
+        code: _ignored,
+        calc_rule: _rule,
+        project_id: _pid,
+        ...rest
+      } = payload;
       const updatable = { ...rest, disambiguation: disResult.value ?? { question: "", options: [] } };
       // 状态变化单独透传（active/disabled；删除走删除按钮）
       if (originalStatus.value && form.status !== originalStatus.value) {
