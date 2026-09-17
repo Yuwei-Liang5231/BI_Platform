@@ -175,23 +175,60 @@ def _flush(writer: pq.ParquetWriter, schema: pa.Schema, header: list[str], buffe
         buf.clear()
 
 
+# openpyxl BUILTIN_FORMATS 只定义到 49；东亚版 Excel/WPS 的中文日期内置
+# numFmtId（27-36、50-58，如 58 = yyyy"年"m"月"d"日"）会 fallback 成 "General"，
+# is_date 判否 → 日期列返回裸序列号（46295）。这里显式补认这批 ID。
+_EA_BUILTIN_DATE_FMT_IDS = frozenset(range(27, 37)) | frozenset(range(50, 59))
+
+
+def _is_xlsx_date_cell(cell) -> bool:
+    """日期格式判定：openpyxl is_date + 东亚内置日期 ID 兜底。"""
+    if cell.is_date:
+        return True
+    try:
+        return cell.has_style and cell.style_array.numFmtId in _EA_BUILTIN_DATE_FMT_IDS
+    except (AttributeError, IndexError, KeyError):
+        return False
+
+
 def _iter_xlsx_rows(path: Path) -> tuple[list[str], Iterator[list[str]]]:
+    from datetime import date as _date, datetime as _datetime
+
     from openpyxl import load_workbook
+    from openpyxl.utils.datetime import from_excel
 
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
-    rows = ws.iter_rows(values_only=True)
+    rows = ws.iter_rows()
     try:
         raw_header = next(rows)
     except StopIteration as exc:
         wb.close()
         raise BusinessError("Excel 没有表头行") from exc
-    header = normalize_header([(str(c) if c is not None else "") for c in raw_header])
+    header = normalize_header([(str(c.value) if c.value is not None else "") for c in raw_header])
+
+    def _cell_str(cell) -> str:
+        v = cell.value
+        if v is None:
+            return ""
+        # 第三方 ETL 导出的 xlsx 常见：日期列底层存 Excel 序列号（data_type='n' +
+        # 日期样式），Excel/WPS 按样式显示日期，但 openpyxl 只对 data_type='d'
+        # 自动转换，'n' 返回裸数字（如 46295）。此处按工作簿纪元补一次换算。
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and _is_xlsx_date_cell(cell):
+            v = from_excel(v, wb.epoch)
+        if isinstance(v, _datetime):
+            # 零点输出纯日期（月末快照类列归为 date），带时间才输出完整 datetime
+            if not (v.hour or v.minute or v.second or v.microsecond):
+                return v.date().isoformat()
+            return v.isoformat(sep=" ")
+        if isinstance(v, _date):
+            return v.isoformat()
+        return str(v)
 
     def gen() -> Iterator[list[str]]:
         try:
             for row in rows:
-                yield [("" if c is None else str(c)) for c in row]
+                yield [_cell_str(c) for c in row]
         finally:
             wb.close()
 

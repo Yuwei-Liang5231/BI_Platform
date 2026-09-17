@@ -349,3 +349,103 @@ def test_relation_invalid_type_rejected(client, orders_id, users_id):
         },
     )
     assert resp.status_code == 400
+
+
+# --------------------------------------------------------------- xlsx 日期序列号回归
+# 用户实例（2026-09-17）：WIP 表 MONTH_END 在 Excel 中显示 2026年9月30日，
+# 入库后变 46295。根因：openpyxl BUILTIN_FORMATS 只定义到 49，东亚版 Excel/WPS
+# 的中文日期内置 numFmtId（27-36、50-58）被 fallback 成 "General"，
+# 读取端 date_formats 集合不收录 → 日期列返回裸序列号。
+
+
+def _xlsx_bytes(rows) -> bytes:
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _rewrite_cellxfs_numfmt(xlsx: bytes, from_id: int, to_id: int) -> bytes:
+    """仅替换 cellXfs 段内 numFmtId（不动 numFmts 自定义定义段），模拟
+    单元格引用东亚内置日期 ID 且自定义格式表中无该 ID 的真实场景。"""
+    import re
+    import zipfile
+
+    zin = zipfile.ZipFile(io.BytesIO(xlsx))
+    items = {i.filename: zin.read(i.filename) for i in zin.infolist()}
+    zin.close()
+    styles = items["xl/styles.xml"].decode("utf-8")
+    m = re.search(r"(<cellXfs[^>]*>)(.*?)(</cellXfs>)", styles, re.S)
+    assert m, "styles.xml 缺 cellXfs"
+    inner = m.group(2).replace(f'numFmtId="{from_id}"', f'numFmtId="{to_id}"')
+    assert inner != m.group(2), "cellXfs 内未找到目标 numFmtId"
+    items["xl/styles.xml"] = (
+        styles[: m.start()] + m.group(1) + inner + m.group(3) + styles[m.end() :]
+    ).encode("utf-8")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, data in items.items():
+            zout.writestr(name, data)
+    return out.getvalue()
+
+
+def _upload_xlsx(client, raw: bytes, name: str):
+    return client.post(
+        "/api/datasets/upload",
+        files={
+            "file": (
+                f"{name}.xlsx",
+                io.BytesIO(raw),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"name": name},
+    )
+
+
+def test_xlsx_ea_builtin_date_id_serial_converted(client):
+    """numFmtId=58（东亚内置 yyyy年m月d日）的日期列序列号 → 入库转回日期。"""
+    from datetime import datetime
+
+    raw = _xlsx_bytes([["MONTH_END", "AR"], [datetime(2026, 9, 30), 100]])
+    raw = _rewrite_cellxfs_numfmt(raw, 164, 58)
+    resp = _upload_xlsx(client, raw, "ing_ea_date")
+    assert resp.status_code == 200, resp.text
+    ds = resp.json()["data"]
+    try:
+        cols = {c["name"]: c for c in ds["columns"]}
+        assert cols["MONTH_END"]["type"] == "date"
+        prev = client.get(f"/api/datasets/{ds['id']}/preview").json()["data"]
+        assert prev["rows"][0]["MONTH_END"] == "2026-09-30"
+        assert prev["rows"][0]["AR"] == 100  # 普通数值列不受日期换算影响
+    finally:
+        client.delete(f"/api/datasets/{ds['id']}")
+
+
+def test_xlsx_datetime_midnight_as_date_and_time_kept(client):
+    """openpyxl 正常写出的 datetime：零点归 date，带时间保留完整 datetime。"""
+    from datetime import datetime
+
+    raw = _xlsx_bytes(
+        [
+            ["MONTH_END", "ETL_TIME"],
+            [datetime(2026, 9, 30), datetime(2026, 9, 17, 8, 30, 0)],
+        ]
+    )
+    resp = _upload_xlsx(client, raw, "ing_ea_dt")
+    assert resp.status_code == 200, resp.text
+    ds = resp.json()["data"]
+    try:
+        prev = client.get(f"/api/datasets/{ds['id']}/preview").json()["data"]
+        assert prev["rows"][0]["MONTH_END"] == "2026-09-30"
+        assert prev["rows"][0]["ETL_TIME"] == "2026-09-17T08:30:00"
+        cols = {c["name"]: c for c in ds["columns"]}
+        assert cols["MONTH_END"]["type"] == "date"
+        assert cols["ETL_TIME"]["type"] == "datetime"
+    finally:
+        client.delete(f"/api/datasets/{ds['id']}")
