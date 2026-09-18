@@ -338,8 +338,8 @@ class TestLlmNarrative:
             ]})
             report = _weekly_preview(client, env)
             assert report["narrative_source"] == "llm"
-            # mock 只写了 overview/metrics：夹具周报有异动 → anomaly 章节降级为规则句
-            assert report["llm_degraded"] == ["anomaly"]
+            # mock 只写了 overview/metrics：anomaly 与 insight 章节降级为规则句
+            assert report["llm_degraded"] == ["anomaly", "insight"]
             sec = {s["section"]: s for s in report["narrative"]}
             assert sec["anomaly"]["source"] == "rule"
             sec = {s["section"]: s for s in report["narrative"]}
@@ -349,7 +349,7 @@ class TestLlmNarrative:
             ref = report["refs"][f"m{mid}"]
             assert str(ref["value"]) in ms.replace(",", "")  # 值来自 refs 回填
             assert "环比" in ms
-            assert f"{ref['mom_pct']:+.1f}%" in ms  # 变化率来自 refs 回填（1 位小数）
+            assert f"{round(ref['mom_pct']):+}%" in ms  # 变化率来自 refs 回填（取整契约）
         finally:
             _cleanup(client, env)
 
@@ -411,6 +411,82 @@ class TestLlmNarrative:
             # 本夹具周报有异动 → 归因章节存在且 source=rule
             att = [s for s in report["narrative"] if s["section"] == "attribution"]
             assert att and att[0]["source"] == "rule"
+        finally:
+            _cleanup(client, env)
+
+
+# ---------------------------------------------------------------- 图表与洞察增强
+
+
+class TestEnhancedReport:
+    def test_weekly_trends_with_anomaly_dates(self, client):
+        """周报趋势图数据：本期/基期各 7 天，异动日标注进趋势。"""
+        env = _make_env(client)
+        try:
+            report = _weekly_preview(client, env)
+            trends = report["trends"]
+            assert len(trends) == 1
+            t = trends[0]
+            assert t["metric_id"] == env["metric"]["id"]
+            assert [p["date"] for p in t["current"]][0] == "2026-03-09"
+            assert len(t["current"]) == 7 and len(t["previous"]) == 7
+            assert t["anomaly_dates"] == ["2026-03-15"]
+        finally:
+            _cleanup(client, env)
+
+    def test_daily_report_has_no_trend(self, client):
+        """日报单日不画趋势折线。"""
+        env = _make_env(client)
+        try:
+            report = client.post("/api/reports/preview", json={
+                "period_type": "daily",
+                "metric_ids": [env["metric"]["id"]],
+                "as_of": "2026-03-10",
+            }).json()["data"]
+            assert report["trends"] == []
+        finally:
+            _cleanup(client, env)
+
+    def test_insight_rule_fallback_and_toggle(self, client):
+        """insight 章节规则兜底含建议句；开关关闭后不出现在叙述中。"""
+        env = _make_env(client)
+        try:
+            report = _weekly_preview(client, env)  # insight 默认开
+            insight = [s for s in report["narrative"] if s["section"] == "insight"]
+            assert insight and insight[0]["source"] == "rule"
+            assert "建议" in "".join(insight[0]["sentences"])
+
+            off = client.post("/api/reports/preview", json={
+                "period_type": "weekly",
+                "metric_ids": [env["metric"]["id"]],
+                "as_of": "2026-03-16",
+                "sections": {"insight": False},
+            }).json()["data"]
+            assert all(s["section"] != "insight" for s in off["narrative"])
+        finally:
+            _cleanup(client, env)
+
+    def test_llm_insight_consumes_material_refs(self, client, monkeypatch):
+        """LLM 引用 ins 素材占位符 → 平台回填预写建议文本（数字审计同栈）。"""
+        env = _make_env(client)
+        try:
+            mid = env["metric"]["id"]
+            _patch_llm(monkeypatch, {"sections": [
+                {"section": "overview", "sentences": [
+                    "本期态势请关注 {{ref:m%d_mom}} 的变化。" % mid]},
+                {"section": "insight", "sentences": [
+                    "建议行动：{{ref:ins1}}",
+                    "凭空建议 3 天内完成复核。"]},  # 第二句裸数字 → 剔除
+            ]})
+            report = _weekly_preview(client, env)
+            assert report["narrative_source"] == "llm"
+            sec = {s["section"]: s for s in report["narrative"]}
+            assert sec["insight"]["source"] == "llm"
+            assert len(sec["insight"]["sentences"]) == 1
+            assert "{{ref:" not in sec["insight"]["sentences"][0]
+            assert "建议" in sec["insight"]["sentences"][0]
+            # 素材进报告体（夹具周报有异动 → 至少一条 ins 素材）
+            assert any(m["kind"] == "anomaly" for m in report["insight_material"])
         finally:
             _cleanup(client, env)
 

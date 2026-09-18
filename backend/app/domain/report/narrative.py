@@ -27,8 +27,8 @@ from app.infra.llm import chat_json, resolve_llm_config
 PLACEHOLDER_RE = re.compile(r"\{\{ref:([A-Za-z0-9_]+)\}\}")
 BARE_DIGIT_RE = re.compile(r"\d")  # 去占位符后不允许任何数字残留
 
-# LLM 可叙述的章节（attribution 保留规则句）
-LLM_SECTIONS = ("overview", "metrics", "anomaly")
+# LLM 可叙述的章节（attribution 保留规则句；insight 为建议素材组织）
+LLM_SECTIONS = ("overview", "metrics", "anomaly", "insight")
 
 
 def _build_ref_table(result: dict, sections: dict, period: dict) -> dict[str, tuple[str, str]]:
@@ -62,6 +62,9 @@ def _build_ref_table(result: dict, sections: dict, period: dict) -> dict[str, tu
             else "恒定基准偏离"
         )
         table[f"a{mid}_abn"] = (f"{name}偏离幅度", abn)
+    # 洞察与建议素材（平台预写的结构性事实+建议，无数值泄露给 LLM）
+    for i, mt in enumerate(result.get("insight_material") or [], 1):
+        table[f"ins{i}"] = (mt["label"], mt["statement"])
     return table
 
 
@@ -83,9 +86,16 @@ _SYSTEM_PROMPT = """你是企业经营报告的撰写助手，把给定的结论
 铁律（违反任何一条的句子都会被系统剔除）：
 1. 任何数字（含百分比、日期、序号、数量）都必须用占位符 {{ref:KEY}} 引用，KEY 必须严格来自给定清单；
 2. 占位符之外禁止出现任何数字字符——包括日期（用 {{ref:p_start}}、{{ref:p_end}}）、"前3名"这类数量词；
-3. 不编造清单外的事实；不评价好坏只陈述变化；
+3. 不编造清单外的事实；建议类内容只能基于清单中的结构性提示（方向背离、来源集中、显著异动等）展开，
+   不得引入新的业务假设或评价好坏；
 4. 只输出 JSON：{"sections":[{"section":"<章节键>","sentences":["句子1","句子2"]}]}，
-   章节键只能用给定清单中的键；句子要完整、专业、避免模板腔。"""
+   章节键只能用给定清单中的键；句子要完整、专业、避免模板腔。
+
+章节写作要求：
+- overview（执行摘要）：3~5 句综合概述，点出本期最值得关注的 1~3 件事（可用 ins 开头的结构提示），
+  先讲总体态势，再讲最突出的变化，最后一句预告下文的异动或归因；
+- insight（洞察与建议）：把 ins 开头的结构提示组织成 2~4 条针对性建议
+  （如"建议核实……""建议对……逐项复核"），每句一个建议，不要堆砌重复表述。"""
 
 
 def llm_narrative(
@@ -102,7 +112,12 @@ def llm_narrative(
         return None
 
     table = _build_ref_table(result, sections, period)
-    allowed = [k for k in LLM_SECTIONS if (k != "metrics" or (sections.get("mom") or sections.get("yoy"))) and (k != "anomaly" or sections.get("anomaly"))]
+    allowed = [
+        k for k in LLM_SECTIONS
+        if (k != "metrics" or (sections.get("mom") or sections.get("yoy")))
+        and (k != "anomaly" or sections.get("anomaly"))
+        and (k != "insight" or sections.get("insight"))
+    ]
     if not allowed:
         return None
 

@@ -10,6 +10,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { useRouter } from "vue-router";
 
 import { getDatasetQuality, importDatasetData } from "@/api/datasets";
+import TermTip from "@/components/glossary/TermTip.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useDatasetStore } from "@/stores/dataset";
 import { useProjectStore } from "@/stores/project";
@@ -433,7 +434,10 @@ onMounted(fetchData);
           </el-table>
 
           <!-- 表关系 -->
-          <h5 class="ds__subhead">已登记表关系</h5>
+          <h5 class="ds__subhead">
+            已登记表关系
+            <TermTip term="relation" />
+          </h5>
           <el-table :data="datasetStore.relations" size="small" style="width: 100%">
             <el-table-column label="左表.字段" min-width="180">
               <template #default="{ row }">
@@ -521,7 +525,13 @@ onMounted(fetchData);
     </el-dialog>
 
     <!-- 表关系登记 -->
-    <el-dialog v-model="relationVisible" title="登记表关系" width="560px">
+    <el-dialog v-model="relationVisible" width="560px">
+      <template #header>
+        <span>
+          登记表关系
+          <TermTip term="relation" />
+        </span>
+      </template>
       <el-form label-width="110px">
         <el-form-item label="左表.字段">
           <el-select v-model="relationForm.from_column" style="width: 100%">
@@ -622,7 +632,7 @@ onMounted(fetchData);
             <el-table-column prop="type" label="类型" width="90" />
             <el-table-column label="空值" width="90">
               <template #default="{ row }">
-                {{ row.null_count }}（{{ (row.null_ratio * 100).toFixed(1) }}%）
+                {{ row.null_count }}（{{ Math.round(row.null_ratio * 100) }}%）
               </template>
             </el-table-column>
             <el-table-column prop="distinct_count" label="去重值" width="80" />

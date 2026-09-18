@@ -3,9 +3,10 @@
 import { onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Bell, Folder, ArrowDown, User as UserIcon } from "@element-plus/icons-vue";
+import { Bell, Folder, ArrowDown, User as UserIcon, QuestionFilled } from "@element-plus/icons-vue";
 
 import PwcLogo from "@/components/base/PwcLogo.vue";
+import GlossaryDrawer from "@/components/glossary/GlossaryDrawer.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useProjectStore } from "@/stores/project";
 import {
@@ -62,6 +63,7 @@ onMounted(() => {
 /* ---------- 站内通知（B10-3）：铃铛 + 小红点 ---------- */
 const notifications = ref([]);
 const unreadCount = ref(0);
+const showGlossary = ref(false); // 全局名词解释抽屉
 
 async function refreshUnread() {
   try {
@@ -196,6 +198,18 @@ async function handleDeleteProject(p) {
         </router-link>
       </nav>
       <div class="layout__context">
+        <!-- 全局名词解释：业务人员可随时查看平台术语定义 -->
+        <el-tooltip content="名词解释" placement="bottom">
+          <el-icon
+            :size="20"
+            class="layout__help"
+            role="button"
+            tabindex="0"
+            @click="showGlossary = true"
+          >
+            <QuestionFilled />
+          </el-icon>
+        </el-tooltip>
         <!-- B10-3 站内通知：铃铛 + 未读小红点 + 下拉列表 -->
         <el-popover placement="bottom-end" :width="380" trigger="click" @show="fetchNotifications">
           <template #reference>
@@ -304,6 +318,9 @@ async function handleDeleteProject(p) {
         项目用于隔离不同行业/业务的数据与指标：切换项目后，数据集、指标、看板与问数仅展示当前项目内容；删除仅允许空项目。
       </p>
     </el-dialog>
+
+    <!-- 全局名词解释（词条单一数据源：constants/glossary.js） -->
+    <GlossaryDrawer v-model="showGlossary" />
   </div>
 </template>
 
@@ -386,6 +403,17 @@ async function handleDeleteProject(p) {
   align-items: center;
   cursor: pointer;
   color: var(--pwc-text-primary);
+}
+
+.layout__help {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--pwc-text-primary);
+}
+
+.layout__help:hover {
+  color: var(--pwc-primary);
 }
 
 .notif__head {

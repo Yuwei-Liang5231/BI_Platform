@@ -19,6 +19,7 @@ import {
   breakdownDimensions,
 } from "@/api/query";
 import { listNotifications, markRead } from "@/api/notifications";
+import { glossaryTerm } from "@/constants/glossary";
 import { formatMetricValue } from "@/utils/format";
 import { useProjectStore } from "@/stores/project";
 
@@ -156,12 +157,10 @@ onMounted(fetchScan);
       </div>
     </div>
 
-    <!-- 检测口径说明（常驻）：用户不必猜测"反常/正常"如何得出 -->
+    <!-- 检测口径说明（常驻，文案引用统一术语表，避免多处维护） -->
     <el-alert type="info" :closable="false" class="overview__method">
       <template #title>
-        检测口径：<b>反常</b> = 该日值偏离「过去 N 个同星期几」的基准分布超过阈值倍标准差（默认 3σ，
-        先排除周期性——周日天然低不算暴涨），且变化幅度超过要紧度阈值（默认 5%）；
-        基准样本不足则标注「不判断」。逐指标阈值可在指标管理中调整。
+        检测口径：{{ glossaryTerm("anomaly")?.detail }}{{ glossaryTerm("materiality")?.brief }}逐指标阈值可在指标管理中调整。
       </template>
     </el-alert>
 

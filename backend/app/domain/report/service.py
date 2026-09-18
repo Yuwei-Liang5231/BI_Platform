@@ -24,7 +24,7 @@ from app.infra.models import Metric, ReportInstance, ReportTemplate, User
 from app.infra.repository import Repository
 
 PERIOD_TYPES = ("daily", "weekly", "monthly")
-SECTION_KEYS = ("overview", "mom", "yoy", "anomaly", "attribution")
+SECTION_KEYS = ("overview", "mom", "yoy", "anomaly", "attribution", "insight")
 DEFAULT_SECTIONS = {k: True for k in SECTION_KEYS}
 PERIOD_LABELS = {"daily": "日报", "weekly": "周报", "monthly": "月报"}
 
@@ -159,11 +159,22 @@ def resolve_period(period_type: str, as_of: date | None) -> tuple[date, date, st
     return start, end, f"{start.year}-{start.month:02d}"
 
 
+def _prev_range(period_type: str, start: date, end: date) -> tuple[date, date]:
+    """环比基期区间（与 metric-value compare 的等长前移语义一致）：
+    周/月报 = 上一完整周期；日报 = 前一天。"""
+    if period_type == "weekly":
+        return start - timedelta(days=7), end - timedelta(days=7)
+    if period_type == "monthly":
+        prev_end = start - timedelta(days=1)
+        return prev_end.replace(day=1), prev_end
+    return start - timedelta(days=1), end - timedelta(days=1)
+
+
 # ---------------------------------------------------------------- 结论计算
 
 
 def _fmt_pct(v) -> str:
-    return f"{v:+.1f}%" if v is not None else "无基期数据"
+    return f"{round(v):+}%" if v is not None else "无基期数据"
 
 
 def compute_conclusions(
@@ -174,6 +185,7 @@ def compute_conclusions(
     start: date,
     end: date,
     sections: dict,
+    period_type: str = "daily",
 ) -> dict:
     """结论集：值/环比/同比 + 异动 + 归因 TopN。全部经既有单点出口。
 
@@ -183,6 +195,7 @@ def compute_conclusions(
     from app.domain.anomaly import attribution as attribution_svc
     from app.domain.anomaly import service as anomaly_svc
     from app.domain.query.service import (
+        compute_metric_series,
         compute_metric_value,
         list_breakdown_dimensions,
     )
@@ -280,12 +293,98 @@ def compute_conclusions(
                     "contribution_pct": td.get("contribution_pct"),
                 }
 
+    # ---- 趋势图数据（本期 vs 环比基期双线；逐日走 _compute_range 复用缓存）----
+    # 日报单日不画折线；常数指标无时间维度不画。异动日在前端序列上标注。
+    trends: list[dict] = []
+    if period_type != "daily":
+        ps, pe = _prev_range(period_type, start, end)
+        for m in metrics:
+            if any(c.get("constant") and c["metric_id"] == m.id for c in conclusions):
+                continue
+            try:
+                cur = compute_metric_series(db, metric_ref=m.id, start=s, end=e, user=user)
+                prev = compute_metric_series(
+                    db, metric_ref=m.id, start=ps.isoformat(), end=pe.isoformat(), user=user
+                )
+            except BusinessError:
+                continue  # 无时间字段等：如实跳过趋势图
+            trends.append(
+                {
+                    "metric_id": m.id,
+                    "name": m.name,
+                    "code": m.code,
+                    "current": cur,
+                    "previous": prev,
+                    "anomaly_dates": [
+                        r["date"] for r in anomalies if r["metric_id"] == m.id
+                    ],
+                }
+            )
+
     return {
         "conclusions": conclusions,
         "anomalies": anomalies,
         "attributions": attributions,
+        "trends": trends,
+        "insight_material": _insight_material(conclusions, anomalies, attributions),
         "refs": refs,
     }
+
+
+def _insight_material(
+    conclusions: list[dict], anomalies: list[dict], attributions: list[dict]
+) -> list[dict]:
+    """洞察与建议章节的结构化素材（平台产出，LLM/规则句只消费不创造）。
+
+    每条 = {kind, label, statement}：label 进 LLM 占位符清单（无数值泄露），
+    statement 为服务端预写的事实+建议（回填文本，LLM 无法篡改数字）。
+    """
+    material: list[dict] = []
+    cons = [c for c in conclusions if not c.get("constant") and c.get("mom_pct") is not None]
+    ups = [c for c in cons if c["mom_pct"] > 0]
+    downs = [c for c in cons if c["mom_pct"] < 0]
+    if ups and downs:
+        a, b = ups[0], downs[0]
+        material.append(
+            {
+                "kind": "divergence",
+                "label": f"{a['name']}与{b['name']}环比方向背离",
+                "statement": (
+                    f"{a['name']}（{a['code']}）与 {b['name']}（{b['code']}）本期环比一升一降，"
+                    "两者变化方向背离，建议核实是否存在业务联动，或收入确认与回款之间的时点差异。"
+                ),
+            }
+        )
+    for att in attributions:
+        tops = att.get("top_dimensions") or []
+        pct = tops[0].get("contribution_pct") if tops else None
+        if pct is None:
+            continue
+        level = "高度集中" if pct >= 60 else ("较为集中" if pct >= 40 else None)
+        if level:
+            material.append(
+                {
+                    "kind": "concentration",
+                    "label": f"{att['name']}变化来源{level}",
+                    "statement": (
+                        f"{att['name']} 的变化按「{att['dimension']}」拆解后{level}，"
+                        "建议对主要来源逐项复核业务动因，确认增长/下滑的可持续性。"
+                    ),
+                }
+            )
+    for r in anomalies:
+        direction = "高于" if r["direction"] == "up" else "低于"
+        material.append(
+            {
+                "kind": "anomaly",
+                "label": f"{r['name']}存在显著异动",
+                "statement": (
+                    f"{r['name']}（{r['metric_code']}）在 {r['date']} 显著{direction}正常水平，"
+                    "建议核对该日期前后的业务事件与数据完整性。"
+                ),
+            }
+        )
+    return material
 
 
 # ---------------------------------------------------------------- 规则化叙述
@@ -306,12 +405,11 @@ def _metric_sentence(item: dict, sections: dict) -> str:
 
 
 def _n(v) -> str:
-    """数字叙述：整数不带小数、小数保留 4 位以内——数字只来自结论集。"""
+    """数字叙述：统一四舍五入取整 + 千分位（2026-09-18 契约：全平台数字不保留小数）。
+    数字只来自结论集。"""
     if v is None:
         return "无数据"
-    if isinstance(v, int) or (isinstance(v, float) and v.is_integer()):
-        return f"{int(v):,}"
-    return f"{v:,.4f}".rstrip("0").rstrip(".")
+    return f"{round(v):,}"
 
 
 def build_narrative(result: dict, sections: dict, period: dict) -> list[dict]:
@@ -319,15 +417,33 @@ def build_narrative(result: dict, sections: dict, period: dict) -> list[dict]:
     narrative: list[dict] = []
     conclusions = result["conclusions"]
     if sections.get("overview"):
-        narrative.append(
-            {
-                "section": "overview",
-                "sentences": [
-                    f"本{PERIOD_LABELS[period['type']]}覆盖周期 {period['start']} ~ {period['end']}，"
-                    f"共纳入 {len(conclusions)} 个指标。"
-                ],
-            }
-        )
+        sentences = [
+            f"本{PERIOD_LABELS[period['type']]}覆盖周期 {period['start']} ~ {period['end']}，"
+            f"共纳入 {len(conclusions)} 个指标。"
+        ]
+        # 执行摘要提要：点出最值得看的 1~3 件事（涨跌最猛 + 异动数），数字仍全部来自结论集
+        movers = [
+            c for c in conclusions
+            if not c.get("constant") and c.get("mom_pct") is not None
+        ]
+        highlights: list[str] = []
+        if movers:
+            top_up = max(movers, key=lambda c: c["mom_pct"])
+            if top_up["mom_pct"] > 0:
+                highlights.append(
+                    f"{top_up['name']}环比上升最快（{_fmt_pct(top_up['mom_pct'])}）"
+                )
+            top_down = min(movers, key=lambda c: c["mom_pct"])
+            if top_down["mom_pct"] < 0:
+                highlights.append(
+                    f"{top_down['name']}环比走弱最明显（{_fmt_pct(top_down['mom_pct'])}）"
+                )
+        n_anom = len(result.get("anomalies") or [])
+        if n_anom:
+            highlights.append(f"检测到 {n_anom} 项异动")
+        if highlights:
+            sentences.append("本期最值得关注：" + "；".join(highlights[:3]) + "。")
+        narrative.append({"section": "overview", "sentences": sentences})
     if sections.get("mom") or sections.get("yoy"):
         narrative.append(
             {
@@ -368,7 +484,7 @@ def build_narrative(result: dict, sections: dict, period: dict) -> list[dict]:
             ]
             for td in tops:
                 pct = td.get("contribution_pct")
-                pct_txt = f"{pct:.1f}%" if pct is not None else "—"
+                pct_txt = f"{round(pct)}%" if pct is not None else "—"
                 sentences.append(
                     f"{att['dimension']} = {td['value']} 贡献 {_n(td['contribution'])}（{pct_txt}）；"
                 )
@@ -377,6 +493,15 @@ def build_narrative(result: dict, sections: dict, period: dict) -> list[dict]:
                     f"其余来源合计贡献 {_n(att['others_contribution'])}。"
                 )
             narrative.append({"section": "attribution", "sentences": sentences})
+    if sections.get("insight"):
+        material = result.get("insight_material") or []
+        sentences = [m["statement"] for m in material]
+        if not sentences:
+            sentences = [
+                "本期未发现方向背离、来源集中或显著异动等需要特别关注的风险信号，"
+                "建议维持常规监控节奏。"
+            ]
+        narrative.append({"section": "insight", "sentences": sentences})
     return narrative
 
 
@@ -415,7 +540,8 @@ def generate_report(
     anchor = date.fromisoformat(as_of) if as_of else None
     start, end, label = resolve_period(period_type, anchor)
     result = compute_conclusions(
-        db, user, metrics=metrics, start=start, end=end, sections=sections
+        db, user, metrics=metrics, start=start, end=end, sections=sections,
+        period_type=period_type,
     )
     period_info = {"type": period_type, "start": start.isoformat(), "end": end.isoformat(), "label": label}
     # B12-2：规则句先算好（既是无 LLM 时的正文，也是 LLM 章节级降级的兜底）
@@ -431,6 +557,8 @@ def generate_report(
         "conclusions": result["conclusions"],
         "anomalies": result["anomalies"],
         "attributions": result["attributions"],
+        "trends": result["trends"],  # 趋势图数据（本期 vs 基期双线 + 异动日）
+        "insight_material": result["insight_material"],  # 建议素材（对账基础）
         "narrative": narr["narrative"],
         "narrative_source": narr["narrative_source"],
         "llm_degraded": narr["llm_degraded"],

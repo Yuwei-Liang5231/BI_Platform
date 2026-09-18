@@ -20,6 +20,7 @@ import {
 import { getDataset, listRelations } from "@/api/datasets";
 import { getRestrictions, putRestrictions } from "@/api/auth";
 import { useAuthStore } from "@/stores/auth";
+import TermTip from "@/components/glossary/TermTip.vue";
 import { useDatasetStore } from "@/stores/dataset";
 import { useMetricStore } from "@/stores/metric";
 import { useProjectStore } from "@/stores/project";
@@ -1263,9 +1264,10 @@ watch(
         <el-form-item>
           <template #label>
             常用维度
+            <TermTip term="dimensions" />
             <el-tooltip
               placement="top"
-              content="归因下钻的层级来源：选择顺序即层级顺序（第 1 个为最上层）；归因下钻需 2~4 个。候选列来自计算规则引用的数据集，以及这些表经已登记表关系可达的维表列（标注来源表，如 PicList（pic_list））；也可直接输入本表列名。"
+              content="操作提示：选择顺序即层级顺序（第 1 个为最上层）；归因下钻需 2~4 个。候选列来自计算规则引用的数据集，以及这些表经已登记表关系可达的维表列（标注来源表，如 PicList（pic_list））；也可直接输入本表列名。"
             >
               <el-icon class="hint-icon"><QuestionFilled /></el-icon>
             </el-tooltip>

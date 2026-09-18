@@ -1,6 +1,8 @@
 /**
  * 展示格式化工具。
  * 留空约定：value === null / undefined → "—"（不完整周期或无数据，绝不显示 0）。
+ * 数字约定（2026-09-18 用户要求）：平台所有数字统一不保留小数（四舍五入取整 +
+ * 千分位），百分比同样取整；文件大小（formatBytes）除外。
  */
 
 /** Date → "YYYY-MM-DD"（按本地时区，不用 UTC——避免东八区零点前移一天）。 */
@@ -14,20 +16,16 @@ export function isoDate(d) {
 export function formatMetricValue(value) {
   if (value === null || value === undefined) return "—";
   if (typeof value !== "number") return String(value);
-  if (Number.isInteger(value)) return value.toLocaleString("zh-CN");
-  // 保留 2 位有效小数并千分位
-  return value.toLocaleString("zh-CN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  // 统一取整 + 千分位（2026-09-18：全平台数字不保留小数）
+  return Math.round(value).toLocaleString("zh-CN");
 }
 
 export function formatPercent(value) {
   if (value === null || value === undefined) return "—";
   if (typeof value !== "number") return String(value);
   // 入参已是百分数单位（后端 change_pct 约定：*100 后的值，如 13.57 = 13.57%），
-  // 统一 1 位小数与报告叙述句对齐——切勿再乘 100（曾致 -13.57% 显示为 -1357.4%）。
-  return `${value.toFixed(1)}%`;
+  // 统一取整——切勿再乘 100（曾致 -13.57% 显示为 -1357.4%）。
+  return `${Math.round(value)}%`;
 }
 
 /**

@@ -76,8 +76,8 @@ function exportResult() {
     const rows = d.rows.map((r) => {
       const cells = breakdownCols.map((col) => {
         const v = r[col.key];
-        if (col.key === "share") return v === null || v === undefined ? "" : v.toFixed(4);
-        if (col.key === "change_pct") return v === null || v === undefined ? "" : (v / 100).toFixed(4);
+        if (col.key === "share") return v === null || v === undefined ? "" : Math.round(v * 100);
+        if (col.key === "change_pct") return v === null || v === undefined ? "" : Math.round(v);
         return v;
       });
       return [r.dimension, ...cells, `${d.start}~${d.end}`, d.compare ? `${d.compare.start}~${d.compare.end}` : ""];
@@ -94,7 +94,7 @@ function exportResult() {
       d.value,
       d.compare?.type === "yoy" ? "同比" : d.compare?.type === "mom" ? "环比" : "",
       d.compare ? `${d.compare.start}~${d.compare.end}` : "",
-      changePct.value === null ? "" : (changePct.value / 100).toFixed(4),
+      changePct.value === null ? "" : Math.round(changePct.value),
     ]],
   );
 }
@@ -136,7 +136,7 @@ function exportResult() {
               <div class="ask__share-track">
                 <span class="ask__share-bar" :style="{ width: `${Math.max(row.share * 100, 3)}%` }" />
               </div>
-              <span class="ask__share-num">{{ (row.share * 100).toFixed(1) }}%</span>
+              <span class="ask__share-num">{{ Math.round(row.share * 100) }}%</span>
             </div>
             <span v-else>—</span>
           </template>
@@ -149,7 +149,7 @@ function exportResult() {
           <template v-else>
             <span v-if="row.change_pct === null">—</span>
             <span v-else :class="row.change_pct >= 0 ? 'up' : 'down'">
-              {{ row.change_pct >= 0 ? "▲" : "▼" }} {{ Math.abs(row.change_pct).toFixed(2) }}%
+              {{ row.change_pct >= 0 ? "▲" : "▼" }} {{ Math.abs(Math.round(row.change_pct)) }}%
             </span>
           </template>
         </template>
@@ -185,7 +185,7 @@ function exportResult() {
     <div v-if="changePct !== null" class="ask__result-compare">
       {{ data.compare?.type === "yoy" ? "同比" : "环比" }}
       <span :class="changePct >= 0 ? 'up' : 'down'">
-        {{ changePct >= 0 ? "▲" : "▼" }} {{ Math.abs(changePct).toFixed(2) }}%
+        {{ changePct >= 0 ? "▲" : "▼" }} {{ Math.abs(Math.round(changePct)) }}%
       </span>
     </div>
     <p v-else class="ask__hint">无对比基期数据</p>

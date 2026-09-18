@@ -536,7 +536,7 @@ onMounted(async () => {
                       :style="{ width: `${Math.min(Math.abs(row.contribution_pct), 100)}%` }"
                     />
                     <span class="attr__bar-label">
-                      {{ row.contribution > 0 ? "▲" : row.contribution < 0 ? "▼" : "" }} {{ Math.abs(row.contribution_pct).toFixed(1) }}%
+                      {{ row.contribution > 0 ? "▲" : row.contribution < 0 ? "▼" : "" }} {{ Math.abs(Math.round(row.contribution_pct)) }}%
                     </span>
                   </div>
                   <span v-else>—</span>

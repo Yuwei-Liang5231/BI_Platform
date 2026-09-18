@@ -29,3 +29,6 @@ backend/env/.env.*.local
 
 # 走查截屏临时产物
 web/scripts/__*.png
+
+# 2026-09-18 仓库事故备份：损坏的旧 .git（确认无恢复需求后可删除）
+.git-broken/

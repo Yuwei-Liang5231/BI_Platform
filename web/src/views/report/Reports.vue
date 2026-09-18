@@ -116,8 +116,49 @@
         </p>
       </header>
 
+      <!-- ① 执行摘要（总览叙述置顶） -->
+      <section
+        v-for="sec in overviewNarrative"
+        :key="sec.section"
+        class="reports__section"
+      >
+        <h3 class="reports__sec-title">{{ sectionTitle(sec.section) }}</h3>
+        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence">{{ s }}</p>
+      </section>
+
+      <!-- ② 指标卡（大数字 + 涨跌）+ 结论表 + 趋势图 -->
       <section class="reports__section">
         <h3 class="reports__sec-title">指标结论</h3>
+        <div class="reports__cards">
+          <div v-for="c in report.conclusions" :key="c.ref" class="reports__card">
+            <div class="reports__card-name">
+              {{ c.name }}
+              <span class="reports__card-code">{{ c.code }}</span>
+            </div>
+            <div class="reports__card-value">{{ formatMetricValue(c.value) }}</div>
+            <div class="reports__card-trends">
+              <span
+                v-if="report.sections.mom && c.mom_pct != null"
+                class="reports__card-delta"
+                :class="trendClass(c.mom_pct)"
+              >
+                环比 {{ c.mom_pct > 0 ? "▲" : c.mom_pct < 0 ? "▼" : "" }} {{ formatPercent(c.mom_pct) }}
+              </span>
+              <span
+                v-if="report.sections.yoy && c.yoy_pct != null"
+                class="reports__card-delta reports__card-delta--sub"
+                :class="trendClass(c.yoy_pct)"
+              >
+                同比 {{ c.yoy_pct > 0 ? "▲" : c.yoy_pct < 0 ? "▼" : "" }} {{ formatPercent(c.yoy_pct) }}
+              </span>
+              <span v-if="c.constant" class="reports__card-note">全期值</span>
+              <span
+                v-else-if="c.period_complete === false && c.data_through"
+                class="reports__card-note"
+              >数据截至 {{ c.data_through }}</span>
+            </div>
+          </div>
+        </div>
         <table class="reports__table">
           <thead>
             <tr>
@@ -147,10 +188,57 @@
             </tr>
           </tbody>
         </table>
+        <!-- 趋势图（本期 vs 环比基期双线，异动日红圈标注；日报无趋势） -->
+        <template v-if="trendList.length">
+          <div class="reports__charts-note">趋势走势（本期 vs 环比基期，红圈为异动日）</div>
+          <div class="reports__charts">
+            <div v-for="t in trendList" :key="t.metric_id" class="reports__chart-card">
+              <div class="reports__chart-title">
+                {{ t.name }}（{{ t.code }}）
+                <span v-if="trendRangeLabel(t)" class="reports__chart-range">{{ trendRangeLabel(t) }}</span>
+              </div>
+              <div :ref="(el) => setTrendEl(el, t.metric_id)" class="reports__chart-body"></div>
+            </div>
+          </div>
+        </template>
       </section>
 
+      <!-- ③ 异动 / 指标结论 / 归因 叙述章节 -->
       <section
-        v-for="sec in report.narrative"
+        v-for="sec in midNarrative"
+        :key="sec.section"
+        class="reports__section"
+      >
+        <h3 class="reports__sec-title">
+          {{ sectionTitle(sec.section) }}
+          <TermTip v-if="sec.section === 'anomaly'" term="anomaly" />
+        </h3>
+        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence">{{ s }}</p>
+      </section>
+
+      <!-- ④ 归因贡献图（正贡献红 / 负贡献绿；旧快照无 attributions 时自动跳过） -->
+      <section v-if="attrList.length || attrEmptyNote" class="reports__section">
+        <h3 class="reports__sec-title">
+          归因贡献图
+          <TermTip term="attribution" />
+        </h3>
+        <div v-if="attrList.length" class="reports__charts">
+          <div v-for="att in attrList" :key="att.metric_id + att.dimension" class="reports__chart-card">
+            <div class="reports__chart-title">
+              {{ att.name }} · 按「{{ att.dimension }}」拆解的贡献
+            </div>
+            <div
+              :ref="(el) => setAttrEl(el, att.metric_id + att.dimension)"
+              class="reports__chart-body reports__chart-body--bar"
+            ></div>
+          </div>
+        </div>
+        <p v-else class="reports__muted">{{ attrEmptyNote }}</p>
+      </section>
+
+      <!-- ⑤ 洞察与建议（收尾） -->
+      <section
+        v-for="sec in insightNarrative"
         :key="sec.section"
         class="reports__section"
       >
@@ -203,11 +291,12 @@
           </el-select>
         </el-form-item>
         <el-form-item label="章节">
-          <el-checkbox v-model="form.sections.overview">总览</el-checkbox>
+          <el-checkbox v-model="form.sections.overview">执行摘要</el-checkbox>
           <el-checkbox v-model="form.sections.mom">环比</el-checkbox>
           <el-checkbox v-model="form.sections.yoy">同比</el-checkbox>
           <el-checkbox v-model="form.sections.anomaly">异动检测</el-checkbox>
           <el-checkbox v-model="form.sections.attribution">归因来源</el-checkbox>
+          <el-checkbox v-model="form.sections.insight">洞察与建议</el-checkbox>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -220,9 +309,11 @@
 
 <!-- pwc-regime: product-ui -->
 <script setup>
-import { onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { QuestionFilled } from "@element-plus/icons-vue";
+import * as echarts from "echarts";
+import TermTip from "@/components/glossary/TermTip.vue";
 
 import {
   createReportTemplate,
@@ -257,21 +348,188 @@ const form = reactive({
   name: "",
   period_type: "weekly",
   metric_ids: [],
-  sections: { overview: true, mom: true, yoy: true, anomaly: true, attribution: true },
+  sections: { overview: true, mom: true, yoy: true, anomaly: true, attribution: true, insight: true },
 });
 
 const PERIOD_LABELS = { daily: "日报", weekly: "周报", monthly: "月报" };
 const SECTION_TITLES = {
-  overview: "总览",
+  overview: "执行摘要",
   metrics: "指标结论叙述",
   anomaly: "异动检测",
   attribution: "变化来源归因",
+  insight: "洞察与建议",
 };
 const periodLabel = (t) => PERIOD_LABELS[t] ?? t;
 const sectionTitle = (k) => SECTION_TITLES[k] ?? k;
 // 红涨绿跌（2026-09-15 契约）：涨红跌绿，与 good/bad 业务语义解耦
 const trendClass = (pct) =>
   pct > 0 ? "is-up" : pct < 0 ? "is-down" : "";
+
+/* ---------- 报告图表（趋势折线 + 归因条形；ECharts SVG 渲染，打印友好） ---------- */
+const trendList = computed(() => report.value?.trends ?? []);
+const attrList = computed(
+  () => (report.value?.attributions ?? []).filter((a) => (a.top_dimensions ?? []).length),
+);
+/* 版式按设计稿分组：执行摘要最先 → 指标卡/结论表+趋势 → 异动/归因叙述 → 归因图 → 洞察与建议 */
+const overviewNarrative = computed(() =>
+  (report.value?.narrative ?? []).filter((s) => s.section === "overview"),
+);
+const midNarrative = computed(() =>
+  (report.value?.narrative ?? []).filter(
+    (s) => s.section !== "overview" && s.section !== "insight",
+  ),
+);
+const insightNarrative = computed(() =>
+  (report.value?.narrative ?? []).filter((s) => s.section === "insight"),
+);
+/* 归因图空置说明：归因仅对「检测到异动且可拆解」的指标生成（B10-2 宁缺毋滥） */
+const attrEmptyNote = computed(() => {
+  if (!report.value?.sections?.attribution || attrList.value.length) return "";
+  if ((report.value?.anomalies ?? []).length)
+    return "本期异动指标均为比率类或无可用拆解维度，未生成归因贡献图。";
+  return "本期未检测到异动指标——归因贡献图仅对发生显著异动的指标拆解生成，无异动则无归因。";
+});
+const chartInstances = new Map(); // key → echarts 实例（重渲染前 dispose）
+
+function disposeCharts() {
+  chartInstances.forEach((inst) => inst.dispose());
+  chartInstances.clear();
+}
+
+function _compact(v) {
+  // 图表轴紧凑数字：同样取整（2026-09-18 全平台数字不保留小数）
+  const abs = Math.abs(v ?? 0);
+  if (abs >= 1e8) return `${Math.round(v / 1e8)}亿`;
+  if (abs >= 1e4) return `${Math.round(v / 1e4)}万`;
+  return `${Math.round(v)}`;
+}
+
+function trendRangeLabel(t) {
+  if (!t.current?.length) return "";
+  const a = t.current[0].date;
+  const b = t.current[t.current.length - 1].date;
+  return a === b ? a : `${a} ~ ${b}`;
+}
+
+function _trendOption(t) {
+  const dates = t.current.map((p) => p.date);
+  // 基期与本期等长（周期完整性契约：环比基期 = 有效窗口整体前移一期），按下标对齐
+  const prevVals = (t.previous ?? []).map((p) => p.value);
+  const anomalyIdx = new Map(
+    (t.anomaly_dates ?? [])
+      .map((d) => [dates.indexOf(d), d])
+      .filter(([idx]) => idx >= 0),
+  );
+  return {
+    animation: false,
+    grid: { left: 64, right: 16, top: 32, bottom: 28 },
+    legend: { top: 0, left: 0, itemWidth: 14, data: ["本期", "上期"] },
+    tooltip: { trigger: "axis" },
+    xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
+    yAxis: { type: "value", scale: true, axisLabel: { formatter: _compact, fontSize: 10 } },
+    series: [
+      {
+        name: "本期",
+        type: "line",
+        data: t.current.map((p) => p.value),
+        showSymbol: dates.length <= 40,
+        symbolSize: 4,
+        lineStyle: { width: 2, color: "#534AB7" },
+        itemStyle: { color: "#534AB7" },
+        connectNulls: true,
+        markPoint: {
+          silent: true,
+          label: { show: false },
+          data: [...anomalyIdx.keys()].map((idx) => ({
+            coord: [idx, t.current[idx].value],
+            symbol: "circle",
+            symbolSize: 11,
+            itemStyle: { color: "rgba(0,0,0,0)", borderColor: "#D62222", borderWidth: 2 },
+          })),
+        },
+      },
+      {
+        name: "上期",
+        type: "line",
+        data: dates.map((_, i) => prevVals[i] ?? null),
+        showSymbol: false,
+        lineStyle: { width: 1.5, color: "#B4B2A9", type: "dashed" },
+        itemStyle: { color: "#B4B2A9" },
+        connectNulls: true,
+      },
+    ],
+  };
+}
+
+function _attrOption(att) {
+  const tops = att.top_dimensions.slice(0, 8);
+  return {
+    animation: false,
+    grid: { left: 110, right: 56, top: 8, bottom: 24 },
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    xAxis: { type: "value", axisLabel: { formatter: _compact, fontSize: 10 } },
+    yAxis: {
+      type: "category",
+      inverse: true,
+      data: tops.map((td) => String(td.value)),
+      axisLabel: { fontSize: 11, width: 100, overflow: "truncate" },
+    },
+    series: [
+      {
+        type: "bar",
+        barMaxWidth: 18,
+        data: tops.map((td) => ({
+          value: td.contribution,
+          itemStyle: { color: (td.contribution ?? 0) >= 0 ? "#D62222" : "#059669" },
+        })),
+        label: {
+          show: true,
+          position: "right",
+          fontSize: 10,
+          formatter: ({ value }) => _compact(value),
+        },
+      },
+    ],
+  };
+}
+
+const trendEls = new Map();
+const attrEls = new Map();
+const setTrendEl = (el, id) => {
+  if (el) trendEls.set(id, el);
+  else trendEls.delete(id);
+};
+const setAttrEl = (el, key) => {
+  if (el) attrEls.set(key, el);
+  else attrEls.delete(key);
+};
+
+function renderCharts() {
+  disposeCharts();
+  if (!report.value) return;
+  trendList.value.forEach((t) => {
+    const el = trendEls.get(t.metric_id);
+    if (!el) return;
+    const inst = echarts.init(el, null, { renderer: "svg" });
+    inst.setOption(_trendOption(t));
+    chartInstances.set(`t${t.metric_id}`, inst);
+  });
+  attrList.value.forEach((att) => {
+    const key = att.metric_id + att.dimension;
+    const el = attrEls.get(key);
+    if (!el) return;
+    const inst = echarts.init(el, null, { renderer: "svg" });
+    inst.setOption(_attrOption(att));
+    chartInstances.set(`a${key}`, inst);
+  });
+}
+
+watch(
+  () => report.value,
+  () => nextTick(renderCharts),
+);
+
+onBeforeUnmount(disposeCharts);
 
 async function fetchTemplates() {
   templates.value = await listReportTemplates(
@@ -365,7 +623,12 @@ function openTemplateDialog(tpl = null) {
   form.name = tpl?.name ?? "";
   form.period_type = tpl?.period_type ?? "weekly";
   form.metric_ids = [...(tpl?.metric_ids ?? [])];
-  Object.assign(form.sections, tpl?.sections ?? {});
+  // 先归位默认值再合并模板配置（旧模板无 insight 键时取默认开）
+  Object.assign(
+    form.sections,
+    { overview: true, mom: true, yoy: true, anomaly: true, attribution: true, insight: true },
+    tpl?.sections ?? {},
+  );
   if (!metricStore.list.length) metricStore.fetchList();
   dialogVisible.value = true;
 }
@@ -410,6 +673,14 @@ async function doDelete(tpl) {
 
 function reportToText() {
   const lines = [report.value.title, ""];
+  // 图表降级为数据行（复制文本不含图形，数字保持可对账）
+  (report.value.conclusions ?? []).forEach((c) => {
+    const parts = [`本期 ${formatMetricValue(c.value)}`];
+    if (report.value.sections?.mom) parts.push(`环比 ${formatPercent(c.mom_pct)}`);
+    if (report.value.sections?.yoy) parts.push(`同比 ${formatPercent(c.yoy_pct)}`);
+    lines.push(`${c.name}（${c.code}）：${parts.join("，")}`);
+  });
+  lines.push("");
   report.value.narrative.forEach((sec) => {
     lines.push(`【${sectionTitle(sec.section)}】`);
     sec.sentences.forEach((s) => lines.push(s));
@@ -589,6 +860,75 @@ onMounted(async () => {
   margin-bottom: var(--pwc-space-3);
 }
 
+/* 指标卡（大数字 + 涨跌三角） */
+.reports__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--pwc-space-3);
+  margin-bottom: var(--pwc-space-4);
+}
+
+.reports__card {
+  border: 1px solid var(--pwc-border, #e5e7eb);
+  border-radius: 8px;
+  padding: var(--pwc-space-3) var(--pwc-space-4);
+  background: var(--pwc-surface, #fff);
+}
+
+.reports__card-name {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary, #535353);
+  margin-bottom: var(--pwc-space-1);
+}
+
+.reports__card-code {
+  color: var(--pwc-text-tertiary, #8c8c8c);
+  font-size: var(--pwc-font-body-xs);
+  margin-left: var(--pwc-space-1);
+}
+
+.reports__card-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-bottom: var(--pwc-space-1);
+}
+
+.reports__card-trends {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pwc-space-2);
+  align-items: baseline;
+}
+
+.reports__card-delta {
+  font-size: var(--pwc-font-body-s);
+  font-weight: 600;
+}
+
+.reports__card-delta--sub {
+  font-weight: 400;
+  color: var(--pwc-text-secondary, #535353);
+}
+
+.reports__card-delta.is-up {
+  color: var(--pwc-up, #d62222);
+}
+
+.reports__card-delta.is-down {
+  color: var(--pwc-down, #059669);
+}
+
+.reports__card-note {
+  font-size: var(--pwc-font-body-xs);
+  color: var(--pwc-text-tertiary, #8c8c8c);
+}
+
+.reports__muted {
+  color: var(--pwc-text-tertiary, #8c8c8c);
+  font-size: var(--pwc-font-body-s);
+}
+
 .reports__table {
   width: 100%;
   border-collapse: collapse;
@@ -619,6 +959,50 @@ onMounted(async () => {
 
 .reports__table td.is-down {
   color: var(--pwc-down, #059669);
+}
+
+/* 图表区：趋势/归因卡片栅格 */
+.reports__charts-note {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-secondary);
+  margin: var(--pwc-space-3) 0 var(--pwc-space-2);
+}
+
+.reports__charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--pwc-space-3);
+}
+
+.reports__chart-card {
+  border: 1px solid var(--pwc-border-subtle);
+  border-radius: var(--pwc-radius-m);
+  padding: var(--pwc-space-2) var(--pwc-space-3);
+  min-width: 0;
+}
+
+.reports__chart-title {
+  font-size: var(--pwc-font-body-s);
+  font-weight: 600;
+  margin-bottom: var(--pwc-space-1);
+  display: flex;
+  align-items: baseline;
+  gap: var(--pwc-space-2);
+  min-width: 0;
+}
+
+.reports__chart-range {
+  font-weight: 400;
+  color: var(--pwc-text-secondary);
+}
+
+.reports__chart-body {
+  height: 220px;
+  width: 100%;
+}
+
+.reports__chart-body--bar {
+  height: 200px;
 }
 
 .reports__sentence {
