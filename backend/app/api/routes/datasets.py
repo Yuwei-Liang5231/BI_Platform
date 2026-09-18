@@ -261,17 +261,15 @@ def append_dataset_data(
 # ---------------------------------------------------------------- 删除
 
 
-@router.delete("/{dataset_id}")
-def delete_dataset(dataset_id: int, db: DbDep, settings: SettingsDep, _: AdminUser):
-    ds = _get_dataset(db, dataset_id)
-
-    # 级联清理：关系（双向）、覆盖区间、文件
+def _hard_delete_dataset(db, ds: Dataset) -> dict:
+    """硬删除单数据集：级联清理关系/覆盖区间，提交后删文件（逐条提交防连带回滚）。"""
     db.query(DatasetRelation).filter(
-        (DatasetRelation.dataset_id == dataset_id) | (DatasetRelation.target_dataset_id == dataset_id)
+        (DatasetRelation.dataset_id == ds.id) | (DatasetRelation.target_dataset_id == ds.id)
     ).delete(synchronize_session=False)
-    db.query(DatasetCoverage).filter(DatasetCoverage.dataset_id == dataset_id).delete(synchronize_session=False)
+    db.query(DatasetCoverage).filter(DatasetCoverage.dataset_id == ds.id).delete(synchronize_session=False)
     # 提交前先取文件路径（防对象状态变化导致取不到）
     file_path, parquet_path = ds.file_path, ds.parquet_path
+    dataset_id, dataset_name = ds.id, ds.name
     db.delete(ds)
     db.commit()
 
@@ -293,10 +291,48 @@ def delete_dataset(dataset_id: int, db: DbDep, settings: SettingsDep, _: AdminUs
             # 不静默：文件被占用等情况下必须可追溯（元数据已删，文件成孤儿）
             logger.warning("删除数据集 %s 的文件失败 %s: %s", dataset_id, p, exc)
             failed.append(str(p))
-    _ = settings
+    return {"id": dataset_id, "name": dataset_name, "files_removed": removed, "files_failed": failed}
+
+
+@router.delete("/{dataset_id}")
+def delete_dataset(dataset_id: int, db: DbDep, _: AdminUser):
+    ds = _get_dataset(db, dataset_id)
+    result = _hard_delete_dataset(db, ds)
+    _ = result
     return ok_response(
-        {"id": dataset_id, "deleted": True, "files_removed": removed, "files_failed": failed},
+        {"id": dataset_id, "deleted": True, "files_removed": result["files_removed"], "files_failed": result["files_failed"]},
         message="数据集已删除",
+    )
+
+
+class BatchDeleteIn(BaseModel):
+    ids: list[int]
+
+
+@router.post("/batch-delete")
+def batch_delete_datasets(body: BatchDeleteIn, db: DbDep, _: AdminUser):
+    """批量删除数据集（admin）。逐条独立提交：单条失败不影响已成功项，
+    响应逐条回执（成功/失败原因），前端据此汇总提示。"""
+    if not body.ids:
+        raise BusinessError("未选择要删除的数据集")
+    ok_items, failed_items = [], []
+    for ds_id in body.ids:
+        ds = db.query(Dataset).filter(Dataset.id == ds_id).first()
+        if ds is None:
+            failed_items.append({"id": ds_id, "reason": "数据集不存在（可能已删除）"})
+            continue
+        try:
+            ok_items.append(_hard_delete_dataset(db, ds))
+        except BusinessError as exc:
+            db.rollback()
+            failed_items.append({"id": ds_id, "name": ds.name, "reason": exc.message})
+        except Exception as exc:  # noqa: BLE001 —— 单条失败不中断批次
+            db.rollback()
+            logger.exception("批量删除数据集 %s 失败", ds_id)
+            failed_items.append({"id": ds_id, "name": ds.name, "reason": str(exc)})
+    return ok_response(
+        {"deleted": [i["id"] for i in ok_items], "failed": failed_items},
+        message=f"已删除 {len(ok_items)} 个数据集" + (f"，{len(failed_items)} 个失败" if failed_items else ""),
     )
 
 

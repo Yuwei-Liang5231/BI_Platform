@@ -70,6 +70,28 @@ class TestProjectCrud:
         created = client.post("/api/projects", json={"name": f"空项目_{proj_env['sfx']}"}).json()["data"]
         assert client.delete(f"/api/projects/{created['id']}").status_code == 200
 
+    def test_project_with_only_soft_deleted_metrics_deletable(self, client, proj_env):
+        """软删指标不占项目：删数据集 + 批量删指标（软删留痕）后项目可删。"""
+        sfx = _suffix()
+        p = client.post("/api/projects", json={"name": f"软删项目_{sfx}"}).json()["data"]
+        ds = _upload(client, f"softdel_ds_{sfx}", p["id"])
+        resp = client.post("/api/metrics", json={
+            "code": f"m_softdel_{sfx}", "name": "软删指标",
+            "calc_rule": {"base_aggregation": "sum", "source": {"table": ds["name"], "column": "amount"}},
+            "project_id": p["id"],
+        })
+        assert resp.status_code == 200, resp.text
+        metric_id = resp.json()["data"]["id"]
+        # 指标仍在（软删拦截）
+        assert client.delete(f"/api/projects/{p['id']}").status_code == 400
+        # 删数据集（硬删）→ 批量删指标（软删留痕，行仍在表里）
+        assert client.delete(f"/api/datasets/{ds['id']}").status_code == 200
+        batch = client.post("/api/metrics/batch-delete", json={"ids": [metric_id]})
+        assert batch.status_code == 200, batch.text
+        # 软删行不占用 → 项目可删（回归：旧逻辑 count 含 deleted 行会 400）
+        resp_del = client.delete(f"/api/projects/{p['id']}")
+        assert resp_del.status_code == 200, resp_del.text
+
     def test_write_requires_admin(self, client, proj_env):
         from tests.conftest import create_test_user
 

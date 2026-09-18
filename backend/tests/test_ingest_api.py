@@ -258,6 +258,34 @@ def test_delete_removes_files(client):
     assert payload["files_removed"] == 2, f"文件未清理干净: {payload}"
 
 
+def test_batch_delete_datasets(client):
+    """批量删除：成功项回执 id、不存在项进 failed 不中断批次（逐条独立提交）。"""
+    ids = []
+    for i in range(2):
+        resp = _upload(
+            client,
+            _csv_bytes(["a"], [[str(i)]], "utf-8"),
+            f"batchdel{i}.csv",
+            name=f"batchdel{i}",
+        )
+        ids.append(resp.json()["data"]["id"])
+
+    resp = client.post("/api/datasets/batch-delete", json={"ids": ids + [999999]})
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()["data"]
+    assert sorted(payload["deleted"]) == sorted(ids)
+    assert len(payload["failed"]) == 1
+    assert payload["failed"][0]["id"] == 999999
+    # 已删的确实查不到了
+    for ds_id in ids:
+        assert client.get(f"/api/datasets/{ds_id}").status_code == 404
+
+
+def test_batch_delete_datasets_empty_ids_rejected(client):
+    resp = client.post("/api/datasets/batch-delete", json={"ids": []})
+    assert resp.status_code == 400
+
+
 def test_int64_overflow_rejected_as_400(client):
     """超出 int64 的大整数必须明确报 400，而不是 500（B14.1 起由 DuckDB TRY_CAST 校验拦截）。"""
     huge = "9" * 25  # 10^25 量级，超 int64 上限约 9.2×10^18

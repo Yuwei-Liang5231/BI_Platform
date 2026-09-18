@@ -167,6 +167,37 @@ async function handleDelete(row) {
   await fetchData();
 }
 
+const selection = ref([]);
+const batchDeleting = ref(false);
+
+async function handleBatchDelete() {
+  const rows = selection.value;
+  if (!rows.length) return;
+  const names = rows.map((r) => r.name).slice(0, 5).join("、") + (rows.length > 5 ? " 等" : "");
+  await ElMessageBox.confirm(
+    `确定删除选中的 ${rows.length} 个数据集（${names}）？将同时删除其表关系、覆盖区间与数据文件，不可恢复。`,
+    "批量删除确认",
+    { type: "warning", confirmButtonText: "全部删除", cancelButtonText: "取消" },
+  );
+  batchDeleting.value = true;
+  try {
+    const res = await datasetStore.batchRemove(rows.map((r) => r.id));
+    const failed = res?.failed ?? [];
+    if (failed.length) {
+      ElMessage.warning(
+        `已删除 ${res.deleted.length} 个，${failed.length} 个失败：` +
+          failed.map((f) => `${f.name ?? `#${f.id}`}（${f.reason}）`).join("；"),
+      );
+    } else {
+      ElMessage.success(`已删除 ${res.deleted.length} 个数据集`);
+    }
+    selection.value = [];
+    await fetchData();
+  } finally {
+    batchDeleting.value = false;
+  }
+}
+
 function openRelation() {
   relationForm.from_column = "";
   relationForm.target_dataset_id = null;
@@ -318,13 +349,26 @@ onMounted(fetchData);
       <section class="pwc-card col-span-4">
         <div class="pwc-card__header">
           <h4>数据集（{{ datasetStore.list.length }}）</h4>
+          <el-button
+            type="danger"
+            plain
+            size="small"
+            :disabled="!auth.isAdmin || !selection.length"
+            :loading="batchDeleting"
+            @click="handleBatchDelete"
+          >
+            批量删除{{ selection.length ? `（${selection.length}）` : "" }}
+          </el-button>
         </div>
         <el-table
           v-loading="datasetStore.loading"
           :data="datasetStore.list"
           highlight-current-row
+          row-key="id"
+          @selection-change="(rows) => (selection = rows)"
           @row-click="(row) => selectDataset(row.id)"
         >
+          <el-table-column type="selection" width="40" reserve-selection />
           <el-table-column prop="name" label="名称" min-width="140" />
           <el-table-column prop="row_count" label="行数" width="90" />
           <el-table-column prop="encoding" label="编码" width="90" />

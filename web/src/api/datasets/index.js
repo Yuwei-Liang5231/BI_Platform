@@ -40,6 +40,10 @@ export const getColumnAnomalies = (datasetId, columnName) =>
 export const deleteDataset = (datasetId) =>
   request.delete(`/datasets/${datasetId}`);
 
+// 批量删除：后端逐条独立提交，返回 { deleted:[id...], failed:[{id,name,reason}] }
+export const batchDeleteDatasets = (ids) =>
+  request.post("/datasets/batch-delete", { ids });
+
 export const addRelation = (datasetId, data, config) =>
   request.post(`/datasets/${datasetId}/relations`, data, config);
 

@@ -122,8 +122,14 @@ def delete_project(db: Session, project_id: int) -> dict:
     if marker is not None and marker.value and int(marker.value) == project_id:
         # 默认项目承载存量数据且不可删（可改名；改名后仍按标记识别）
         raise BusinessError("默认项目不可删除", 40000)
+    # 占用计数排除软删指标（status='deleted' 仅留痕不占项目，与指标编码
+    # 唯一性排除 deleted 同一语义）；数据集为硬删除无需排除。
     ds_count = db.query(Dataset).filter(Dataset.project_id == project_id).count()
-    metric_count = db.query(Metric).filter(Metric.project_id == project_id).count()
+    metric_count = (
+        db.query(Metric)
+        .filter(Metric.project_id == project_id, Metric.status != "deleted")
+        .count()
+    )
     if ds_count or metric_count:
         raise BusinessError(
             f"项目 {project.name!r} 仍有 {ds_count} 个数据集、{metric_count} 个指标，"

@@ -100,6 +100,7 @@ export const useDatasetStore = defineStore("dataset", () => {
     upload,
     rename,
     remove,
+    batchRemove,
     addRelation,
     removeRelation,
   };
