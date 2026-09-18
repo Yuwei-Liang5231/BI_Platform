@@ -314,9 +314,11 @@ class TestLlmRelationReview:
             "resolve_llm_config",
             lambda db, settings: {"base_url": "http://mock", "api_key": "k", "model": "mock"},
         )
+        seen_prompts: list[str] = []
 
         def fake_chat(config, system, user, timeout=30.0):
             if "评审员" in system:  # 关系语义复审调用
+                seen_prompts.append(user)
                 return {"reviews": [{"index": 0, "verdict": "likely", "reason": "同实体键"}]}
             return None  # 指标候选 LLM 提议调用：降级跳过
 
@@ -328,6 +330,10 @@ class TestLlmRelationReview:
             assert data["relations"], "应至少有一条关系建议"
             assert data["relations"][0]["llm_review"]["verdict"] == "likely"
             assert data["relations"][0]["llm_review"]["reason"] == "同实体键"
+            # 2026-09-18 方案一：复审 prompt 必须携带两侧样本值，
+            # 否则 LLM 只有列名可看、无法区分同一编码体系与同名枚举巧合
+            assert seen_prompts, "语义复审应被调用"
+            assert "样本:" in seen_prompts[0] and "（无样本）" not in seen_prompts[0]
         finally:
             _cleanup(client, env)
 

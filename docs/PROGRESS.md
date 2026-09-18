@@ -137,6 +137,7 @@
 - **实测修复：编辑指标保存报 body.project_id Extra inputs（2026-09-17）**：B9.3 起 handleSave payload 统一带 project_id（新建归项目用），PATCH 分支 ...rest 透传 → 更新接口 schema 拒绝（指标归属项目创建后不可变）400。修复：PATCH 解构剔除 project_id。
 - **方案A：编辑指标深链（2026-09-17，用户确认）**：归因下钻提示中「编辑指标」对可写角色渲染为链接 → `/metrics/admin?edit={id}`，管理页列表就绪后自动弹出编辑对话框（找不到按当前项目+all 兜底重拉；用完 router.replace 清参数防重复弹出；watch query 兼容同页变化）；viewer 保持纯文本。
 - **B14.1 大文件接入性能改造（2026-09-18，用户报障：200MB/48万行 xlsx 上传慢且超时失败率高、建模建议超时，两台电脑复现）**：根因 ①xlsx 被 openpyxl 解析两遍+逐格 Python 转换约 2400 万次（单核 CPU 瓶颈，与电脑配置关系有限）；②建模建议走全局 30s axios 超时（后端逐列 DISTINCT + LLM 复审 60s 必超）。修复：**xlsx 单遍解析**（扫描统计同时把字符串行旁路写临时 parquet `_stage_rows`，类型确定后 DuckDB TRY_CAST 向量化物化强类型 parquet——源文件只解析一遍；转换失败仍显式 400 带坏值样本行号，拒绝静默置 NULL）；**可选 calamine 加速**（python-calamine Rust 引擎快 5~10 倍、日期原生解析，未安装自动回退 openpyxl；calamine 同样不识东亚内置日期 ID → openpyxl 前 25 行惰性探测该类列后按纪元换算）；上传/导入 axios 超时 600s→900s、建模建议 30s→300s；留档改流式复制。实测 480k×12：openpyxl 单遍 110s → calamine 26s（4.3 倍），用户 25 列规模约 1~2 分钟（旧实现 10 分钟以上必超）。requirements 增补 python-calamine==0.8.2。测试：pytest **372 passed**（+2：斜杠日期向量化转换、stage 临时分片零残留）；`build:dev` 通过。
+- **实测修复：LLM 语义复审大面积误判 unlikely（2026-09-18，用户报：同名高重叠列如 SubBU↔SubBU 重叠 100% 被判 unlikely，仅 JOB_CODE 判 likely）**：旧复审 prompt 只给列名+表名+重叠率，LLM 无法区分"同一套编码体系"与"同名枚举巧合"，倾向保守判 unlikely 且同类列结论不一致。修复（方案一）：复审 prompt 附两侧样本值（各列最多 8 个 distinct 值、单值截断 40 字符防 prompt 膨胀，复用建议引擎已算好的 samples 零额外查询）；判定依据改为"样本值高度一致 → likely、样本值域不同（即使同名）→ unlikely、列名同名仅弱佐证"。unlikely 仍参与默认勾选排除与红标（机制不变）。测试断言加强：复审 prompt 必须含样本值；pytest 372 passed。
 
 ## 五、运行与验证（三种方式，任选）
 

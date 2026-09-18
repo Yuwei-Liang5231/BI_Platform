@@ -215,7 +215,7 @@ def suggest_relations(db: Session, project_id: int) -> tuple[list[dict], list[di
             item["evidence"]["isolated_pair"] = True
 
     out = sorted(raw.values(), key=lambda x: -x["score"])[:MAX_SUGGEST_RELATIONS]
-    _llm_relation_review(db, out)
+    _llm_relation_review(db, out, samples)
 
     # 每表参与说明：让"某张表为什么没有建议"在向导里可见可解释
     participating = {d for it in out for d in (it["from_dataset"], it["to_dataset"])}
@@ -233,11 +233,25 @@ def suggest_relations(db: Session, project_id: int) -> tuple[list[dict], list[di
     return out, notes
 
 
-def _llm_relation_review(db: Session, suggestions: list[dict]) -> None:
+def _sample_preview(samples: dict, ds: str, col: str, k: int = 8, width: int = 40) -> str:
+    """列样本值预览（LLM 复审用）：最多 k 个、单值截断 width 字符，防 prompt 膨胀。"""
+    vals = samples.get((ds, col))
+    if not vals:
+        return "（无样本）"
+    parts = []
+    for v in sorted(vals)[:k]:
+        v = str(v)
+        parts.append(v[:width] + "…" if len(v) > width else v)
+    return ", ".join(parts)
+
+
+def _llm_relation_review(db: Session, suggestions: list[dict], samples: dict) -> None:
     """可选 LLM 语义复审：批量判断每对列是否业务同一实体键（就地附 llm_review）。
 
     未配置 LLM / 调用失败 → 静默跳过（建议引擎本身不依赖 LLM）。
     verdict：likely（同一实体键）/ unlikely（不同实体或非键列）/ uncertain。
+    2026-09-18 修订：prompt 附两侧样本值（各最多 8 个）——只有列名时 LLM 无法区分
+    "同一套代码体系"与"同名枚举巧合"，实测对同名高重叠列大面积误判 unlikely。
     """
     if not suggestions:
         return
@@ -247,14 +261,18 @@ def _llm_relation_review(db: Session, suggestions: list[dict]) -> None:
     if not config:
         return
     lines = [
-        f"{i}. {s['from_dataset']}.{s['from_column']} ↔ {s['to_dataset']}.{s['to_column']}"
+        f"{i}. {s['from_dataset']}.{s['from_column']}"
+        f"（样本: {_sample_preview(samples, s['from_dataset'], s['from_column'])}）"
+        f" ↔ {s['to_dataset']}.{s['to_column']}"
+        f"（样本: {_sample_preview(samples, s['to_dataset'], s['to_column'])}）"
         f"（值域重叠 {s['evidence']['overlap_ratio']}）"
         for i, s in enumerate(suggestions)
     ]
     system = (
-        "你是数据建模评审员。判断下列候选表关系里，两列是否为业务上同一实体的连接键"
-        "（如订单表的 user_id 与用户表的 user_id → likely；两个不同业务表的同名枚举列"
-        "如 region/等级 → unlikely；无法判断 → uncertain）。"
+        "你是数据建模评审员。判断下列候选表关系里，两列是否为业务上同一实体的连接键。"
+        "判断依据优先看两侧样本值：样本值高度一致（同一套编码/枚举体系）→ likely；"
+        "样本值明显属于不同值域（即使列名相同，如两个不同业务的 region/status）→ unlikely；"
+        "无法判断 → uncertain。列名同名只是弱佐证。"
         '只输出 JSON {"reviews":[{"index":序号,"verdict":"likely|unlikely|uncertain",'
         '"reason":"一句话"}]}，序号必须来自给定清单。'
     )
