@@ -34,8 +34,37 @@ logger = logging.getLogger("app.api.datasets")
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
-MAX_UPLOAD_MB = 200
+MAX_UPLOAD_MB = 500
 VALID_RELATION_TYPES = {"many_to_one", "one_to_one", "one_to_many", "many_to_many"}
+
+
+def _unlink_quiet(path: Path) -> None:
+    """尽力删除临时文件；Windows 下句柄未释放等场景不能掩盖原始业务异常
+    （回归：unlink 抛 PermissionError 把「超限」提示顶成 500）。"""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("临时文件清理失败 %s: %s", path, exc)
+
+
+def _recv_upload_to_temp(file: UploadFile, suffix: str) -> Path:
+    """上传流式暂存到临时文件（不整包进内存），超限报业务错。
+
+    关键顺序：先退出 with（关闭写句柄）再 unlink——Windows 不允许删除
+    被占用文件，否则 PermissionError 会掩盖超限提示。
+    """
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp:
+        tmp_path = Path(tmp.name)
+        size = 0
+        while chunk := file.file.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_UPLOAD_MB * 1024 * 1024:
+                break
+            tmp.write(chunk)
+    if size > MAX_UPLOAD_MB * 1024 * 1024:
+        _unlink_quiet(tmp_path)
+        raise BusinessError(f"文件超过 {MAX_UPLOAD_MB}MB 上限")
+    return tmp_path
 
 
 # ---------------------------------------------------------------- helpers
@@ -88,16 +117,8 @@ def upload_dataset(
     storage = StoragePaths(settings)
     storage.ensure_dirs()
 
-    # 流式暂存到临时文件（不整包进内存）
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp:
-        tmp_path = Path(tmp.name)
-        size = 0
-        while chunk := file.file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_UPLOAD_MB * 1024 * 1024:
-                tmp_path.unlink(missing_ok=True)
-                raise BusinessError(f"文件超过 {MAX_UPLOAD_MB}MB 上限")
-            tmp.write(chunk)
+    # 流式暂存到临时文件（不整包进内存）；超限在句柄关闭后清理并报业务错
+    tmp_path = _recv_upload_to_temp(file, suffix)
 
     try:
         dataset = ingest_file(
@@ -113,7 +134,7 @@ def upload_dataset(
         # Windows 常见：源文件正被 Excel/WPS 独占打开
         raise BusinessError("文件被其他程序占用（可能正被 Excel 打开），请关闭后重试") from exc
     finally:
-        tmp_path.unlink(missing_ok=True)
+        _unlink_quiet(tmp_path)
 
     dataset.project_id = resolved_project  # B9.3 项目归属
     return ok_response(_detail(db, dataset), message="数据集接入成功")
@@ -230,15 +251,7 @@ def append_dataset_data(
     suffix = Path(original).suffix.lower()
 
     storage = StoragePaths(settings)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp:
-        tmp_path = Path(tmp.name)
-        size = 0
-        while chunk := file.file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_UPLOAD_MB * 1024 * 1024:
-                tmp_path.unlink(missing_ok=True)
-                raise BusinessError(f"文件超过 {MAX_UPLOAD_MB}MB 上限")
-            tmp.write(chunk)
+    tmp_path = _recv_upload_to_temp(file, suffix)
 
     try:
         result = import_data_file(
@@ -252,7 +265,7 @@ def append_dataset_data(
     except PermissionError as exc:
         raise BusinessError("文件被其他程序占用（可能正被 Excel 打开），请关闭后重试") from exc
     finally:
-        tmp_path.unlink(missing_ok=True)
+        _unlink_quiet(tmp_path)
 
     db.commit()  # 增量导入显式提交：保证 ver+1 与覆盖刷新原子生效
     return ok_response({**_detail(db, _get_dataset(db, dataset_id)), "import": result}, message=f"数据{'覆盖' if mode == 'replace' else '追加'}成功")

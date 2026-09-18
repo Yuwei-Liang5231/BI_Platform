@@ -286,6 +286,22 @@ def test_batch_delete_datasets_empty_ids_rejected(client):
     assert resp.status_code == 400
 
 
+def test_upload_over_limit_returns_400(client, monkeypatch):
+    """超限必须回业务 400 提示，而非 PermissionError 500
+    （回归：旧实现 unlink 写在 with 块内、句柄未关，Windows 删除被占用文件失败）。"""
+    from app.api.routes import datasets as ds_routes
+
+    monkeypatch.setattr(ds_routes, "MAX_UPLOAD_MB", 1)
+    big = b"a,b\n" + b"1,2\n" * (600 * 1024)  # ~1.2MB > 1MB 上限
+    resp = client.post(
+        "/api/datasets/upload",
+        files={"file": ("overlimit.csv", io.BytesIO(big), "text/csv")},
+        data={"name": "overlimit"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "超过" in resp.json()["message"]
+
+
 def test_int64_overflow_rejected_as_400(client):
     """超出 int64 的大整数必须明确报 400，而不是 500（B14.1 起由 DuckDB TRY_CAST 校验拦截）。"""
     huge = "9" * 25  # 10^25 量级，超 int64 上限约 9.2×10^18
