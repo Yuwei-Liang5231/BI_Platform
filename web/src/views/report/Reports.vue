@@ -424,7 +424,7 @@ function _trendOption(t) {
     animation: false,
     grid: { left: 64, right: 16, top: 32, bottom: 28 },
     legend: { top: 0, left: 0, itemWidth: 14, data: ["本期", "上期"] },
-    tooltip: { trigger: "axis" },
+    tooltip: { trigger: "axis", valueFormatter: (v) => formatMetricValue(v) },
     xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
     yAxis: { type: "value", scale: true, axisLabel: { formatter: _compact, fontSize: 10 } },
     series: [
@@ -466,7 +466,11 @@ function _attrOption(att) {
   return {
     animation: false,
     grid: { left: 110, right: 56, top: 8, bottom: 24 },
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      valueFormatter: (v) => formatMetricValue(v),
+    },
     xAxis: { type: "value", axisLabel: { formatter: _compact, fontSize: 10 } },
     yAxis: {
       type: "category",

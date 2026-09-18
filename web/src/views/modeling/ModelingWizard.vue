@@ -259,7 +259,7 @@ onMounted(async () => {
         </el-table-column>
         <el-table-column label="综合分" width="90">
           <template #default="{ row }">
-            <el-tag :type="scoreTag(row)" size="small">{{ Math.round(row.score * 100) }}%</el-tag>
+            <el-tag :type="scoreTag(row)" size="small">{{ row.score }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="证据" min-width="220">
