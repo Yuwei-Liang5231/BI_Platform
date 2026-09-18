@@ -38,7 +38,15 @@ const relationForm = reactive({
   target_dataset_id: null,
   target_column: "",
   relation_type: "many_to_one",
+  // P2 复合键：首对由 from_column/target_column 承载，pairs 存额外键对
+  extraPairs: [], // [{from, to}]
 });
+function addExtraPair() {
+  relationForm.extraPairs.push({ from: "", to: "" });
+}
+function removeExtraPair(i) {
+  relationForm.extraPairs.splice(i, 1);
+}
 // 与后端契约对齐（datasets.py VALID_RELATION_TYPES）：值为枚举、标签用业务符号
 const RELATION_TYPES = [
   { value: "one_to_one", label: "1:1（一对一）" },
@@ -47,6 +55,14 @@ const RELATION_TYPES = [
   { value: "many_to_many", label: "n:n（多对多）" },
 ];
 const relationLabel = (v) => RELATION_TYPES.find((t) => t.value === v)?.label ?? v;
+
+// P2 复合键展示：多列对以 A + B 形式显示
+const relPairs = (row) =>
+  Array.isArray(row.column_pairs) && row.column_pairs.length > 1
+    ? row.column_pairs
+    : [[row.from_column, row.target_column]];
+const relFromLabel = (row) => relPairs(row).map((p) => p[0]).join(" + ");
+const relToLabel = (row) => relPairs(row).map((p) => p[1]).join(" + ");
 
 const selected = computed(() => datasetStore.list.find((d) => d.id === selectedId.value) ?? null);
 
@@ -78,6 +94,7 @@ watch(
   async (id) => {
     if (!id) return;
     relationForm.target_column = "";
+    relationForm.extraPairs = relationForm.extraPairs.map((p) => ({ ...p, to: "" }));
     if (targetColumnsCache.value[id]) return;
     try {
       const res = await datasetStore.fetchDetail(id);
@@ -203,6 +220,7 @@ function openRelation() {
   relationForm.target_dataset_id = null;
   relationForm.target_column = "";
   relationForm.relation_type = "many_to_one";
+  relationForm.extraPairs = [];
   relationVisible.value = true;
 }
 
@@ -211,11 +229,24 @@ async function saveRelation() {
     ElMessage.warning("请完整选择左列与右表·右列");
     return;
   }
+  // P2 复合键：额外键对填了一半视为未完成
+  for (let i = 0; i < relationForm.extraPairs.length; i++) {
+    const p = relationForm.extraPairs[i];
+    if (!p.from || !p.to) {
+      ElMessage.warning(`第 ${i + 2} 组键列未选完整（可留空整行删除）`);
+      return;
+    }
+  }
+  const completePairs = [
+    [relationForm.from_column, relationForm.target_column],
+    ...relationForm.extraPairs.map((p) => [p.from, p.to]),
+  ];
   await datasetStore.addRelation(selectedId.value, {
     from_column: relationForm.from_column,
     target_dataset_id: relationForm.target_dataset_id,
     target_column: relationForm.target_column,
     relation_type: relationForm.relation_type,
+    ...(relationForm.extraPairs.length ? { column_pairs: completePairs } : {}),
   });
   ElMessage.success("关系已注册");
   relationVisible.value = false;
@@ -406,12 +437,12 @@ onMounted(fetchData);
           <el-table :data="datasetStore.relations" size="small" style="width: 100%">
             <el-table-column label="左表.字段" min-width="180">
               <template #default="{ row }">
-                {{ selected?.name }}.{{ row.from_column }}
+                {{ selected?.name }}.{{ relFromLabel(row) }}
               </template>
             </el-table-column>
             <el-table-column label="右表.字段" min-width="180">
               <template #default="{ row }">
-                {{ targetName(row.target_dataset_id) }}.{{ row.target_column }}
+                {{ targetName(row.target_dataset_id) }}.{{ relToLabel(row) }}
               </template>
             </el-table-column>
             <el-table-column prop="relation_type" label="类型" width="90">
@@ -516,6 +547,29 @@ onMounted(fetchData);
               :value="c.name"
             />
           </el-select>
+        </el-form-item>
+        <!-- P2 复合键：联合键匹配（如 code+type 两列同时相等才算关联） -->
+        <el-form-item
+          v-for="(p, i) in relationForm.extraPairs"
+          :key="'pair' + i"
+          :label="`键对 ${i + 2}`"
+        >
+          <div style="display: flex; gap: 8px; width: 100%">
+            <el-select v-model="p.from" placeholder="左表列" style="flex: 1">
+              <el-option v-for="c in columns" :key="c.name" :label="c.name" :value="c.name" />
+            </el-select>
+            <span style="align-self: center">=</span>
+            <el-select v-model="p.to" placeholder="右表列" style="flex: 1">
+              <el-option v-for="c in targetColumns" :key="c.name" :label="c.name" :value="c.name" />
+            </el-select>
+            <el-button text type="danger" @click="removeExtraPair(i)">移除</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="relationForm.extraPairs.length < 3" label=" ">
+          <el-button text type="primary" @click="addExtraPair">+ 添加联合键列</el-button>
+          <span class="ds__hint" style="margin-left: 8px; color: var(--el-text-color-secondary)">
+            业务键由多列组成时（如 code+type）添加；编译时全部列对须同时相等
+          </span>
         </el-form-item>
         <el-form-item label="关联类型">
           <el-select v-model="relationForm.relation_type" style="width: 100%">

@@ -17,7 +17,7 @@ import {
   updateMetric as updateApi,
   tryCompile as tryCompileApi,
 } from "@/api/metrics";
-import { getDataset } from "@/api/datasets";
+import { getDataset, listRelations } from "@/api/datasets";
 import { getRestrictions, putRestrictions } from "@/api/auth";
 import { useAuthStore } from "@/stores/auth";
 import { useDatasetStore } from "@/stores/dataset";
@@ -442,7 +442,9 @@ const flatDateCols = computed(() =>
   (datasetColumns[builder.flat.table] ?? []).filter((c) => c.isDate),
 );
 
-/* 常用维度候选：规则引用到的数据集列并集（flat 主表 / expr 各操作数表）。
+/* 常用维度候选：规则引用到的数据集列并集（flat 主表 / expr 各操作数表），
+   并入 P1 跨表维度——引用表经已登记表关系可达的一跳维表文本列，以
+   `表名.列名` 限定名作为选中值（保存时归一为 {dataset, column} 对象）。
    列信息未加载时也允许手动输入列名（allow-create）。 */
 const dimensionOptions = computed(() => {
   const tables = new Set();
@@ -455,12 +457,73 @@ const dimensionOptions = computed(() => {
     (datasetColumns[t] ?? []).forEach((c) => {
       if (!seen.has(c.name)) {
         seen.add(c.name);
-        opts.push({ name: c.name, table: t, isDate: c.isDate });
+        opts.push({ name: c.name, table: t, isDate: c.isDate, value: c.name, qualified: false });
       }
+    });
+  });
+  // 一跳维表列（P1）：值为 限定名，标注来源表
+  tables.forEach((t) => {
+    Object.entries(dimRelations[t] ?? {}).forEach(([dimTable, cols]) => {
+      (cols ?? []).forEach((c) => {
+        const value = `${dimTable}.${c}`;
+        if (!seen.has(value)) {
+          seen.add(value);
+          opts.push({ name: c, table: dimTable, isDate: false, value, qualified: true });
+        }
+      });
     });
   });
   return opts;
 });
+// 限定名集合：保存时把 `表名.列名` 归一为 {dataset, column} 对象
+const qualifiedDimSet = computed(
+  () => new Set(dimensionOptions.value.filter((o) => o.qualified).map((o) => o.value)),
+);
+const dimRelations = reactive({});
+async function loadDimRelations() {
+  const tables = new Set();
+  if (builder.mode === "flat" && builder.flat.table) tables.add(builder.flat.table);
+  if (builder.mode === "expr")
+    builder.expr.operands.forEach((o) => o.table && tables.add(o.table));
+  if (!tables.size) return;
+  if (!datasetStore.list.length) await datasetStore.fetchList();
+  const idByName = Object.fromEntries(datasetStore.list.map((d) => [d.name, d.id]));
+  await Promise.all(
+    [...tables].map(async (t) => {
+      if (dimRelations[t]) return; // 已加载
+      const id = idByName[t];
+      if (id === undefined) return;
+      try {
+        const rels = await listRelations(id);
+        const map = {};
+        for (const r of rels ?? []) {
+          const dimName = datasetStore.list.find((d) => d.id === r.target_dataset_id)?.name;
+          if (!dimName) continue;
+          const pairs = Array.isArray(r.column_pairs) && r.column_pairs.length
+            ? r.column_pairs
+            : [[r.from_column, r.target_column]];
+          if (!datasetColumns[dimName]) await loadColumns(dimName); // 维表列信息（判文本列）
+          const colInfo = datasetColumns[dimName] ?? [];
+          const targets = [...new Set(pairs.map(([, tk]) => tk))];
+          const isTexty = (c) => {
+            const info = colInfo.find((x) => x.name === c);
+            if (!info) return true; // 列信息缺失时不武断排除
+            return !info.isDate && !/^(int|float|double|bigint|decimal|number|bool)/i.test(info.type ?? "");
+          };
+          const textCols = targets.filter(isTexty);
+          if (textCols.length) map[dimName] = (map[dimName] ?? []).concat(textCols);
+        }
+        dimRelations[t] = map;
+      } catch {
+        /* 关系拉取失败不阻塞维度选择，仅无跨表候选 */
+      }
+    }),
+  );
+}
+watch(
+  () => [builder.mode, builder.flat.table, builder.expr.operands.map((o) => o.table).join(",")],
+  () => loadDimRelations(),
+);
 
 const flatTimePlaceholder = computed(() => {
   const n = flatDateCols.value.length;
@@ -591,9 +654,12 @@ function openEdit(row) {
     topic: row.topic ?? "general",
     parent_id: row.parent_id ?? null,
     status: row.status ?? "active",
-    // dimensions 兼容两种存法：字符串列名 或 {dataset, column} 对象 → 归一为列名
+    // dimensions 兼容两种存法：字符串列名 或 {dataset, column} 对象（P1 跨表维度）
+    // → 对象归一为 `表名.列名` 限定名供选择器展示，保存时再转回对象
     dimensions: (row.dimensions ?? [])
-      .map((d) => (typeof d === "string" ? d : (d?.column ?? "")))
+      .map((d) =>
+        typeof d === "string" ? d : d?.dataset && d?.column ? `${d.dataset}.${d.column}` : (d?.column ?? ""),
+      )
       .filter(Boolean),
   });
   fillBuilderFromRule(row.calc_rule);
@@ -661,7 +727,15 @@ async function handleSave() {
       definition: form.definition,
       topic: form.topic,
       parent_id: form.parent_id,
-      dimensions: form.dimensions.map((d) => String(d).trim()).filter(Boolean),
+      // P1 跨表维度：命中限定名集合的项归一为 {dataset, column} 对象，其余保持字符串列名
+      dimensions: form.dimensions
+        .map((d) => String(d).trim())
+        .filter(Boolean)
+        .map((d) => {
+          if (!qualifiedDimSet.value.has(d) || !d.includes(".")) return d;
+          const i = d.indexOf(".");
+          return { dataset: d.slice(0, i), column: d.slice(i + 1) };
+        }),
       calc_rule: parsed.rule,
       // B9.3：归入当前项目；「全部项目」视图下新建 → 默认项目（后端缺省语义）
       ...(projectStore.currentId ? { project_id: projectStore.currentId } : {}),
@@ -1187,7 +1261,7 @@ watch(
             常用维度
             <el-tooltip
               placement="top"
-              content="归因下钻的层级来源：选择顺序即层级顺序（第 1 个为最上层）；归因下钻需 2~4 个。候选列来自计算规则引用的数据集，也可直接输入该数据集中存在的其他列名。"
+              content="归因下钻的层级来源：选择顺序即层级顺序（第 1 个为最上层）；归因下钻需 2~4 个。候选列来自计算规则引用的数据集，以及这些表经已登记表关系可达的维表列（标注来源表，如 PicList（pic_list））；也可直接输入本表列名。"
             >
               <el-icon class="hint-icon"><QuestionFilled /></el-icon>
             </el-tooltip>
@@ -1200,9 +1274,9 @@ watch(
           >
             <el-option
               v-for="c in dimensionOptions"
-              :key="c.table + '.' + c.name"
-              :label="c.isDate ? (c.name + '（日期列）') : c.name"
-              :value="c.name"
+              :key="c.value"
+              :label="c.qualified ? `${c.name}（${c.table}）` : (c.isDate ? c.name + '（日期列）' : c.name)"
+              :value="c.value"
             />
           </el-select>
         </el-form-item>

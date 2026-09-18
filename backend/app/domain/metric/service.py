@@ -53,12 +53,29 @@ def load_relations(db: Session) -> list[RelationInfo]:
         to_ds = Repository(Dataset, db).get(r.target_dataset_id)
         if from_ds is None or to_ds is None:
             continue  # 关系指向已删除数据集，编译时忽略
+        pairs: tuple[tuple[str, str], ...] = ()
+        raw = getattr(r, "column_pairs", None)
+        if raw:
+            try:
+                loaded = json.loads(raw)
+            except (TypeError, ValueError):
+                loaded = None
+            if (
+                isinstance(loaded, list)
+                and loaded
+                and all(
+                    isinstance(p, list) and len(p) == 2 and all(isinstance(x, str) for x in p)
+                    for p in loaded
+                )
+            ):
+                pairs = tuple((p[0], p[1]) for p in loaded)
         result.append(
             RelationInfo(
                 from_dataset=from_ds.name,
                 from_column=r.from_column,
                 to_dataset=to_ds.name,
                 to_column=r.target_column,
+                column_pairs=pairs,
             )
         )
     return result

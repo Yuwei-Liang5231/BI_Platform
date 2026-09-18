@@ -85,6 +85,8 @@ class DatasetRelation(Base):
     from_column: Mapped[str] = mapped_column(String(200))
     target_dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"))
     target_column: Mapped[str] = mapped_column(String(200))
+    # P2 复合键：JSON [[from, target], ...]（含首对）；NULL = 单列键（from/target_column）
+    column_pairs: Mapped[str | None] = mapped_column(Text, nullable=True)
     relation_type: Mapped[str] = mapped_column(String(20), default="many_to_one")
     created_by: Mapped[str] = mapped_column(String(20), default="manual")  # manual / auto_suggest
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)

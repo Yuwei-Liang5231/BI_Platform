@@ -52,12 +52,21 @@ class DatasetInfo:
 
 @dataclass
 class RelationInfo:
-    """编译输入：显式注册的表关系（事实表 → 维度表，一跳）。"""
+    """编译输入：显式注册的表关系（事实表 → 维度表，一跳）。
+
+    P2 复合键：column_pairs 为完整列对列表 [[from, target], ...]（含首对），
+    为空元组时退化为单列键（from_column/to_column）——旧数据零迁移兼容。
+    """
 
     from_dataset: str
     from_column: str
     to_dataset: str
     to_column: str
+    column_pairs: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def pairs(self) -> tuple[tuple[str, str], ...]:
+        return self.column_pairs or ((self.from_column, self.to_column),)
 
 
 @dataclass
@@ -174,48 +183,109 @@ def _check_aggregation_type(operand: Operand, ds: DatasetInfo, context: str) -> 
             )
 
 
+def _resolve_cross_column(
+    ds: DatasetInfo,
+    datasets: dict[str, DatasetInfo],
+    relations: list[RelationInfo],
+    column: str,
+    context: str,
+    what: str,
+    joins: list[RelationInfo],
+    joined: set[str],
+    used_relations: list[dict],
+) -> str:
+    """跨表列解析（过滤列/拆解维度列共用，P1+P2）：
+
+    1. 本表列直取（含列名本身带点的情形——精确匹配优先，限定名不抢）；
+    2. `表名.列名` 限定名：在所有可能的拆分点中找「一跳可达维表 + 其列」的
+       唯一解释（表名/列名含点时也能正确拆分）；多个解释 → 歧义拒绝；
+    3. 纯列名一跳解析（原行为）：本表 → 维度表显式关系，必要时补 JOIN
+       （与过滤 JOIN 共享 joined 去重）。多路径命中即歧义拒绝；
+       找不到给出可行动提示。
+    """
+    if column in ds.columns:
+        return f"{_q(ds.name)}.{_q(column)}"
+
+    def _append_join(rel: RelationInfo) -> None:
+        if rel.to_dataset not in joined:
+            joins.append(rel)
+            joined.add(rel.to_dataset)
+            rec = {
+                "from_dataset": rel.from_dataset, "to_dataset": rel.to_dataset,
+                "from_column": rel.from_column, "to_column": rel.to_column,
+            }
+            if rel.column_pairs:
+                rec["column_pairs"] = [list(p) for p in rel.column_pairs]
+            used_relations.append(rec)
+
+    # 限定名：`表名.列名`（一跳维表）
+    if "." in column:
+        qualified: list[tuple[RelationInfo, str, str]] = []  # (关系, 表名, 列名)
+        for i in range(1, len(column)):
+            left, right = column[:i], column[i + 1:]
+            if not left or not right:
+                continue
+            for rel in relations:
+                if rel.from_dataset != ds.name or rel.to_dataset != left:
+                    continue
+                dim = datasets.get(rel.to_dataset)
+                if dim is not None and right in dim.columns:
+                    qualified.append((rel, left, right))
+        if len(qualified) == 1:
+            rel, dname, cname = qualified[0]
+            _append_join(rel)
+            return f"{_q(dname)}.{_q(cname)}"
+        if len(qualified) > 1:
+            dup = ", ".join(sorted({d for _, d, _ in qualified}))
+            raise CompileError(
+                f"{context} 的{what} {column!r} 限定名有多种解释（{dup}），语义歧义，请改用不含点的列名或调整表名"
+            )
+        # 限定名无匹配：不静默退回纯列名（用户显式指定了表），直接报错
+        raise CompileError(
+            f"{context} 的{what} {column!r} 是限定名，但找不到 {ds.name} → 对应维表 的显式表关系"
+            f"（或维表中无该列）。请先在数据集管理中登记表关系"
+        )
+
+    candidates = [
+        r for r in relations
+        if r.from_dataset == ds.name
+        and r.to_dataset in datasets
+        and column in datasets[r.to_dataset].columns
+    ]
+    if not candidates:
+        raise CompileError(
+            f"{context} 的{what} {column!r} 不在数据集 {ds.name!r} 中，"
+            f"且找不到 {ds.name} → 维度表 的显式表关系。"
+            f"请先在数据集管理中登记表关系，或改用本表文本列"
+        )
+    if len(candidates) > 1:
+        dup = ", ".join(sorted({r.to_dataset for r in candidates}))
+        raise CompileError(
+            f"{context} 的{what} {column!r} 可通过多个表关系取得（{dup}），"
+            f"语义歧义，请用 维表名.{column} 限定或拆分指标"
+        )
+    rel = candidates[0]
+    _append_join(rel)
+    return f"{_q(rel.to_dataset)}.{_q(column)}"
+
+
 def _resolve_condition_columns(
     cond: FilterCondition,
     ds: DatasetInfo,
     datasets: dict[str, DatasetInfo],
     relations: list[RelationInfo],
     context: str,
-    joins: list[tuple[str, str, str]],
+    joins: list[RelationInfo],
     joined: set[str],
     used_relations: list[dict],
 ) -> str:
     """单个过滤条件解析为全限定列引用；跨表列走显式一跳关系，必要时补 JOIN。
     joined 为同一子查询内共享的已 JOIN 维度表集合（过滤列与拆解维度列共用，
     防止同一维表被 JOIN 两次导致 SQL 表别名冲突）。"""
-    if cond.column in ds.columns:
-        return _condition_sql(f"{_q(ds.name)}.{_q(cond.column)}", cond)
-    # 一跳星型解析：本表(事实) → 维度表
-    candidates = [
-        r for r in relations
-        if r.from_dataset == ds.name
-        and r.to_dataset in datasets
-        and cond.column in datasets[r.to_dataset].columns
-    ]
-    if not candidates:
-        raise CompileError(
-            f"{context} 的过滤列 {cond.column!r} 不在数据集 {ds.name!r} 中，"
-            f"且找不到 {ds.name} → 维度表 的显式表关系。"
-            f"请先在数据集管理中登记表关系（编译器禁止隐式推断关联键）"
-        )
-    if len(candidates) > 1:
-        dup = ", ".join(sorted({r.to_dataset for r in candidates}))
-        raise CompileError(
-            f"{context} 的过滤列 {cond.column!r} 可通过多个表关系取得（{dup}），语义歧义，请拆分指标"
-        )
-    rel = candidates[0]
-    if rel.to_dataset not in joined:
-        joins.append((rel.to_dataset, rel.from_column, rel.to_column))
-        joined.add(rel.to_dataset)
-        used_relations.append(
-            {"from_dataset": rel.from_dataset, "from_column": rel.from_column,
-             "to_dataset": rel.to_dataset, "to_column": rel.to_column}
-        )
-    return _condition_sql(f"{_q(rel.to_dataset)}.{_q(cond.column)}", cond)
+    ref = _resolve_cross_column(
+        ds, datasets, relations, cond.column, context, "过滤列", joins, joined, used_relations
+    )
+    return _condition_sql(ref, cond)
 
 
 def _resolve_filter_columns(
@@ -224,7 +294,7 @@ def _resolve_filter_columns(
     datasets: dict[str, DatasetInfo],
     relations: list[RelationInfo],
     context: str,
-    joins: list[tuple[str, str, str]],
+    joins: list[RelationInfo],
     used_relations: list[dict],
     joined: set[str] | None = None,
 ) -> list[str]:
@@ -280,24 +350,24 @@ _TEXTY_TYPES = {"string", "mixed"}
 
 
 def _join_on_sql(
-    ds: DatasetInfo,
+    rel: RelationInfo,
     datasets: dict[str, DatasetInfo],
-    fk: str,
-    dim: str,
-    pk: str,
 ) -> str:
-    """关系 JOIN 的 ON 条件。两侧键类型不匹配（文本键 vs 数值键，常见于
-    Excel/CSV 接入）时对文本侧做 TRY_CAST——脏值转 NULL 自然不匹配，
-    而不是整条 SQL 因 Binder 错误不可用。"""
-    left_ref = f"{_q(ds.name)}.{_q(fk)}"
-    right_ref = f"{_q(dim)}.{_q(pk)}"
-    lt = datasets[ds.name].columns.get(fk, "")
-    rt = datasets[dim].columns.get(pk, "")
-    if lt in _TEXTY_TYPES and rt in _NUMERIC_TYPES:
-        left_ref = f"TRY_CAST({left_ref} AS DOUBLE)"
-    elif rt in _TEXTY_TYPES and lt in _NUMERIC_TYPES:
-        right_ref = f"TRY_CAST({right_ref} AS DOUBLE)"
-    return f"{left_ref} = {right_ref}"
+    """关系 JOIN 的 ON 条件（P2 复合键：全部列对 AND 连接）。单列对两侧键类型
+    不匹配（文本键 vs 数值键，常见于 Excel/CSV 接入）时对文本侧做 TRY_CAST——
+    脏值转 NULL 自然不匹配，而不是整条 SQL 因 Binder 错误不可用。"""
+    conds: list[str] = []
+    for fk, pk in rel.pairs:
+        left_ref = f"{_q(rel.from_dataset)}.{_q(fk)}"
+        right_ref = f"{_q(rel.to_dataset)}.{_q(pk)}"
+        lt = datasets[rel.from_dataset].columns.get(fk, "")
+        rt = datasets[rel.to_dataset].columns.get(pk, "")
+        if lt in _TEXTY_TYPES and rt in _NUMERIC_TYPES:
+            left_ref = f"TRY_CAST({left_ref} AS DOUBLE)"
+        elif rt in _TEXTY_TYPES and lt in _NUMERIC_TYPES:
+            right_ref = f"TRY_CAST({right_ref} AS DOUBLE)"
+        conds.append(f"{left_ref} = {right_ref}")
+    return " AND ".join(conds)
 
 
 def _operand_subquery(    operand: Operand,
@@ -320,7 +390,7 @@ def _operand_subquery(    operand: Operand,
     column = _require_column(ds, operand.column, context, required=operand.aggregation != "count")
     _check_aggregation_type(operand, ds, context)
 
-    joins: list[tuple[str, str, str]] = []
+    joins: list[RelationInfo] = []
     where_clauses = _resolve_filter_columns(
         operand, ds, datasets, relations, context, joins, used_relations
     )
@@ -344,15 +414,15 @@ def _operand_subquery(    operand: Operand,
         where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} < ($__end__ + INTERVAL 1 DAY)")
 
     join_sql = "".join(
-        f" JOIN {_q(dim)} ON {_join_on_sql(ds, datasets, fk, dim, pk)}"
-        for dim, fk, pk in joins
+        f" JOIN {_q(rel.to_dataset)} ON {_join_on_sql(rel, datasets)}"
+        for rel in joins
     )
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     sql = (
         f"SELECT {_agg_sql(operand, f'{_q(ds.name)}.{_q(column)}' if column else None)} AS value "
         f"FROM {_q(ds.name)}{join_sql} {where_sql}"
     )
-    return sql, ds.name, time_field, cov, [dim for dim, _, _ in joins]
+    return sql, ds.name, time_field, cov, [rel.to_dataset for rel in joins]
 
 
 def _validate_operand_names(calc: CalcRule, datasets: dict[str, DatasetInfo]) -> None:
@@ -499,41 +569,16 @@ def _resolve_dimension_ref(
     relations: list[RelationInfo],
     dimension_column: str,
     context: str,
-    joins: list[tuple[str, str, str]],
+    joins: list[RelationInfo],
     joined: set[str],
     used_relations: list[dict],
 ) -> str:
-    """拆解维度列解析：本表文本列直取；否则查「本表 → 维度表」一跳关系
-    （显式注册），必要时补 JOIN（与过滤 JOIN 共享 joined 去重）。
-    多路径命中即歧义拒绝；找不到给出可行动提示。"""
-    if dimension_column in ds.columns:
-        return f"{_q(ds.name)}.{_q(dimension_column)}"
-    candidates = [
-        r for r in relations
-        if r.from_dataset == ds.name
-        and r.to_dataset in datasets
-        and dimension_column in datasets[r.to_dataset].columns
-    ]
-    if not candidates:
-        raise CompileError(
-            f"{context} 的拆解维度列 {dimension_column!r} 不在数据集 {ds.name!r} 中，"
-            f"且找不到 {ds.name} → 维度表 的显式表关系。"
-            f"请先在数据集管理中登记表关系，或改用本表文本列作为维度"
-        )
-    if len(candidates) > 1:
-        dup = ", ".join(sorted({r.to_dataset for r in candidates}))
-        raise CompileError(
-            f"{context} 的拆解维度列 {dimension_column!r} 可通过多个表关系取得（{dup}），语义歧义"
-        )
-    rel = candidates[0]
-    if rel.to_dataset not in joined:
-        joins.append((rel.to_dataset, rel.from_column, rel.to_column))
-        joined.add(rel.to_dataset)
-        used_relations.append(
-            {"from_dataset": rel.from_dataset, "from_column": rel.from_column,
-             "to_dataset": rel.to_dataset, "to_column": rel.to_column}
-        )
-    return f"{_q(rel.to_dataset)}.{_q(dimension_column)}"
+    """拆解维度列解析（P1）：本表文本列直取；`表名.列名` 限定名指定维表列；
+    纯列名退回一跳关系解析。统一走 _resolve_cross_column（与过滤列同栈）。"""
+    return _resolve_cross_column(
+        ds, datasets, relations, dimension_column, context,
+        "拆解维度列", joins, joined, used_relations,
+    )
 
 
 def _operand_group_subquery(
@@ -555,7 +600,7 @@ def _operand_group_subquery(
     column = _require_column(ds, operand.column, context, required=operand.aggregation != "count")
     _check_aggregation_type(operand, ds, context)
 
-    joins: list[tuple[str, str, str]] = []
+    joins: list[RelationInfo] = []
     joined: set[str] = set()
     where_clauses = _resolve_filter_columns(
         operand, ds, datasets, relations, context, joins, used_relations, joined
@@ -587,8 +632,8 @@ def _operand_group_subquery(
         where_clauses.append(f"{_q(ds.name)}.{_q(time_field)} < ($__end__ + INTERVAL 1 DAY)")
 
     join_sql = "".join(
-        f" JOIN {_q(dim)} ON {_join_on_sql(ds, datasets, fk, dim, pk)}"
-        for dim, fk, pk in joins
+        f" JOIN {_q(rel.to_dataset)} ON {_join_on_sql(rel, datasets)}"
+        for rel in joins
     )
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     sql = (
@@ -596,7 +641,7 @@ def _operand_group_subquery(
         f"{_agg_sql(operand, f'{_q(ds.name)}.{_q(column)}' if column else None)} AS value "
         f"FROM {_q(ds.name)}{join_sql} {where_sql} GROUP BY {dim_ref}"
     )
-    return sql, ds.name, time_field, cov, [dim for dim, _, _ in joins]
+    return sql, ds.name, time_field, cov, [rel.to_dataset for rel in joins]
 
 
 def compile_metric_breakdown(

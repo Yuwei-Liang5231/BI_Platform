@@ -6,6 +6,7 @@ B1 阶段 1 最小版；B4 权限：上传/改名/删除/关系登记为管理�
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import tempfile
@@ -357,6 +358,31 @@ class RelationIn(BaseModel):
     target_dataset_id: int
     target_column: str
     relation_type: str = "many_to_one"
+    # P2 复合键：[[from, target], ...]（含首对，须与 from_column/target_column 一致）；
+    # 缺省/None = 单列键
+    column_pairs: list[list[str]] | None = None
+
+
+def _normalize_column_pairs(body: RelationIn) -> list[list[str]] | None:
+    """复合键校验与归一：非空、每对恰好 2 个非空列名、无重复对、首对须与
+    from_column/target_column 一致（存储上首对冗余存放于 from/target_column，
+    编译器 pairs 属性据此退化兼容）。返回 None 表示单列键。"""
+    if body.column_pairs is None:
+        return None
+    pairs = body.column_pairs
+    if not pairs:
+        raise BusinessError("column_pairs 提供时不能为空数组（复合键至少 1 对）")
+    norm: list[list[str]] = []
+    for i, p in enumerate(pairs):
+        if not isinstance(p, list) or len(p) != 2 or not all(isinstance(x, str) and x.strip() for x in p):
+            raise BusinessError(f"column_pairs[{i}] 须为 [from_column, target_column] 两个非空字符串")
+        norm.append([p[0].strip(), p[1].strip()])
+    if norm[0] != [body.from_column.strip(), body.target_column.strip()]:
+        raise BusinessError("column_pairs 首对须与 from_column/target_column 一致")
+    seen = {tuple(p) for p in norm}
+    if len(seen) != len(norm):
+        raise BusinessError("column_pairs 存在重复列对")
+    return norm
 
 
 @router.post("/{dataset_id}/relations")
@@ -374,12 +400,16 @@ def create_relation(dataset_id: int, body: RelationIn, db: DbDep, _: AdminUser):
     if body.relation_type not in VALID_RELATION_TYPES:
         raise BusinessError(f"relation_type 须为 {sorted(VALID_RELATION_TYPES)} 之一")
 
+    pairs = _normalize_column_pairs(body)
+
     ds_cols = {c["name"] for c in ds_columns(ds)}
     target_cols = {c["name"] for c in ds_columns(target)}
-    if body.from_column not in ds_cols:
-        raise BusinessError(f"from_column {body.from_column!r} 在数据集 {ds.name} 中不存在")
-    if body.target_column not in target_cols:
-        raise BusinessError(f"target_column {body.target_column!r} 在数据集 {target.name} 中不存在")
+    check_pairs = pairs if pairs is not None else [[body.from_column, body.target_column]]
+    for fk, tk in check_pairs:
+        if fk not in ds_cols:
+            raise BusinessError(f"from_column {fk!r} 在数据集 {ds.name} 中不存在")
+        if tk not in target_cols:
+            raise BusinessError(f"target_column {tk!r} 在数据集 {target.name} 中不存在")
 
     dup = (
         db.query(DatasetRelation)
@@ -399,6 +429,8 @@ def create_relation(dataset_id: int, body: RelationIn, db: DbDep, _: AdminUser):
         from_column=body.from_column,
         target_dataset_id=body.target_dataset_id,
         target_column=body.target_column,
+        # 首对冗余存于 from/target_column（单列键零差异）；完整列对存 JSON
+        column_pairs=json.dumps(pairs, ensure_ascii=False) if pairs is not None else None,
         relation_type=body.relation_type,
     )
     db.add(rel)
@@ -411,6 +443,7 @@ def create_relation(dataset_id: int, body: RelationIn, db: DbDep, _: AdminUser):
             "target_dataset_id": rel.target_dataset_id,
             "target_dataset": target.name,
             "target_column": rel.target_column,
+            "column_pairs": pairs,
             "relation_type": rel.relation_type,
         },
         message="关系已注册",
@@ -428,6 +461,11 @@ def list_relations(dataset_id: int, db: DbDep, _: CurrentUser):
                 "from_column": r.from_column,
                 "target_dataset_id": r.target_dataset_id,
                 "target_column": r.target_column,
+                "column_pairs": (
+                    json.loads(r.column_pairs)
+                    if getattr(r, "column_pairs", None)
+                    else [[r.from_column, r.target_column]]
+                ),
                 "relation_type": r.relation_type,
                 "created_by": r.created_by,
             }

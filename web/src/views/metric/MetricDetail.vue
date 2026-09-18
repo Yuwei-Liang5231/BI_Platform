@@ -69,12 +69,19 @@ watch(dateRange, () => {
 
 /* ── 归因下钻（B14）：维度层级树逐层拆贡献 ──
    层级来自指标 dimensions 配置（可自选 2~4 层）；行点击逐层下钻，
-   面包屑回退；贡献合计 ≈ 节点变化（守恒偏差如实展示）。 */
+   面包屑回退；贡献合计 ≈ 节点变化（守恒偏差如实展示）。
+   P1 跨表维度：{dataset, column} 对象归一为 `表名.列名` 限定名传给编译器，
+   展示时仅显示列名（来源表以 tooltip/括号标注）。 */
 const dimCandidates = computed(() => {
   const raw = metric.value?.dimensions ?? [];
-  const cols = raw.map((d) => (typeof d === "string" ? d : d?.column)).filter(Boolean);
-  return [...new Set(cols)];
+  const vals = raw
+    .map((d) => (typeof d === "string" ? d : d?.dataset && d?.column ? `${d.dataset}.${d.column}` : (d?.column ?? "")))
+    .filter(Boolean);
+  return [...new Set(vals)];
 });
+const dimLabel = (d) => (d.includes(".") && !metric.value?.dimensions?.some((x) => typeof x === "string" && x === d)
+  ? d.slice(d.indexOf(".") + 1)
+  : d);
 const treeDims = ref([]);
 const treePath = ref([]); // [{dimension, value}]
 const treeNode = ref(null);
@@ -134,7 +141,7 @@ function fmtSigned(v) {
 const attrNodeLabel = computed(() => {
   if (!treeNode.value) return "";
   const pathDesc = treeNode.value.path.map((s) => s.value).join(" · ");
-  return `${treeNode.value.children_dimension}（${pathDesc || "全部"}）`;
+  return `${dimLabel(treeNode.value.children_dimension)}（${pathDesc || "全部"}）`;
 });
 
 /* ── 变更历史：后端存 before/after 快照，前端生成可读摘要 ──
@@ -421,7 +428,7 @@ onMounted(async () => {
             <h4>
               归因下钻
               <span v-if="treeNode" class="pwc-badge pwc-badge--grey">
-                {{ treeNode.dimensions.join(" → ") }}
+                {{ treeNode.dimensions.map(dimLabel).join(" → ") }}
               </span>
             </h4>
           </div>
@@ -433,7 +440,7 @@ onMounted(async () => {
               :key="d"
               closable
               @close="removeTreeDim(i)"
-            >{{ i + 1 }}. {{ d }}</el-tag>
+            >{{ i + 1 }}. {{ dimLabel(d) }}</el-tag>
             <el-dropdown
               v-if="dimCandidates.length > treeDims.length && treeDims.length < 4"
               trigger="click"
@@ -446,7 +453,7 @@ onMounted(async () => {
                     v-for="c in dimCandidates.filter((c) => !treeDims.includes(c))"
                     :key="c"
                     :command="c"
-                  >{{ c }}</el-dropdown-item>
+                  >{{ dimLabel(c) }}</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -478,10 +485,10 @@ onMounted(async () => {
                 <el-breadcrumb-item v-for="(s, i) in treeNode.path" :key="s.dimension">
                   <el-tooltip v-if="i < treeNode.path.length - 1" content="点击返回该层（收起其下钻层级）" placement="top">
                     <el-link :underline="false" class="attr__crumb" @click="jumpTo(i + 1)">
-                      {{ s.dimension }} = {{ s.value }}
+                      {{ dimLabel(s.dimension) }} = {{ s.value }}
                     </el-link>
                   </el-tooltip>
-                  <span v-else>{{ s.dimension }} = {{ s.value }}</span>
+                  <span v-else>{{ dimLabel(s.dimension) }} = {{ s.value }}</span>
                 </el-breadcrumb-item>
               </el-breadcrumb>
               <span class="attr__delta">
@@ -544,12 +551,12 @@ onMounted(async () => {
               </el-table-column>
             </el-table>
             <p v-if="treeNode.has_next" class="attr__hint">
-              点击行可继续按「{{ treeNode.next_dimension }}」下钻；点击上方路径（总计 / 各层）可返回对应层级；
+              点击行可继续按「{{ dimLabel(treeNode.next_dimension) }}」下钻；点击上方路径（总计 / 各层）可返回对应层级；
               共 {{ treeNode.children_total_count }} 组，逐层守恒（贡献合计 = 节点变化）。
               <template v-if="treeNode.children_total_count > 50">组数超 50，超出部分已并入「（其他）」。</template>
             </p>
             <p v-else class="attr__hint">
-              已到叶子层（{{ treeNode.children_dimension }} 为最后一层）；点击上方路径可返回对应层级。
+              已到叶子层（{{ dimLabel(treeNode.children_dimension) }} 为最后一层）；点击上方路径可返回对应层级。
             </p>
           </template>
         </section>

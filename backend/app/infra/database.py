@@ -106,6 +106,11 @@ def migrate_project_columns() -> None:
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN project_id INTEGER")
             if table == "anomaly_configs" and "materiality_pct" not in cols:
                 conn.exec_driver_sql("ALTER TABLE anomaly_configs ADD COLUMN materiality_pct REAL DEFAULT 5.0")
+            # P2 复合键关系：存量表补 column_pairs JSON 列（NULL = 单列键，零迁移兼容）
+            if table == "datasets":
+                rel_rows = conn.exec_driver_sql("PRAGMA table_info(dataset_relations)").fetchall()
+                if rel_rows and "column_pairs" not in {r[1] for r in rel_rows}:
+                    conn.exec_driver_sql("ALTER TABLE dataset_relations ADD COLUMN column_pairs TEXT")
         conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_metrics_project_id ON metrics (project_id)"
         )
