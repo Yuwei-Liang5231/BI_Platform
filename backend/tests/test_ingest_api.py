@@ -259,7 +259,7 @@ def test_delete_removes_files(client):
 
 
 def test_int64_overflow_rejected_as_400(client):
-    """超出 int64 的大整数必须明确报 400，而不是 500。"""
+    """超出 int64 的大整数必须明确报 400，而不是 500（B14.1 起由 DuckDB TRY_CAST 校验拦截）。"""
     huge = "9" * 25  # 10^25 量级，超 int64 上限约 9.2×10^18
     resp = _upload(
         client,
@@ -268,6 +268,45 @@ def test_int64_overflow_rejected_as_400(client):
     )
     assert resp.status_code == 400, resp.text
     assert "n" in resp.json()["message"] or "int64" in resp.json()["message"]
+
+
+def test_upload_slash_date_vectorized_cast(client):
+    """B14.1 单遍解析改造回归：斜杠日期（中文 Excel 常见）经 DuckDB TRY_CAST 正确入库。
+
+    旧实现逐格 Python 转换；现改为字符串旁路分片 + 向量化 cast，格式兼容面
+    （ISO 与斜杠、单位数月/日）必须保持。
+    """
+    resp = _upload(
+        client,
+        _csv_bytes(["d", "v"], [["2025/9/30", "10"], ["2025/10/1", "20"]], "utf-8"),
+        "slash_date.csv",
+        name="slash_date",
+    )
+    assert resp.status_code == 200, resp.text
+    ds = resp.json()["data"]
+    try:
+        cols = {c["name"]: c for c in ds["columns"]}
+        assert cols["d"]["type"] == "date"
+        prev = client.get(f"/api/datasets/{ds['id']}/preview").json()["data"]
+        assert prev["rows"][0]["d"] == "2025-09-30"
+    finally:
+        client.delete(f"/api/datasets/{ds['id']}")
+
+
+def test_upload_leaves_no_stage_temp_file(client):
+    """B14.1 旁路缓存分片必须在物化完成后清理（.stage-*.parquet 不残留）。"""
+    from app.core.config import get_settings
+    from app.infra.storage.paths import StoragePaths
+
+    resp = _upload(client, _csv_bytes(["a"], [["1"]], "utf-8"), "stg.csv", name="stage_check")
+    assert resp.status_code == 200, resp.text
+    ds = resp.json()["data"]
+    try:
+        d = StoragePaths(get_settings()).parquet_dir / "stage_check"
+        files = sorted(p.name for p in d.iterdir())
+        assert files == ["part-0001.parquet"], f"残留临时文件: {files}"
+    finally:
+        client.delete(f"/api/datasets/{ds['id']}")
 
 
 def test_gbk_after_ascii_prefix_retried(client):

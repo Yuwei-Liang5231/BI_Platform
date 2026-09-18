@@ -1,11 +1,11 @@
 import request from "@/config/request";
 
-// 上传需服务端流式解析入库（数十万行可超 30s），单独放宽超时至 10 分钟；
-// 其余接口沿用全局 30s。
+// 上传需服务端流式解析入库（数十万行可超 30s），单独放宽超时（B14.1 单遍解析
+// 改造后 200MB 级约 2~5 分钟，留足余量）；其余接口沿用全局 30s。
 export const uploadDataset = (formData, onProgress) =>
   request.post("/datasets/upload", formData, {
     headers: { "Content-Type": "multipart/form-data" },
-    timeout: 600000,
+    timeout: 900000,
     onUploadProgress: (e) => {
       if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
     },
@@ -28,7 +28,7 @@ export const getDatasetQuality = (datasetId) =>
 export const importDatasetData = (datasetId, formData, onProgress) =>
   request.post(`/datasets/${datasetId}/data`, formData, {
     headers: { "Content-Type": "multipart/form-data" },
-    timeout: 600000,
+    timeout: 900000,
     onUploadProgress: (e) => {
       if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
     },

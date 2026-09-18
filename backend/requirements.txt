@@ -12,6 +12,9 @@ duckdb>=1.0
 pyarrow>=15
 openpyxl>=3.1
 charset-normalizer>=3.3
+# B14.1 xlsx 解析加速（可选：Rust 引擎，比 openpyxl 快 5~10 倍，日期原生解析；
+# 未安装时自动回退 openpyxl，功能等价仅速度差异）
+python-calamine>=0.8
 # B5 行业指标模板库（YAML 模板包）
 pyyaml>=6.0
 # 测试

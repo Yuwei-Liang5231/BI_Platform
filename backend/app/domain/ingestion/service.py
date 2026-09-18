@@ -1,8 +1,12 @@
 """接入服务：上传文件 → 编码识别 → 类型推断 → Parquet 落盘 → 元数据注册。
 
 设计要点：
-- 两遍流式扫描，内存占用与文件大小解耦（第一遍推断+质检，第二遍写 Parquet）
+- 单遍流式解析（B14.1 性能改造）：第一遍扫描推断类型的同时把字符串行旁路写入
+  临时 parquet，类型确定后用 DuckDB 向量化 TRY_CAST 一次性物化为最终强类型
+  parquet——xlsx 不再二次解析（openpyxl 解析 200MB/48 万行文件占整程一半以上），
+  内存占用与文件大小解耦
 - 列数不一致的行：明确拒绝并给出前 10 个行号（质检哲学：拒绝静默修正）
+- 转换失败仍显式报错：DuckDB TRY_CAST 失败计数 + 定位样本行（拒绝静默置 NULL）
 - 混杂类型列存储为 string，并在 schema 中标记 mixed=true
 - 行业无关（不变式 7）：本模块只认识行、列、类型，不认识任何业务语义
 """
@@ -13,6 +17,7 @@ import csv
 import json
 import logging
 import re
+import shutil
 from collections import Counter
 from collections.abc import Iterator
 from datetime import datetime
@@ -25,18 +30,14 @@ from sqlalchemy.orm import Session
 from app.core.response import BusinessError
 from app.domain.ingestion.encoding import detect_encoding
 from app.domain.ingestion.types import (
-    NULL_WORDS,
     T_BOOL,
     T_DATE,
     T_DATETIME,
     T_FLOAT,
     T_INT,
-    T_MIXED,
     ColumnStat,
     classify_value,
     normalize_header,
-    parse_date_value,
-    parse_datetime_value,
     scan_rows,
 )
 from app.infra.models import Dataset, DatasetCoverage
@@ -109,70 +110,128 @@ def _arrow_type(col_type: str) -> pa.DataType:
     }.get(col_type, pa.string())
 
 
-def _convert(raw: str, col_type: str):
-    """按列类型转换；空串/NULL 字面量 → None。混杂/字符串列原样保留。"""
-    v = raw.strip()
-    if not v or v.lower() in NULL_WORDS:
-        return None
-    if col_type == T_INT:
-        return int(v)
-    if col_type == T_FLOAT:
-        return float(v)
-    if col_type == T_DATE:
-        return parse_date_value(v)
-    if col_type == T_DATETIME:
-        return parse_datetime_value(v)
-    if col_type == T_BOOL:
-        return v.lower() == "true"
-    return v
+def _stage_rows(
+    rows: Iterator[list[str]], header: list[str], stage_path: Path
+) -> Iterator[list[str]]:
+    """行旁路缓存（B14.1）：扫描统计的同时把字符串行流式写入临时 parquet。
 
+    包装行迭代器（yield-through），使 xlsx/CSV 只解析一遍：scan_rows 消费行的
+    同时分批写入全字符串 schema 的临时分片，类型确定后由
+    _materialize_typed_parquet 向量化转换，替代旧的"第二遍重新解析文件"。
+    """
+    schema = pa.schema([pa.field(n, pa.string()) for n in header])
+    writer = pq.ParquetWriter(stage_path, schema)
+    buf: list[list[str]] = []
+    n_cols = len(header)
 
-def _write_parquet(
-    path: Path,
-    header: list[str],
-    col_types: list[str],
-    rows: Iterator[list[str]],
-    row_count: int,
-) -> None:
-    schema = pa.schema([pa.field(name, _arrow_type(t)) for name, t in zip(header, col_types)])
-    writer = pq.ParquetWriter(path, schema)
-    buffers: list[list] = [[] for _ in header]
-    row_no = 0
-    try:
-        for row in rows:
-            row_no += 1
-            if len(row) != len(header):  # 第一遍已拦截，防御性跳过
-                continue
-            for i, raw in enumerate(row):
-                try:
-                    buffers[i].append(_convert(raw, col_types[i]))
-                except (ValueError, OverflowError) as exc:
-                    raise BusinessError(
-                        f"第 {row_no} 行第 {i + 1} 列（{header[i]}）值 {raw!r} 无法转换为 {col_types[i]}：{exc}"
-                    ) from exc
-            if (len(buffers[0])) >= _PARQUET_BATCH:
-                _flush(writer, schema, header, buffers)
-        _flush(writer, schema, header, buffers)
-    finally:
-        writer.close()
-    _ = row_count
-
-
-def _flush(writer: pq.ParquetWriter, schema: pa.Schema, header: list[str], buffers: list[list]) -> None:
-    if not buffers[0]:
-        return
-    arrays = []
-    for i in range(len(header)):
-        try:
-            arrays.append(pa.array(buffers[i], type=schema.field(header[i]).type))
-        except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:
-            # 典型场景：数值超出 int64、文本落在强类型列
-            raise BusinessError(
-                f"列 {header[i]!r} 存在无法转换为 {schema.field(header[i]).type} 的值（如超出 int64 范围的大整数）：{exc}"
-            ) from exc
-    writer.write_table(pa.table(dict(zip(header, arrays)), schema=schema))
-    for buf in buffers:
+    def _flush() -> None:
+        if not buf:
+            return
+        arrays = [pa.array([row[i] for row in buf], type=pa.string()) for i in range(n_cols)]
+        writer.write_table(pa.table(dict(zip(header, arrays)), schema=schema))
         buf.clear()
+
+    def gen() -> Iterator[list[str]]:
+        try:
+            for row in rows:
+                if len(row) == n_cols:  # ragged 行只计数报错，不入缓存
+                    buf.append(row)
+                    if len(buf) >= _PARQUET_BATCH:
+                        _flush()
+                yield row
+        finally:
+            _flush()
+            writer.close()
+
+    return gen()
+
+
+_SQL_CAST_TYPE = {
+    T_INT: "BIGINT",
+    T_FLOAT: "DOUBLE",
+    T_DATE: "DATE",
+    T_DATETIME: "TIMESTAMP",
+    T_BOOL: "BOOLEAN",
+}
+
+
+def _quote_ident(name: str) -> str:
+    """SQL 标识符双引号包裹（列名可能含中文/保留字）。"""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _typed_expr(col: str, col_type: str) -> str:
+    """列转换表达式：NULL 归一（空串/null 字面量）+ 强类型 TRY_CAST。"""
+    q = _quote_ident(col)
+    guard = f"WHEN trim({q}) = '' OR lower(trim({q})) = 'null' THEN NULL"
+    sql_t = _SQL_CAST_TYPE.get(col_type)
+    if sql_t is None:  # string/mixed：原样保留（去首尾空白）
+        return f"CASE {guard} ELSE trim({q}) END"
+    return f"CASE {guard} ELSE TRY_CAST(trim({q}) AS {sql_t}) END"
+
+
+def _typed_fail_cond(col: str, col_type: str) -> str:
+    q = _quote_ident(col)
+    sql_t = _SQL_CAST_TYPE[col_type]
+    return (
+        f"trim({q}) <> '' AND lower(trim({q})) <> 'null' "
+        f"AND TRY_CAST(trim({q}) AS {sql_t}) IS NULL"
+    )
+
+
+def _materialize_typed_parquet(
+    stage_path: Path,
+    out_path: Path,
+    out_columns: list[str],
+    col_types: dict[str, str],
+) -> None:
+    """把字符串临时分片向量化物化为最终强类型 parquet（DuckDB TRY_CAST）。
+
+    质检哲学不放松：非字符串列存在无法转换的值时显式报错（计数 + 前 3 个
+    坏值样本及所在数据行号），绝不静默置 NULL。
+    """
+    import duckdb
+
+    con = duckdb.connect()
+    src = stage_path.as_posix().replace("'", "''")
+    try:
+        # 逐强类型列校验转换失败数（全量，非采样）
+        for name in out_columns:
+            t = col_types[name]
+            if t not in _SQL_CAST_TYPE:
+                continue
+            cond = _typed_fail_cond(name, t)
+            cnt = con.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{src}') WHERE {cond}"
+            ).fetchone()[0]
+            if cnt:
+                samples = con.execute(
+                    f"SELECT rn, val FROM ("
+                    f"  SELECT row_number() OVER () AS rn, {_quote_ident(name)} AS val"
+                    f"  FROM read_parquet('{src}')"
+                    f") t WHERE {_typed_fail_cond('val', t)} ORDER BY rn LIMIT 3"
+                ).fetchall()
+                detail = "、".join(f"第 {int(rn)} 行 {val!r}" for rn, val in samples)
+                raise BusinessError(
+                    f"列 {name!r} 存在 {cnt} 个无法转换为 {t} 的值（{detail}）"
+                )
+
+        exprs = ", ".join(
+            f"{_typed_expr(n, col_types[n])} AS {_quote_ident(n)}" for n in out_columns
+        )
+        schema = pa.schema([pa.field(n, _arrow_type(col_types[n])) for n in out_columns])
+        writer = pq.ParquetWriter(out_path, schema)
+        try:
+            reader = con.execute(
+                f"SELECT {exprs} FROM read_parquet('{src}')"
+            ).fetch_record_batch(_PARQUET_BATCH)
+            for batch in reader:
+                # safe=False 仅放宽 timestamp 亚秒截断；值合法性已由 TRY_CAST 校验
+                writer.write_table(pa.Table.from_batches([batch]).cast(schema, safe=False))
+        finally:
+            writer.close()
+    finally:
+        con.close()
 
 
 # openpyxl BUILTIN_FORMATS 只定义到 49；东亚版 Excel/WPS 的中文日期内置
@@ -192,6 +251,104 @@ def _is_xlsx_date_cell(cell) -> bool:
 
 
 def _iter_xlsx_rows(path: Path) -> tuple[list[str], Iterator[list[str]]]:
+    """xlsx → (表头, 字符串行迭代器)。
+
+    优先 python-calamine（Rust 引擎，实测比 openpyxl 快 5~10 倍，日期按样式
+    原生解析——46295 序列号问题不存在）；未安装时回退 openpyxl（慢但零依赖）。
+    两条路径输出完全同构：日期 → ISO 字符串（零点归 date），数值 → 整数无
+    小数点、小数保原样，空 → ""。
+    """
+    try:
+        from python_calamine import CalamineWorkbook  # noqa: F401
+    except ImportError:
+        return _iter_xlsx_rows_openpyxl(path)
+    return _iter_xlsx_rows_calamine(path)
+
+
+def _norm_xlsx_number(v: float | int) -> str:
+    """数值单元格 → 字符串：整数值去掉 .0 后缀（calamine 一律返回 float，
+    若直接 str 会把整数列变 '100.0'，破坏 int 推断与既有分片的 append 兼容）。"""
+    if isinstance(v, float) and v.is_integer() and abs(v) < 2 ** 53:
+        return str(int(v))
+    return str(v)
+
+
+def _iter_xlsx_rows_calamine(path: Path) -> tuple[list[str], Iterator[list[str]]]:
+    from datetime import date as _date, datetime as _datetime
+
+    from openpyxl.utils.datetime import from_excel
+    from python_calamine import CalamineWorkbook
+
+    wb = CalamineWorkbook.from_path(str(path))
+    rows = iter(wb.get_sheet_by_index(0).to_python(skip_empty_area=False))
+    try:
+        raw_header = next(rows)
+    except StopIteration as exc:
+        raise BusinessError("Excel 没有表头行") from exc
+    header = normalize_header([(str(v) if v is not None else "") for v in raw_header])
+
+    # calamine 与 openpyxl 一样不认识东亚内置日期 numFmtId（27-36/50-58），
+    # 这些列会返回裸序列号。用 openpyxl 只读前 25 行（read_only 惰性解析，
+    # 不触发全文件扫描，开销毫秒级）探测该类列，值路径再按纪元换算。
+    ea_cols = _detect_ea_date_columns(path)
+
+    def _cell_str(v) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, _datetime):
+            # 零点输出纯日期（月末快照类列归为 date），带时间才输出完整 datetime
+            if not (v.hour or v.minute or v.second or v.microsecond):
+                return v.date().isoformat()
+            return v.isoformat(sep=" ")
+        if isinstance(v, _date):
+            return v.isoformat()
+        if isinstance(v, bool):
+            return str(v)
+        if isinstance(v, (int, float)):
+            return _norm_xlsx_number(v)
+        return str(v)
+
+    def gen() -> Iterator[list[str]]:
+        for row in rows:
+            out = []
+            for j, v in enumerate(row):
+                if j in ea_cols and isinstance(v, (int, float)) and not isinstance(v, bool):
+                    v = from_excel(v)  # 东亚日期列：序列号 → date/datetime
+                out.append(_cell_str(v))
+            yield out
+
+    return header, gen()
+
+
+def _detect_ea_date_columns(path: Path) -> set[int]:
+    """探测使用东亚内置日期格式（27-36/50-58）的列（0-based 列号）。
+
+    openpyxl read_only 惰性解析：仅读取前 25 行定位每列首个非空单元格的
+    numFmtId（列内格式实践上统一），不做全文件扫描。
+    """
+    from openpyxl import load_workbook
+
+    cols: set[int] = set()
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        for row in ws.iter_rows(max_row=25):
+            for cell in row:
+                if cell.value is None:
+                    continue
+                try:
+                    if cell.has_style and cell.style_array.numFmtId in _EA_BUILTIN_DATE_FMT_IDS:
+                        cols.add(cell.column - 1)
+                except (AttributeError, IndexError, KeyError):
+                    continue
+    except (AttributeError, KeyError):
+        pass
+    finally:
+        wb.close()
+    return cols
+
+
+def _iter_xlsx_rows_openpyxl(path: Path) -> tuple[list[str], Iterator[list[str]]]:
     from datetime import date as _date, datetime as _datetime
 
     from openpyxl import load_workbook
@@ -223,6 +380,8 @@ def _iter_xlsx_rows(path: Path) -> tuple[list[str], Iterator[list[str]]]:
             return v.isoformat(sep=" ")
         if isinstance(v, _date):
             return v.isoformat()
+        if isinstance(v, bool):
+            return str(v)
         return str(v)
 
     def gen() -> Iterator[list[str]]:
@@ -257,56 +416,74 @@ def ingest_file(
     # 编码识别（xlsx 不需要）
     encoding = "xlsx" if ext == ".xlsx" else detect_encoding(src_path)
 
-    # 保存原始上传件（保留原编码，供审计与重放）
+    # 保存原始上传件（保留原编码，供审计与重放；流式复制，不整文件读内存）
     dest = storage.uploads_dir / f"{final_name}{ext}"
     if src_path.resolve() != dest.resolve():
-        dest.write_bytes(src_path.read_bytes())
+        shutil.copyfile(src_path, dest)
 
+    dataset_dir = storage.parquet_dir / final_name
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    stage_path = dataset_dir / f".stage-{datetime.now().strftime('%Y%m%d%H%M%S%f')}.parquet"
+
+    # ---- 第一遍：扫描推断 + 旁路缓存字符串行（文件只解析一遍）----
     if ext == ".xlsx":
         header, rows_iter = _iter_xlsx_rows(src_path)
-        stats, row_count, ragged = scan_rows(header, rows_iter)
+        staged = _stage_rows(rows_iter, header, stage_path)
+        try:
+            stats, row_count, ragged = scan_rows(header, staged)
+        except BaseException:
+            stage_path.unlink(missing_ok=True)
+            raise
     else:
         # 采样识别可能被"前段纯 ASCII + 后段 GBK"的文件骗过（头部判成 utf-8，
         # 流式解码到中后段才炸 UnicodeDecodeError）→ 按候选编码依次整文件重试
         candidates = [encoding] + [e for e in ("gbk", "gb18030") if e != encoding]
         last_error: UnicodeDecodeError | None = None
         for enc in candidates:
+            header, rows_iter = _open_rows(src_path, enc)
+            staged = _stage_rows(rows_iter, header, stage_path)
             try:
-                header, rows_iter = _open_rows(src_path, enc)
-                stats, row_count, ragged = scan_rows(header, rows_iter)
-                if enc != encoding:
-                    logger.warning(
-                        "编码重试生效: 采样判定 %s，实际按 %s 解码成功 (%s)",
-                        encoding, enc, src_path.name,
-                    )
-                    encoding = enc
-                break
+                stats, row_count, ragged = scan_rows(header, staged)
             except UnicodeDecodeError as exc:
+                stage_path.unlink(missing_ok=True)
                 last_error = exc
+                continue
+            except BaseException:
+                stage_path.unlink(missing_ok=True)
+                raise
+            if enc != encoding:
+                logger.warning(
+                    "编码重试生效: 采样判定 %s，实际按 %s 解码成功 (%s)",
+                    encoding, enc, src_path.name,
+                )
+                encoding = enc
+            break
         else:
+            stage_path.unlink(missing_ok=True)
             raise BusinessError(
                 "文件无法用已支持的编码（UTF-8 / GBK / GB18030）完整解码，疑似混合编码；"
                 "请将文件另存为 UTF-8 后重试",
                 data={"byte_position": last_error.start if last_error else None},
             )
     if ragged:
+        stage_path.unlink(missing_ok=True)
         raise BusinessError(
             f"列数不一致：{len(ragged)}+ 行结构异常，首见数据行号 {ragged}（1-based，最多列前 10 个）",
             data={"ragged_rows": ragged},
         )
     if row_count == 0:
+        stage_path.unlink(missing_ok=True)
         raise BusinessError("文件没有数据行")
 
     col_types = [s.final_type() for s in stats]
+    types_map = dict(zip(header, col_types))
 
-    # 第二遍：写 Parquet（B8 起统一分片目录布局：data/parquet/{name}/part-0001.parquet，
-    # 增量导入直接追加新分片，无需迁移）
-    dataset_dir = storage.parquet_dir / final_name
-    dataset_dir.mkdir(parents=True, exist_ok=True)
+    # ---- 第二阶段：向量化类型转换（不再二次解析源文件）----
     parquet_path = dataset_dir / "part-0001.parquet"
-    header2, rows_iter2 = _iter_xlsx_rows(src_path) if ext == ".xlsx" else _open_rows(src_path, encoding)
-    assert header2 == header  # 同一文件两遍表头一致
-    _write_parquet(parquet_path, header, col_types, rows_iter2, row_count)
+    try:
+        _materialize_typed_parquet(stage_path, parquet_path, header, types_map)
+    finally:
+        stage_path.unlink(missing_ok=True)
 
     # 注册元数据
     dataset = Dataset(
@@ -449,86 +626,94 @@ def import_data_file(
     existing_names = [c["name"] for c in existing_cols]
     existing_types = {c["name"]: c["type"] for c in existing_cols}
 
-    # ---- 读取与校验（与首次上传同款编码重试逻辑）----
+    # 存储路径（临时分片/旁路缓存均放数据集目录）
+    old_path = Path(dataset.parquet_path)  # 可能是单文件（存量）或分片目录（B8 起）
+    is_dir_layout = old_path.is_dir()
+    dataset_dir = old_path if is_dir_layout else old_path.parent / dataset.name
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    stage_path = dataset_dir / f".stage-{datetime.now().strftime('%Y%m%d%H%M%S%f')}.parquet"
+
+    # ---- 读取与校验（单遍解析 + 旁路缓存；编码重试与首次上传同款）----
     if ext == ".xlsx":
         header, rows_iter = _iter_xlsx_rows(src_path)
-        stats, row_count, ragged = scan_rows(header, rows_iter)
+        staged = _stage_rows(rows_iter, header, stage_path)
+        try:
+            stats, row_count, ragged = scan_rows(header, staged)
+        except BaseException:
+            stage_path.unlink(missing_ok=True)
+            raise
         encoding = "xlsx"
     else:
         encoding = detect_encoding(src_path)
         candidates = [encoding] + [e for e in ("gbk", "gb18030") if e != encoding]
         last_error: UnicodeDecodeError | None = None
         for enc in candidates:
+            header, rows_iter = _open_rows(src_path, enc)
+            staged = _stage_rows(rows_iter, header, stage_path)
             try:
-                header, rows_iter = _open_rows(src_path, enc)
-                stats, row_count, ragged = scan_rows(header, rows_iter)
-                if enc != encoding:
-                    logger.warning("编码重试生效: 采样判定 %s，实际按 %s 解码成功 (%s)", encoding, enc, src_path.name)
-                    encoding = enc
-                break
+                stats, row_count, ragged = scan_rows(header, staged)
             except UnicodeDecodeError as exc:
+                stage_path.unlink(missing_ok=True)
                 last_error = exc
+                continue
+            except BaseException:
+                stage_path.unlink(missing_ok=True)
+                raise
+            if enc != encoding:
+                logger.warning("编码重试生效: 采样判定 %s，实际按 %s 解码成功 (%s)", encoding, enc, src_path.name)
+                encoding = enc
+            break
         else:
+            stage_path.unlink(missing_ok=True)
             raise BusinessError(
                 "文件无法用已支持的编码（UTF-8 / GBK / GB18030）完整解码；请将文件另存为 UTF-8 后重试",
                 data={"byte_position": last_error.start if last_error else None},
             )
     if ragged:
+        stage_path.unlink(missing_ok=True)
         raise BusinessError(
             f"列数不一致：{len(ragged)}+ 行结构异常，首见数据行号 {ragged}（1-based，最多列前 10 个）",
             data={"ragged_rows": ragged},
         )
     if row_count == 0:
+        stage_path.unlink(missing_ok=True)
         raise BusinessError("文件没有数据行")
 
     missing = [n for n in existing_names if n not in set(header)]
     extra = [n for n in header if n not in set(existing_names)]
     if missing or extra:
+        stage_path.unlink(missing_ok=True)
         raise BusinessError(
             "表头与现有数据集不一致，增量导入要求列名集合完全一致（顺序可不同）",
             data={"missing_columns": missing, "extra_columns": extra},
         )
 
-    # 按现有 schema 顺序重排列
-    reorder = [header.index(n) for n in existing_names]
+    # 输出列按现有 schema 顺序重排（cast SQL 里直接按名选取，无需 Python 重排）
     if mode == "replace":
         # 全量覆盖：数据全新，类型按本次文件重新推断并更新 schema（append 必须
         # 沿用现有类型保证分片可拼接；replace 若沿用旧 schema，会因存量坏类型
         # 卡死修正性重传——如 xlsx 日期序列号修复后 MONTH_END int → date）
         file_stats = {s.name: s for s in stats}
-        col_types = [file_stats[n].final_type() for n in existing_names]
+        types_map = {n: file_stats[n].final_type() for n in existing_names}
         new_schema = json.dumps(
             [file_stats[n].to_dict() for n in existing_names], ensure_ascii=False
         )
     else:
         # append：类型沿用现有 schema（不重新推断），保证分片 schema 一致
-        col_types = [existing_types[n] for n in existing_names]
+        types_map = {n: existing_types[n] for n in existing_names}
         new_schema = None
 
-    def reordered(rows: Iterator[list[str]]) -> Iterator[list[str]]:
-        for row in rows:
-            yield [row[i] for i in reorder]
-
-    # ---- 落盘（安全顺序：先写临时分片，全部成功后才动既有数据；
-    #      任何失败只留下待清理的临时文件，既有分片/单文件原样不动）----
-    old_path = Path(dataset.parquet_path)  # 可能是单文件（存量）或分片目录（B8 起）
-    is_dir_layout = old_path.is_dir()
-    dataset_dir = old_path if is_dir_layout else old_path.parent / dataset.name
-    dataset_dir.mkdir(parents=True, exist_ok=True)
+    # ---- 物化：向量化类型转换写临时分片（源文件不再二次解析）----
+    # 安全顺序：先写临时分片，全部成功后才动既有数据；
+    # 任何失败只留下待清理的临时文件，既有分片/单文件原样不动
     tmp_path = dataset_dir / f".tmp-{datetime.now().strftime('%Y%m%d%H%M%S%f')}.parquet"
-
-    header2, rows_iter2 = (
-        _iter_xlsx_rows(src_path) if ext == ".xlsx" else _open_rows(src_path, encoding)
-    )
     try:
-        _write_parquet(tmp_path, existing_names, col_types, reordered(rows_iter2), row_count)
+        _materialize_typed_parquet(stage_path, tmp_path, existing_names, types_map)
     except BaseException:
-        # 显式关闭底层 CSV 迭代器（Windows 句柄释放后才可能清理临时文件）
-        close = getattr(rows_iter2, "close", None)
-        if close is not None:
-            close()
         tmp_path.unlink(missing_ok=True)
         raise
+    finally:
+        stage_path.unlink(missing_ok=True)
 
     if mode == "append" and not is_dir_layout:
         # 存量单文件迁移：旧文件移入目录为 part-0001，新数据紧随其后
@@ -544,11 +729,11 @@ def import_data_file(
     tmp_path.rename(target)
     dataset.parquet_path = str(dataset_dir)
 
-    # 原始件留档（审计与重放）
+    # 原始件留档（审计与重放；流式复制，不整文件读内存）
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
     audit_path = storage.uploads_dir / f"{dataset.name}__{mode}__{ts}{ext}"
     try:
-        audit_path.write_bytes(src_path.read_bytes())
+        shutil.copyfile(src_path, audit_path)
     except OSError as exc:
         logger.warning("增量导入原始件留档失败 %s: %s", audit_path, exc)
 
