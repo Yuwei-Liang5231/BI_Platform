@@ -790,6 +790,9 @@ def _fmt_num(v) -> str:
         return str(v)
 
 
+_COMPARE_CN = {"mom": "环比", "yoy": "同比"}
+
+
 def _build_conclusion(data: dict) -> str | None:
     """一句话结论（B9.2-5 ④）：**纯模板拼装**，数字全部来自 compute 单点出口的返回值
     —— LLM 不参与结论生成，算写分离红线不破。解析不出有效数字时返回 None。"""
@@ -799,11 +802,16 @@ def _build_conclusion(data: dict) -> str | None:
         if not rows:
             return None
         top, second = rows[0], rows[1] if len(rows) > 1 else None
-        parts = [f"按「{data['dimension']}」拆解共 {data.get('total_groups', len(rows))} 组"]
-        head = f"{top['dimension']} 以 {_fmt_num(top['value'])} 排名第一"
+        # 对比方式显式写入结论（2026-09-18 用户反馈：事后回看不知道用的什么对比口径）
+        cmp_meta = data.get("compare")
+        head = f"按「{data['dimension']}」拆解共 {data.get('total_groups', len(rows))} 组"
+        if cmp_meta and cmp_meta.get("type") in _COMPARE_CN:
+            head += f"（对比方式：{_COMPARE_CN[cmp_meta['type']]}，基期 {cmp_meta['start']} ~ {cmp_meta['end']}）"
+        parts = [head]
+        first = f"{top['dimension']} 以 {_fmt_num(top['value'])} 排名第一"
         if top.get("share") is not None:
-            head += f"，占比 {top['share'] * 100:.1f}%"
-        parts.append(head)
+            first += f"，占比 {top['share'] * 100:.1f}%"
+        parts.append(first)
         if second is not None:
             tail = f"其后为 {second['dimension']}（{_fmt_num(second['value'])}"
             if second.get("share") is not None:
@@ -813,7 +821,8 @@ def _build_conclusion(data: dict) -> str | None:
         cmp = data.get("compare")
         if cmp and top.get("change_pct") is not None:
             arrow = "▲" if top["change_pct"] >= 0 else "▼"
-            parts.append(f"{top['dimension']} {cmp['type']}{arrow}{abs(top['change_pct']):.2f}%")
+            cn = _COMPARE_CN.get(cmp.get("type"), cmp.get("type"))
+            parts.append(f"{top['dimension']} {cn}{arrow}{abs(top['change_pct']):.2f}%")
         return "：".join([parts[0], "；".join(parts[1:])]) + "。"
     if kind == "value":
         value = data.get("value")
@@ -829,7 +838,8 @@ def _build_conclusion(data: dict) -> str | None:
         cmp = data.get("compare")
         if cmp and cmp.get("change_pct") is not None:
             arrow = "▲" if cmp["change_pct"] >= 0 else "▼"
-            base += f"，{cmp['type']}{arrow}{abs(cmp['change_pct']):.2f}%（基期 {cmp['start']} ~ {cmp['end']}）"
+            cn = _COMPARE_CN.get(cmp.get("type"), cmp.get("type"))
+            base += f"，{cn}{arrow}{abs(cmp['change_pct']):.2f}%（基期 {cmp['start']} ~ {cmp['end']}）"
         return base + "。"
     return None
 

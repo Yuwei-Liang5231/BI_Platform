@@ -7,6 +7,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { QuestionFilled } from "@element-plus/icons-vue";
 
 import {
   batchDeleteMetrics,
@@ -965,38 +966,28 @@ watch(
         <el-form-item label="主题">
           <el-input v-model="form.topic" placeholder="general" />
         </el-form-item>
-        <el-form-item label="常用维度">
-          <div class="rule-builder">
-            <el-select
-              v-model="form.dimensions"
-              multiple filterable allow-create default-first-option
-              placeholder="选择或输入维度列名（有序，2~4 个），如：品类、区域、渠道"
-              style="width: 100%"
-            >
-              <el-option
-                v-for="c in dimensionOptions"
-                :key="c.table + '.' + c.name"
-                :label="c.isDate ? (c.name + '（日期列）') : c.name"
-                :value="c.name"
-              />
-            </el-select>
-            <div class="form-hint">
-              归因下钻的层级来源：选择顺序即层级顺序（第 1 个为最上层）；归因下钻需 2~4 个。
-              候选列来自计算规则引用的数据集，也可直接输入该数据集中存在的其他列名。
-            </div>
-          </div>
-        </el-form-item>
-        <el-form-item v-if="editingId" label="状态">
+        <el-form-item v-if="editingId">
+          <template #label>
+            状态
+            <el-tooltip placement="top" content="停用 = 保留编码占位、目录默认不可见，可随时切回；删除才会释放编码。">
+              <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
           <el-radio-group v-model="form.status">
             <el-radio value="active">启用中</el-radio>
             <el-radio value="disabled">已停用</el-radio>
           </el-radio-group>
-          <div class="form-hint">停用 = 保留编码占位、目录默认不可见，可随时切回；删除才会释放编码。</div>
         </el-form-item>
         <el-form-item label="口径说明">
           <el-input v-model="form.definition" type="textarea" :rows="2" />
         </el-form-item>
         <el-form-item label="口径分歧">
+          <template #label>
+            口径分歧
+            <el-tooltip placement="top" content="说明「同名指标的不同算法」：填分歧问题与候选口径，勾选其一为默认。">
+              <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
           <div class="rule-builder">
             <el-input
               v-model="dis.question"
@@ -1014,7 +1005,6 @@ watch(
             </div>
             <div>
               <el-button text type="primary" @click="addDisOption">+ 添加候选口径</el-button>
-              <span class="admin__hint">说明「同名指标的不同算法」：填问题与候选口径，勾选其一为默认。</span>
             </div>
           </div>
         </el-form-item>
@@ -1026,17 +1016,20 @@ watch(
                 <el-radio-button value="expr">比率组合</el-radio-button>
                 <el-radio-button value="json">JSON 高级</el-radio-button>
               </el-radio-group>
+              <el-tooltip
+                placement="top"
+                :content="builder.mode === 'flat'
+                  ? '对一个数据集的某字段做聚合，可选加过滤条件。如：已支付订单金额求和 = 客单价的分子。'
+                  : builder.mode === 'expr'
+                    ? '先定义若干个「操作数」（各自的聚合口径），再用表达式组合。表达式只能用 + - * / 和操作数名。'
+                    : '直接编辑 JSON（完整能力，含跨表 operand 级 time_field；规则级 time_field 置 null 即「全期常数」不按时间过滤）。切换回表单模式前需为合法 JSON。'"
+              >
+                <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+              </el-tooltip>
               <el-button text type="primary" size="small" @click="builder.mode === 'expr' ? fillExprSample() : fillFlatSample()">
                 填充示例
               </el-button>
             </div>
-            <p class="admin__hint">
-              {{ builder.mode === "flat"
-                ? "对一个数据集的某字段做聚合，可选加过滤条件。如：已支付订单金额求和 = 客单价的分子。"
-                : builder.mode === "expr"
-                  ? "先定义若干个「操作数」（各自的聚合口径），再用表达式组合。表达式只能用 + - * / 和操作数名。"
-                  : "直接编辑 JSON（完整能力，含跨表 operand 级 time_field；规则级 time_field 置 null 即「全期常数」不按时间过滤）。切换回表单模式前需为合法 JSON。" }}
-            </p>
 
             <!-- 简单聚合 -->
             <template v-if="builder.mode === 'flat'">
@@ -1058,7 +1051,12 @@ watch(
               </div>
               <!-- 相对时间条件（today 锚点）：结构化点选，生成文法并入过滤条件 -->
               <div class="rule-builder__time-cond">
-                <el-checkbox v-model="builder.flat.timeCond.on">相对时间条件</el-checkbox>
+                <el-checkbox v-model="builder.flat.timeCond.on">
+                  相对时间条件
+                  <el-tooltip placement="top" content="以计算当天为锚点，指标值随日期自动滚动（时点性指标）；环比/同比基期沿用同一锚点。建议在名称或口径说明中体现滚动性质（如「截至今天」）。">
+                    <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </el-checkbox>
                 <template v-if="builder.flat.timeCond.on">
                   <el-select
                     v-model="builder.flat.timeCond.column"
@@ -1096,7 +1094,16 @@ watch(
                 v-model="builder.flat.filter"
                 placeholder="过滤条件（可选），如：order_status = '已支付'"
                 class="rule-builder__mono"
-              />
+              >
+                <template #suffix>
+                  <el-tooltip
+                    placement="top"
+                    content="文法：仅支持「字段 比较符 值」，多个条件用 AND 连接；比较符 = != > >= < <=，文本值加单引号，列名含空格用双引号包裹（如 “Project Name” = 'X'）。支持相对日期 today、today±N d（如 due_date <= today+15d，锚定计算当天，值随日期滚动）。不支持 OR / NOT / 括号 / 函数。"
+                  >
+                    <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </template>
+              </el-input>
               <el-select
                 :model-value="builder.flat.time_field ?? ''"
                 @update:model-value="(v) => { builder.flat.time_field = v ?? ''; builder.flat.time_none = !v; if (v) builder.flat.time_confirmed = false; }"
@@ -1121,7 +1128,6 @@ watch(
                 不同日期列的时间范围可能差异很大，请确认所选时间字段符合业务口径。
               </p>
             </template>
-
             <!-- 比率组合 -->
             <template v-else-if="builder.mode === 'expr'">
               <el-input
@@ -1174,11 +1180,31 @@ watch(
               class="rule-builder__mono"
               spellcheck="false"
             />
-
-            <p class="admin__hint rule-builder__filter-help">
-              过滤条件文法：仅支持「字段 比较符 值」，多个条件用 AND 连接；比较符 = != > >= < <=，文本值加单引号，列名含空格时用双引号包裹（如 "Project Name" = 'X'）。支持相对日期 today、today±N d（如 due_date &lt;= today+15d，锚定计算当天，值随日期滚动）。不支持 OR / NOT / 括号 / 函数。
-            </p>
           </div>
+        </el-form-item>
+        <el-form-item>
+          <template #label>
+            常用维度
+            <el-tooltip
+              placement="top"
+              content="归因下钻的层级来源：选择顺序即层级顺序（第 1 个为最上层）；归因下钻需 2~4 个。候选列来自计算规则引用的数据集，也可直接输入该数据集中存在的其他列名。"
+            >
+              <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <el-select
+            v-model="form.dimensions"
+            multiple filterable allow-create default-first-option
+            placeholder="选择或输入维度列名（有序，2~4 个），如：品类、区域、渠道"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="c in dimensionOptions"
+              :key="c.table + '.' + c.name"
+              :label="c.isDate ? (c.name + '（日期列）') : c.name"
+              :value="c.name"
+            />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1330,6 +1356,18 @@ watch(
 .admin__hint {
   color: var(--pwc-text-secondary);
   font-size: var(--pwc-font-body-s);
+}
+
+/* label/控件旁的悬停提示问号图标 */
+.hint-icon {
+  margin-left: 4px;
+  color: var(--pwc-text-secondary);
+  cursor: help;
+  vertical-align: -2px;
+  font-size: 14px;
+}
+.hint-icon:hover {
+  color: var(--pwc-primary, #d04a02);
 }
 
 .form-hint {

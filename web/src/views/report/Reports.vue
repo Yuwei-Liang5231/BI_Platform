@@ -74,7 +74,13 @@
                 {{ i.narrative_source === "llm" ? "AI 叙述" : "规则叙述" }} ·
                 {{ i.created_by }} · {{ shortTime(i.created_at) }}
               </div>
-              <el-button text size="small" class="reports__regen" @click.stop="doRegenerate(i)">
+              <el-button
+                text
+                size="small"
+                class="reports__regen"
+                :loading="regeneratingId === i.id"
+                @click.stop="doRegenerate(i)"
+              >
                 重新生成
               </el-button>
             </div>
@@ -156,6 +162,19 @@
         <el-button @click="copyReport">复制文本</el-button>
         <el-button type="primary" @click="printReport">打印 / 导出 PDF</el-button>
       </footer>
+        </div>
+
+        <!-- 生成中：主区明确反馈（用户反馈"点击后像没反应"） -->
+        <div
+          v-else-if="previewing || archiving"
+          v-loading="true"
+          element-loading-text="正在生成报告：计算指标 → 生成叙述 → 数字审计，约需十几秒…"
+          class="reports__loading"
+        >
+          <p class="reports__loading-hint">
+            正在为模板「{{ templates.find((t) => t.id === selectedTemplateId)?.name }}」生成报告，
+            完成后正文将显示在此处。
+          </p>
         </div>
 
         <el-empty
@@ -272,10 +291,12 @@ function shortTime(ts) {
 async function doPreview() {
   if (!selectedTemplateId.value) return;
   previewing.value = true;
+  ElMessage.info("正在生成报告：计算指标 → 生成叙述 → 数字审计，约需十几秒，请稍候…");
   try {
     report.value = await previewReport({ template_id: selectedTemplateId.value });
     generatedAt.value = new Date().toLocaleString();
     viewingInstanceId.value = null;
+    ElMessage.success("报告已生成");
   } finally {
     previewing.value = false;
   }
@@ -285,6 +306,7 @@ async function doPreview() {
 const archiving = ref(false);
 const instances = ref([]);
 const viewingInstanceId = ref(null);
+const regeneratingId = ref(null);
 
 async function fetchInstances() {
   if (!selectedTemplateId.value) {
@@ -297,6 +319,7 @@ async function fetchInstances() {
 async function doGenerate() {
   if (!selectedTemplateId.value) return;
   archiving.value = true;
+  ElMessage.info("正在生成并存档：计算指标 → 生成叙述 → 数字审计，约需十几秒，请稍候…");
   try {
     const res = await generateReport({ template_id: selectedTemplateId.value });
     report.value = res.content;
@@ -317,12 +340,17 @@ async function viewInstance(row) {
 }
 
 async function doRegenerate(row) {
-  const res = await regenerateReport(row.id);
-  report.value = res.content;
-  generatedAt.value = new Date().toLocaleString();
-  viewingInstanceId.value = res.id;
-  ElMessage.success(`已重新生成（版本 v${res.version}），历史快照保留`);
-  await fetchInstances();
+  regeneratingId.value = row.id;
+  try {
+    const res = await regenerateReport(row.id);
+    report.value = res.content;
+    generatedAt.value = new Date().toLocaleString();
+    viewingInstanceId.value = res.id;
+    ElMessage.success(`已重新生成（版本 v${res.version}），历史快照保留`);
+    await fetchInstances();
+  } finally {
+    regeneratingId.value = null;
+  }
 }
 
 // 切模板：历史列表重取 + 清空正文区（避免停留在上一份报告）
@@ -506,6 +534,22 @@ onMounted(async () => {
 .reports__main {
   flex: 1;
   min-width: 0;
+}
+
+/* 生成中面板：给"点了没反应"一个明确的视觉状态 */
+.reports__loading {
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--pwc-border-subtle);
+  border-radius: var(--pwc-radius-m);
+  background: var(--pwc-surface);
+}
+.reports__loading-hint {
+  margin: 0 24px;
+  color: var(--pwc-text-secondary);
+  font-size: var(--pwc-font-body-s, 13px);
 }
 
 .reports__doc {

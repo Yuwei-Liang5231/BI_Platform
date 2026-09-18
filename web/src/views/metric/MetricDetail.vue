@@ -107,7 +107,8 @@ async function loadTreeNode(path = treePath.value) {
       dimensions: treeDims.value,
       path,
       compare: "mom",
-      top_n: 10,
+      // 拆解出口上限 50 组：全量展示（不再默认只看 Top10），超出部分并入「（其他）」
+      top_n: 50,
     });
     treePath.value = path;
   } finally {
@@ -466,16 +467,20 @@ onMounted(async () => {
           </div>
 
           <template v-if="treeNode">
-            <!-- 节点概要 + 面包屑 -->
+            <!-- 节点概要 + 面包屑（父级可点击回退到对应层级） -->
             <div class="attr__node">
               <el-breadcrumb separator="›">
                 <el-breadcrumb-item>
-                  <el-link :underline="false" @click="jumpTo(0)">总计</el-link>
+                  <el-tooltip content="点击返回总计（最上层）" placement="top">
+                    <el-link :underline="false" class="attr__crumb" @click="jumpTo(0)">总计</el-link>
+                  </el-tooltip>
                 </el-breadcrumb-item>
                 <el-breadcrumb-item v-for="(s, i) in treeNode.path" :key="s.dimension">
-                  <el-link v-if="i < treeNode.path.length - 1" :underline="false" @click="jumpTo(i + 1)">
-                    {{ s.dimension }} = {{ s.value }}
-                  </el-link>
+                  <el-tooltip v-if="i < treeNode.path.length - 1" content="点击返回该层（收起其下钻层级）" placement="top">
+                    <el-link :underline="false" class="attr__crumb" @click="jumpTo(i + 1)">
+                      {{ s.dimension }} = {{ s.value }}
+                    </el-link>
+                  </el-tooltip>
                   <span v-else>{{ s.dimension }} = {{ s.value }}</span>
                 </el-breadcrumb-item>
               </el-breadcrumb>
@@ -524,7 +529,7 @@ onMounted(async () => {
                       :style="{ width: `${Math.min(Math.abs(row.contribution_pct), 100)}%` }"
                     />
                     <span class="attr__bar-label">
-                      {{ row.contribution_pct > 0 ? "▲" : row.contribution_pct < 0 ? "▼" : "" }} {{ Math.abs(row.contribution_pct).toFixed(1) }}%
+                      {{ row.contribution > 0 ? "▲" : row.contribution < 0 ? "▼" : "" }} {{ Math.abs(row.contribution_pct).toFixed(1) }}%
                     </span>
                   </div>
                   <span v-else>—</span>
@@ -539,9 +544,13 @@ onMounted(async () => {
               </el-table-column>
             </el-table>
             <p v-if="treeNode.has_next" class="attr__hint">
-              点击行可继续按「{{ treeNode.next_dimension }}」下钻（贡献合计 = 节点变化，逐层守恒）
+              点击行可继续按「{{ treeNode.next_dimension }}」下钻；点击上方路径（总计 / 各层）可返回对应层级；
+              共 {{ treeNode.children_total_count }} 组，逐层守恒（贡献合计 = 节点变化）。
+              <template v-if="treeNode.children_total_count > 50">组数超 50，超出部分已并入「（其他）」。</template>
             </p>
-            <p v-else class="attr__hint">已到叶子层（{{ treeNode.children_dimension }} 为最后一层）</p>
+            <p v-else class="attr__hint">
+              已到叶子层（{{ treeNode.children_dimension }} 为最后一层）；点击上方路径可返回对应层级。
+            </p>
           </template>
         </section>
 
@@ -660,6 +669,11 @@ onMounted(async () => {
   gap: var(--pwc-space-4);
   flex-wrap: wrap;
   margin-bottom: var(--pwc-space-3);
+}
+
+/* 面包屑可点击回退：hover 显下划线强化「可点」暗示 */
+.attr__crumb:hover .el-link__inner {
+  text-decoration: underline;
 }
 
 .attr__delta b {

@@ -105,6 +105,9 @@ function exportResult() {
   <section v-if="isBreakdown" class="pwc-card ask__result">
     <div class="ask__result-head">
       <span class="ask__result-metric">{{ displayName }} · 按「{{ data.dimension }}」拆解</span>
+      <el-tag v-if="data.compare?.type" size="small" type="warning" effect="plain">
+        {{ data.compare.type === "yoy" ? "同比" : "环比" }}
+      </el-tag>
       <span class="pwc-badge pwc-badge--grey">
         {{ data.start }} ~ {{ data.end }}
         <template v-if="!data.period_complete && data.data_through">
