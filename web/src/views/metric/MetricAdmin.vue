@@ -504,14 +504,18 @@ async function loadDimRelations() {
             : [[r.from_column, r.target_column]];
           if (!datasetColumns[dimName]) await loadColumns(dimName); // 维表列信息（判文本列）
           const colInfo = datasetColumns[dimName] ?? [];
-          const targets = [...new Set(pairs.map(([, tk]) => tk))];
           const isTexty = (c) => {
             const info = colInfo.find((x) => x.name === c);
             if (!info) return true; // 列信息缺失时不武断排除
             return !info.isDate && !/^(int|float|double|bigint|decimal|number|bool)/i.test(info.type ?? "");
           };
-          const textCols = targets.filter(isTexty);
-          if (textCols.length) map[dimName] = (map[dimName] ?? []).concat(textCols);
+          // P1 修正：编译器一跳解析支持维表任意列（按"列在维表中"判定，不限关联键），
+          // 候选收录维表全部文本列；列信息缺失时退回收关联键列
+          const textCols = colInfo.length
+            ? colInfo.filter((c) => isTexty(c.name)).map((c) => c.name)
+            : [...new Set(pairs.map(([, tk]) => tk))];
+          if (textCols.length)
+            map[dimName] = [...new Set((map[dimName] ?? []).concat(textCols))];
         }
         dimRelations[t] = map;
       } catch {
