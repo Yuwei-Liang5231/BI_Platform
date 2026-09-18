@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 
 import {
   addRelation as addRelationApi,
+  batchDeleteDatasets as batchRemoveApi,
   deleteDataset as deleteDatasetApi,
   deleteRelation as deleteRelationApi,
   getDataset as getApi,
@@ -75,6 +76,11 @@ export const useDatasetStore = defineStore("dataset", () => {
 
   function remove(datasetId) {
     return deleteDatasetApi(datasetId);
+  }
+
+  /** 批量删除（0a7b61a 补漏）：返回 { deleted:[], failed:[{id,name,reason}] } */
+  function batchRemove(ids) {
+    return batchRemoveApi(ids);
   }
 
   function addRelation(datasetId, payload) {
