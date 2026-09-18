@@ -173,7 +173,7 @@ def detect_for_metric(
         else:
             reason = "基准恒定（方差 0），出现偏离即反常"
         if material is False:
-            reason += f"；但变化幅度 {round(abs(delta_pct))}% 低于要紧度阈值 {round(cfg['materiality_pct'])}%，不构成异动结论"
+            reason += f"；但变化幅度 {abs(delta_pct):.1f}% 低于要紧度阈值 {round(cfg['materiality_pct'])}%，不构成异动结论"
     return {
         "metric_id": resolved.id,
         "metric_code": resolved.code,
@@ -273,7 +273,7 @@ def _persist_notifications(db: Session, abnormal_results: list[dict], project_id
         title = f"「{r['name']}」异动{arrow} {pct_text}"
         baseline = r.get("baseline") or {}
         body = (
-            f"{r['date']} 值为 {round(r['current']):,}，正常水平约 {round(baseline.get('mean', 0)):,}；"
+            f"{r['date']} 值为 {round(r['current'], 1):,}，正常水平约 {round(baseline.get('mean', 0), 1):,}；"
             f"{r.get('reason') or ''}"
         )
         for u in recipients:

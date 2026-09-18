@@ -22,7 +22,7 @@ const kind = computed(() => {
 });
 const text = computed(() => {
   if (!hasChange.value) return "—";
-  const pct = `${Math.round(Math.abs(props.change * 100))}%`;
+  const pct = `${Math.abs(props.change * 100).toFixed(1)}%`;
   if (direction.value === "flat") return `持平 ${pct}`;
   return `${props.change > 0 ? "▲" : "▼"} ${pct}`;
 });

@@ -174,7 +174,7 @@ def _prev_range(period_type: str, start: date, end: date) -> tuple[date, date]:
 
 
 def _fmt_pct(v) -> str:
-    return f"{round(v):+}%" if v is not None else "无基期数据"
+    return f"{v:+.1f}%" if v is not None else "无基期数据"
 
 
 def compute_conclusions(
@@ -405,11 +405,11 @@ def _metric_sentence(item: dict, sections: dict) -> str:
 
 
 def _n(v) -> str:
-    """数字叙述：统一四舍五入取整 + 千分位（2026-09-18 契约：全平台数字不保留小数）。
+    """数字叙述：统一保留 1 位小数 + 千分位（2026-09-18 修订：指标数字保留 1 位小数）。
     数字只来自结论集。"""
     if v is None:
         return "无数据"
-    return f"{round(v):,}"
+    return f"{round(v, 1):,}"
 
 
 def build_narrative(result: dict, sections: dict, period: dict) -> list[dict]:

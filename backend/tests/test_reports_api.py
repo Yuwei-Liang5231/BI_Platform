@@ -349,7 +349,7 @@ class TestLlmNarrative:
             ref = report["refs"][f"m{mid}"]
             assert str(ref["value"]) in ms.replace(",", "")  # 值来自 refs 回填
             assert "环比" in ms
-            assert f"{round(ref['mom_pct']):+}%" in ms  # 变化率来自 refs 回填（取整契约）
+            assert f"{ref['mom_pct']:+.1f}%" in ms  # 变化率来自 refs 回填（1 位小数契约）
         finally:
             _cleanup(client, env)
 

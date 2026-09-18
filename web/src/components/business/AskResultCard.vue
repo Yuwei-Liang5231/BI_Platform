@@ -94,7 +94,7 @@ function exportResult() {
       d.value,
       d.compare?.type === "yoy" ? "同比" : d.compare?.type === "mom" ? "环比" : "",
       d.compare ? `${d.compare.start}~${d.compare.end}` : "",
-      changePct.value === null ? "" : Math.round(changePct.value),
+      changePct.value === null ? "" : changePct.value.toFixed(1),
     ]],
   );
 }
@@ -185,7 +185,7 @@ function exportResult() {
     <div v-if="changePct !== null" class="ask__result-compare">
       {{ data.compare?.type === "yoy" ? "同比" : "环比" }}
       <span :class="changePct >= 0 ? 'up' : 'down'">
-        {{ changePct >= 0 ? "▲" : "▼" }} {{ Math.abs(Math.round(changePct)) }}%
+        {{ changePct >= 0 ? "▲" : "▼" }} {{ Math.abs(changePct).toFixed(1) }}%
       </span>
     </div>
     <p v-else class="ask__hint">无对比基期数据</p>

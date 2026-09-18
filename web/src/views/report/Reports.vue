@@ -397,11 +397,11 @@ function disposeCharts() {
 }
 
 function _compact(v) {
-  // 图表轴紧凑数字：同样取整（2026-09-18 全平台数字不保留小数）
+  // 图表轴紧凑数字：同样保留 1 位小数（2026-09-18 修订：指标数字统一 1 位小数）
   const abs = Math.abs(v ?? 0);
-  if (abs >= 1e8) return `${Math.round(v / 1e8)}亿`;
-  if (abs >= 1e4) return `${Math.round(v / 1e4)}万`;
-  return `${Math.round(v)}`;
+  if (abs >= 1e8) return `${(v / 1e8).toFixed(1)}亿`;
+  if (abs >= 1e4) return `${(v / 1e4).toFixed(1)}万`;
+  return `${Number(v ?? 0).toFixed(1)}`;
 }
 
 function trendRangeLabel(t) {
