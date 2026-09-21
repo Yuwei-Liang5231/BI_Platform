@@ -123,7 +123,7 @@
         class="reports__section"
       >
         <h3 class="reports__sec-title">{{ sectionTitle(sec.section) }}</h3>
-        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence">{{ s }}</p>
+        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence" @click="onSentenceClick" v-html="renderSentence(s)"></p>
       </section>
 
       <!-- ② 指标卡（大数字 + 涨跌）+ 结论表 + 趋势图 -->
@@ -213,7 +213,7 @@
           {{ sectionTitle(sec.section) }}
           <TermTip v-if="sec.section === 'anomaly'" term="anomaly" />
         </h3>
-        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence">{{ s }}</p>
+        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence" @click="onSentenceClick" v-html="renderSentence(s)"></p>
       </section>
 
       <!-- ④ 归因贡献图（正贡献红 / 负贡献绿；旧快照无 attributions 时自动跳过） -->
@@ -243,7 +243,7 @@
         class="reports__section"
       >
         <h3 class="reports__sec-title">{{ sectionTitle(sec.section) }}</h3>
-        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence">{{ s }}</p>
+        <p v-for="(s, i) in sec.sentences" :key="i" class="reports__sentence" @click="onSentenceClick" v-html="renderSentence(s)"></p>
       </section>
 
       <footer class="reports__doc-foot">
@@ -364,6 +364,64 @@ const sectionTitle = (k) => SECTION_TITLES[k] ?? k;
 // 红涨绿跌（2026-09-15 契约）：涨红跌绿，与 good/bad 业务语义解耦
 const trendClass = (pct) =>
   pct > 0 ? "is-up" : pct < 0 ? "is-down" : "";
+
+/* ---------- 11.9 P1-3 结论溯源：叙述句中的 refs 数值渲染为可点击 chip ----------
+ * 句子里的数字展示串由后端 narrative refs 表产生（_n / _fmt_pct / .2f 倍标准差），
+ * 前端按同一格式重建 token，在 HTML 转义后的句子里匹配替换为受控 span。
+ * 点击跳指标详情；LLM 输出已经三道审计、转义在前拼接在后，无注入面。 */
+import { useRouter } from "vue-router";
+const router = useRouter();
+
+const REF_ESCAPE = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => REF_ESCAPE[c]);
+const fmtSignedPct = (v) => (v == null ? null : (v > 0 ? "+" : "") + formatPercent(v));
+
+const refChips = computed(() => {
+  const rp = report.value;
+  if (!rp) return [];
+  const chips = [];
+  const push = (token, mid, tip) => {
+    if (token != null && token !== "") chips.push({ token: String(token), mid, tip });
+  };
+  for (const c of rp.conclusions ?? []) {
+    const mid = c.metric_id ?? String(c.ref ?? "").replace(/^m/, "");
+    push(formatMetricValue(c.value), mid, `${c.name} 本期值`);
+    if (rp.sections.mom) push(fmtSignedPct(c.mom_pct), mid, `${c.name} 环比变化`);
+    if (rp.sections.yoy) push(fmtSignedPct(c.yoy_pct), mid, `${c.name} 同比变化`);
+  }
+  for (const r of rp.anomalies ?? []) {
+    push(formatMetricValue(r.current), r.metric_id, `${r.name} 异动日值（${r.date}）`);
+    push(formatMetricValue(r.baseline?.mean), r.metric_id, `${r.name} 正常水平（同星期几基准均值）`);
+    push(
+      r.abnormality == null ? null : `${r.abnormality.toFixed(2)} 倍标准差`,
+      r.metric_id, `${r.name} 偏离幅度`,
+    );
+  }
+  for (const att of rp.attributions ?? []) {
+    const mid = att.metric_id;
+    for (const td of (att.top_dimensions ?? []).slice(0, 3)) {
+      push(formatMetricValue(td.contribution), mid, `${att.name ?? ""} 归因 ${att.dimension}=${td.value} 贡献`);
+    }
+  }
+  return chips;
+});
+
+function renderSentence(s) {
+  let html = escapeHtml(s);
+  for (const chip of refChips.value) {
+    if (!chip.token || !html.includes(chip.token)) continue;
+    html = html
+      .split(chip.token)
+      .join(`<span class="reports__ref" data-mid="${chip.mid}" title="${escapeHtml(chip.tip)}">${chip.token}</span>`);
+  }
+  return html;
+}
+
+function onSentenceClick(e) {
+  const el = e.target?.closest?.(".reports__ref");
+  const mid = el?.getAttribute?.("data-mid");
+  if (mid) router.push(`/metrics/${mid}`);
+}
 
 /* ---------- 报告图表（趋势折线 + 归因条形；ECharts SVG 渲染，打印友好） ---------- */
 const trendList = computed(() => report.value?.trends ?? []);
@@ -1012,6 +1070,18 @@ onMounted(async () => {
 .reports__sentence {
   line-height: 1.9;
   margin-bottom: var(--pwc-space-1);
+}
+
+/* 11.9 P1-3 结论溯源 chip：叙述句中的 refs 数值可点击跳指标详情 */
+.reports__sentence :deep(.reports__ref),
+.reports__ref {
+  cursor: pointer;
+  color: var(--pwc-primary, #534ab7);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.reports__ref:hover {
+  text-decoration-style: solid;
 }
 
 .reports__doc-foot {

@@ -243,6 +243,8 @@ def compute_conclusions(
         }
 
     # ---- 异动章节（B10 引擎，复用同一出口；本期末日为检测锚点）----
+    # 11.9 P1-1 降噪：按偏离幅度排序后只保留 Top3（「宁可只留三条，也不
+    # 拿二十条异动淹没人」），其余折叠为 suppressed 计数；refs 只给 Top3。
     anomalies: list[dict] = []
     if sections.get("anomaly"):
         anchor = end  # 检测锚点 = 报告周期末日（日报 end==当天；周/月报=周期尾日）
@@ -254,12 +256,18 @@ def compute_conclusions(
             if r["verdict"] == "abnormal" and r.get("material") is not False:
                 # material=False = 反常但未过要紧度门槛，B10-2 契约：不构成异动结论
                 anomalies.append(r)
-                refs[f"a{m.id}"] = {
-                    "label": f"{m.name} 异动当前值（{r['date']}）",
-                    "value": r["current"],
-                    "abnormality": r.get("abnormality"),
-                }
-        anomalies.sort(key=lambda r: -(r.get("abnormality") or 0))
+        # 恒定基准偏离（abnormality=None）视为最强信号排最前，其余按倍数降序
+        anomalies.sort(
+            key=lambda r: (0 if r.get("abnormality") is None else 1, -(r.get("abnormality") or 0))
+        )
+    anomaly_suppressed = max(0, len(anomalies) - 3)
+    anomalies = anomalies[:3]
+    for r in anomalies:
+        refs[f"a{r['metric_id']}"] = {
+            "label": f"{r['name']} 异动当前值（{r['date']}）",
+            "value": r["current"],
+            "abnormality": r.get("abnormality"),
+        }
 
     # ---- 归因章节（B10-2 服务：对异动且可加的指标拆 TopN）----
     attributions: list[dict] = []
@@ -324,6 +332,7 @@ def compute_conclusions(
     return {
         "conclusions": conclusions,
         "anomalies": anomalies,
+        "anomaly_suppressed": anomaly_suppressed,
         "attributions": attributions,
         "trends": trends,
         "insight_material": _insight_material(conclusions, anomalies, attributions),
@@ -438,7 +447,7 @@ def build_narrative(result: dict, sections: dict, period: dict) -> list[dict]:
                 highlights.append(
                     f"{top_down['name']}环比走弱最明显（{_fmt_pct(top_down['mom_pct'])}）"
                 )
-        n_anom = len(result.get("anomalies") or [])
+        n_anom = len(result.get("anomalies") or []) + (result.get("anomaly_suppressed") or 0)
         if n_anom:
             highlights.append(f"检测到 {n_anom} 项异动")
         if highlights:
@@ -458,9 +467,13 @@ def build_narrative(result: dict, sections: dict, period: dict) -> list[dict]:
                 {"section": "anomaly", "sentences": ["本期检测范围内未发现反常波动。"]}
             )
         else:
-            sentences = [
-                f"检测到 {len(anomalies)} 项反常波动（先排除周期性后判定，超过要紧度门槛）："
-            ]
+            suppressed = result.get("anomaly_suppressed") or 0
+            head = (
+                f"按偏离幅度取最显著 {len(anomalies)} 项"
+                + (f"（另有 {suppressed} 项未列入）" if suppressed else "")
+                + "反常波动（先排除周期性后判定，超过要紧度门槛）："
+            )
+            sentences = [head]
             for r in anomalies:
                 abnormality = (
                     f"{r['abnormality']:.2f} 倍标准差"
@@ -556,6 +569,7 @@ def generate_report(
         "sections": sections,
         "conclusions": result["conclusions"],
         "anomalies": result["anomalies"],
+        "anomaly_suppressed": result.get("anomaly_suppressed", 0),  # 11.9 P1-1 折叠计数
         "attributions": result["attributions"],
         "trends": result["trends"],  # 趋势图数据（本期 vs 基期双线 + 异动日）
         "insight_material": result["insight_material"],  # 建议素材（对账基础）

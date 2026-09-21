@@ -127,6 +127,8 @@ class Metric(Base):
     level: Mapped[int] = mapped_column(Integer, default=1)               # 目录层级（D15）
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("metrics.id"), nullable=True)
     disambiguation_json: Mapped[str] = mapped_column(Text, default="{}")  # 歧义默认算法（D17）
+    maturity_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 观察期天数（11.9 P1-2：NULL=无成熟期）
+    calc_notes_json: Mapped[str] = mapped_column(Text, default="{}")     # 口径结构化说明（11.9 P2-1：rationale/alternatives/pitfalls）
     primary_dataset_id: Mapped[int | None] = mapped_column(              # 编译产物回写：主事实表
         ForeignKey("datasets.id"), nullable=True
     )

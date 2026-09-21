@@ -655,6 +655,18 @@ def build_card(
                     }
                 )
 
+    # 11.9 P2-3 默认排序交代：问句未指定排序依据且按维度拆解时，把默认算法
+    # 显式说出来（文章「掉得最厉害按金额还是按比例」类歧义的兜底提示）
+    if dimension is not None and topn_intent.get("order_by") is None:
+        ambiguous.append(
+            {
+                "field": "order",
+                "options": [{"order_by": "value", "order": "desc", "is_default": True, "name": "按组值（变化金额）从高到低"}],
+                "default": "value",
+                "reason": "未指定排序依据，默认按组值（变化金额）降序排列；「掉得最厉害」类问法会自动改按降幅比例排序，也可在理解卡中修改",
+            }
+        )
+
     card = {
         "question": question,
         # B9.2-6 会话持久化：conversation_id 标识多轮对话（首问自动建会话），

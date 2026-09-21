@@ -58,6 +58,12 @@ const disambiguationOptions = computed(() => {
   });
 });
 
+// 11.9 P2-1 口径结构化说明：三个字段任一非空即展示
+const hasCalcNotes = computed(() => {
+  const n = metric.value?.calc_notes;
+  return !!(n && (n.rationale || n.alternatives || n.pitfalls));
+});
+
 // 区间变更时重取当前值与日序列（首次加载由 loadAll 负责）
 watch(dateRange, () => {
   if (!metricId.value) return;
@@ -375,7 +381,10 @@ onMounted(async () => {
             {{ current?.value == null ? "—" : formatMetricValue(current.value) }}
           </p>
           <!-- 契约 v2：部分周期显示真实值 + 数据截至标注；区间零数据才提示无数据 -->
-          <p v-if="current && current.value == null" class="metric-empty">
+          <p v-if="current?.maturity_pending" class="metric-empty">
+            观察期未满（需 {{ current.maturity_days }} 天）：该指标要等区间结束后 {{ current.maturity_days }} 天才能定型，暂不下结论
+          </p>
+          <p v-else-if="current && current.value == null" class="metric-empty">
             所选区间无数据<template
               v-if="current.coverage?.start && current.coverage?.end"
             >（数据覆盖：{{ current.coverage.start }} ~ {{ current.coverage.end }}，可调整上方统计周期）</template>
@@ -401,6 +410,15 @@ onMounted(async () => {
                 <span v-if="opt.description">：{{ opt.description }}</span>
                 <span v-if="opt.isDefault" class="pwc-badge">当前默认口径</span>
               </li>
+            </ul>
+          </template>
+          <!-- 11.9 P2-1 口径结构化说明 -->
+          <template v-if="hasCalcNotes">
+            <h5 class="detail__subhead">口径备注</h5>
+            <ul class="detail__options">
+              <li v-if="metric.calc_notes.rationale"><strong>为什么这样定：</strong>{{ metric.calc_notes.rationale }}</li>
+              <li v-if="metric.calc_notes.alternatives"><strong>其他算法适用场景：</strong>{{ metric.calc_notes.alternatives }}</li>
+              <li v-if="metric.calc_notes.pitfalls"><strong>最容易算错的地方：</strong>{{ metric.calc_notes.pitfalls }}</li>
             </ul>
           </template>
         </section>

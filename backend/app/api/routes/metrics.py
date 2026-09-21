@@ -36,6 +36,8 @@ class MetricCreateRequest(BaseModel):
     topic: str = "general"
     parent_id: int | None = None
     disambiguation: dict | None = None
+    maturity_days: int | None = None  # 11.9 P1-2 观察期（天），NULL=无成熟期
+    calc_notes: dict | None = None    # 11.9 P2-1 口径结构化说明
     owner_department: str = ""
     project_id: int | None = None  # B9.3：归属项目（缺省=默认项目；code 项目内唯一）
     operator_id: str | None = None  # 缺省取当前登录用户
@@ -53,6 +55,8 @@ class MetricUpdateRequest(BaseModel):
     topic: str | None = None
     parent_id: int | None = None
     disambiguation: dict | None = None
+    maturity_days: int | None = None
+    calc_notes: dict | None = None
     owner_department: str | None = None
     status: str | None = None
     reason: str = ""
@@ -70,6 +74,9 @@ def _changes_to_update_payload(body: MetricUpdateRequest) -> dict:
     payload = body.model_dump(exclude_none=True, exclude={"reason", "operator_id"})
     if body.calc_rule is not None:
         payload["calc_rule"] = body.calc_rule  # None 值字段被排除，但显式保留 calc_rule 判断
+    if "maturity_days" in body.model_fields_set:
+        # maturity_days 允许显式置 null（清除观察期），exclude_none 时需补回
+        payload["maturity_days"] = body.maturity_days
     return payload
 
 
@@ -88,6 +95,8 @@ def create_metric(db: DbDep, body: MetricCreateRequest, user: WriterUser):
         topic=body.topic,
         parent_id=body.parent_id,
         disambiguation=body.disambiguation,
+        maturity_days=body.maturity_days,
+        calc_notes=body.calc_notes,
         owner_department=body.owner_department,
         operator_id=body.operator_id or user.username,
         project_id=body.project_id,

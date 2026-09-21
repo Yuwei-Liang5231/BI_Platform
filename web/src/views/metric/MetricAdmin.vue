@@ -50,6 +50,8 @@ const form = reactive({
   parent_id: null,
   status: "active",
   dimensions: [], // 常用维度（列名有序数组，2~4 层）：归因下钻层级来源
+  maturity_days: null, // 11.9 P1-2 观察期（天），null=无
+  calc_notes: { rationale: "", alternatives: "", pitfalls: "" }, // 11.9 P2-1 口径结构化说明
 });
 
 /* ---------- 口径分歧（disambiguation）编辑 ---------- */
@@ -640,6 +642,8 @@ function openCreate() {
     parent_id: null,
     status: "active",
     dimensions: [],
+    maturity_days: null,
+    calc_notes: { rationale: "", alternatives: "", pitfalls: "" },
   });
   fillBuilderFromRule(null);
   resetDisambiguation(null);
@@ -666,6 +670,12 @@ function openEdit(row) {
         typeof d === "string" ? d : d?.dataset && d?.column ? `${d.dataset}.${d.column}` : (d?.column ?? ""),
       )
       .filter(Boolean),
+    maturity_days: row.maturity_days ?? null,
+    calc_notes: {
+      rationale: row.calc_notes?.rationale ?? "",
+      alternatives: row.calc_notes?.alternatives ?? "",
+      pitfalls: row.calc_notes?.pitfalls ?? "",
+    },
   });
   fillBuilderFromRule(row.calc_rule);
   resetDisambiguation(row.disambiguation);
@@ -742,6 +752,13 @@ async function handleSave() {
           return { dataset: d.slice(0, i), column: d.slice(i + 1) };
         }),
       calc_rule: parsed.rule,
+      // 11.9 P1-2/P2-1：观察期（null=无，后端 PATCH 特判 model_fields_set 支持清除）与口径备注
+      maturity_days: form.maturity_days,
+      calc_notes: {
+        rationale: form.calc_notes.rationale.trim(),
+        alternatives: form.calc_notes.alternatives.trim(),
+        pitfalls: form.calc_notes.pitfalls.trim(),
+      },
       // B9.3：归入当前项目；「全部项目」视图下新建 → 默认项目（后端缺省语义）
       ...(projectStore.currentId ? { project_id: projectStore.currentId } : {}),
     };
@@ -1059,6 +1076,28 @@ watch(
         </el-form-item>
         <el-form-item label="口径说明">
           <el-input v-model="form.definition" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="观察期">
+          <template #label>
+            观察期（天）
+            <el-tooltip placement="top" content="指标需要 N 天才能定型（如 90 天复购率）。观察期未满时平台显示「—」并注明原因，不用偏低的值下结论。留空=无观察期。">
+              <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <el-input-number v-model="form.maturity_days" :min="0" :max="365" :step="1" placeholder="留空=无观察期" style="width: 180px" />
+        </el-form-item>
+        <el-form-item label="口径备注">
+          <template #label>
+            口径备注
+            <el-tooltip placement="top" content="结构化口径说明：为什么这样定、其他算法适合什么场景、最容易算错的地方。会展示在指标详情页。">
+              <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <div class="rule-builder">
+            <el-input v-model="form.calc_notes.rationale" placeholder="为什么这样定（可选），如：剔除退款避免高估实际收入" />
+            <el-input v-model="form.calc_notes.alternatives" placeholder="其他算法适用场景（可选），如：含退款口径适合对账场景" />
+            <el-input v-model="form.calc_notes.pitfalls" placeholder="最容易算错的地方（可选），如：勿把搭配购金额计入分母" />
+          </div>
         </el-form-item>
         <el-form-item label="口径分歧">
           <template #label>

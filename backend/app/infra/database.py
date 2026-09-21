@@ -111,6 +111,14 @@ def migrate_project_columns() -> None:
                 rel_rows = conn.exec_driver_sql("PRAGMA table_info(dataset_relations)").fetchall()
                 if rel_rows and "column_pairs" not in {r[1] for r in rel_rows}:
                     conn.exec_driver_sql("ALTER TABLE dataset_relations ADD COLUMN column_pairs TEXT")
+            # 11.9 P1-2/P2-1：指标成熟期与口径结构化说明（存量表补列，NULL/{} 零迁移兼容）
+            if table == "metrics":
+                if "maturity_days" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE metrics ADD COLUMN maturity_days INTEGER")
+                if "calc_notes_json" not in cols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE metrics ADD COLUMN calc_notes_json TEXT DEFAULT '{}'"
+                    )
         conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_metrics_project_id ON metrics (project_id)"
         )

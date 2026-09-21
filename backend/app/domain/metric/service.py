@@ -113,6 +113,8 @@ def metric_to_dict(m: Metric) -> dict:
         "level": m.level,
         "parent_id": m.parent_id,
         "disambiguation": _load_json(m.disambiguation_json, {}),
+        "maturity_days": m.maturity_days,
+        "calc_notes": _load_json(getattr(m, "calc_notes_json", None) or "{}", {}),
         "primary_dataset_id": m.primary_dataset_id,
         "owner_user_id": m.owner_user_id,
         "owner_department": m.owner_department,
@@ -156,6 +158,36 @@ def _validate_filters(filters) -> dict:
     return filters
 
 
+def _validate_calc_notes(notes) -> dict:
+    """11.9 P2-1 口径结构化说明：三个可选文本字段，未知键拒绝。"""
+    if notes is None:
+        return {}
+    if not isinstance(notes, dict):
+        raise BusinessError("calc_notes 必须是对象", 40000)
+    allowed = {"rationale", "alternatives", "pitfalls"}
+    unknown = set(notes) - allowed
+    if unknown:
+        raise BusinessError(f"calc_notes 不支持的字段：{sorted(unknown)}", 40000)
+    cleaned = {}
+    for k in ("rationale", "alternatives", "pitfalls"):
+        v = notes.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, str):
+            raise BusinessError(f"calc_notes.{k} 必须是字符串", 40000)
+        cleaned[k] = v
+    return cleaned
+
+
+def _validate_maturity_days(days) -> int | None:
+    """11.9 P1-2 观察期：None=无成熟期；0~365 整数。"""
+    if days is None:
+        return None
+    if not isinstance(days, int) or isinstance(days, bool) or not 0 <= days <= 365:
+        raise BusinessError("maturity_days 必须是 0~365 的整数或 null", 40000)
+    return days
+
+
 def _validate_parent(db: Session, parent_id, self_id=None) -> int | None:
     if parent_id is None:
         return None
@@ -184,6 +216,8 @@ def create_metric(
     topic: str = "general",
     parent_id=None,
     disambiguation=None,
+    maturity_days: int | None = None,
+    calc_notes=None,
     owner_department: str = "",
     operator_id: str = "system",
     project_id: int | None = None,
@@ -229,6 +263,8 @@ def create_metric(
             level=level,
             parent_id=parent_id,
             disambiguation_json=json.dumps(disambiguation or {}, ensure_ascii=False),
+            maturity_days=_validate_maturity_days(maturity_days),
+            calc_notes_json=json.dumps(_validate_calc_notes(calc_notes), ensure_ascii=False),
             primary_dataset_id=compiled.primary_dataset_id,
             owner_user_id=operator_id,
             owner_department=owner_department or "",
@@ -258,6 +294,7 @@ def update_metric(
     allowed = {
         "name", "aliases", "definition", "calc_rule", "dimensions", "filters",
         "topic", "parent_id", "disambiguation", "owner_department", "status",
+        "maturity_days", "calc_notes",
     }
     unknown = set(changes) - allowed
     if unknown:
@@ -287,6 +324,8 @@ def update_metric(
         "topic": lambda v: v or "general",
         "parent_id": lambda v: v,
         "disambiguation": lambda v: json.dumps(v or {}, ensure_ascii=False),
+        "maturity_days": _validate_maturity_days,
+        "calc_notes": lambda v: json.dumps(_validate_calc_notes(v), ensure_ascii=False),
         "owner_department": lambda v: v or "",
         "status": lambda v: v,
     }
@@ -295,6 +334,7 @@ def update_metric(
         "calc_rule": "calc_rule_json", "dimensions": "dimensions_json",
         "filters": "filters_json", "topic": "topic", "parent_id": "parent_id",
         "disambiguation": "disambiguation_json", "owner_department": "owner_department",
+        "maturity_days": "maturity_days", "calc_notes": "calc_notes_json",
         "status": "status",
     }
     updates = {}

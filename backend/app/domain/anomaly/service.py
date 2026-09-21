@@ -128,6 +128,14 @@ def detect_for_metric(
     today_anchor = "__today__" in compiled.sql
 
     target = detect_date or compiled.coverage_end
+    # 11.9 P1-2 观察期未满：检测日 + 成熟期未到，当日值尚未定型，不检测
+    md = getattr(resolved, "maturity_days", None)
+    if md and md > 0 and date.today() < target + timedelta(days=md):
+        return _no_data_result(
+            resolved, cfg,
+            f"观察期未满（需 {md} 天，{target.isoformat()} + {md} 天 > 今天），暂不检测",
+            target,
+        )
     weeks = max(cfg["min_samples"], 4)  # 至少拉 4 周窗口，配置更大时拉更多
     start = target - timedelta(days=7 * weeks)
     series = compute_metric_series(
@@ -254,6 +262,22 @@ def detect_for_project(db: Session, user: User, project_id: int | None = None) -
     return {"project_id": pid, "counts": counts, "anomalies": results[:5]}  # 限量 5 条宁缺毋滥
 
 
+def _action_hint(direction: str) -> str:
+    """11.9 P1-1 异动通知建议动作：方向驱动的规则模板（纯文案，零查询）。
+    算写分离红线不受影响：建议是固定句式，不含任何计算数值。"""
+    if direction == "up":
+        return (
+            "建议动作：① 核对口径与数据完整性（是否有补录/重复计数）；"
+            "② 在指标详情按常用维度拆解，定位主要来源；"
+            "③ 确认是否存在促销、季节或一次性因素。"
+        )
+    return (
+        "建议动作：① 核查统计口径或采集链路近期是否变更；"
+        "② 在指标详情按常用维度拆解，定位下滑来源；"
+        "③ 结合业务判断是否需要干预。"
+    )
+
+
 def _persist_notifications(db: Session, abnormal_results: list[dict], project_id: int | None) -> None:
     """异动结论 → 站内通知（同 user+metric+日+方向去重）。"""
     from app.infra.models import Notification
@@ -274,7 +298,7 @@ def _persist_notifications(db: Session, abnormal_results: list[dict], project_id
         baseline = r.get("baseline") or {}
         body = (
             f"{r['date']} 值为 {round(r['current'], 1):,}，正常水平约 {round(baseline.get('mean', 0), 1):,}；"
-            f"{r.get('reason') or ''}"
+            f"{r.get('reason') or ''} {_action_hint(r['direction'])}"
         )
         for u in recipients:
             dup = (

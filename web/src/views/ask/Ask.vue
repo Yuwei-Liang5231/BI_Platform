@@ -621,6 +621,19 @@ watch(
                   </el-tag>
                 </div>
               </template>
+              <template v-else-if="amb.field === 'order'">
+                <!-- 11.9 P2-3 默认排序交代：说明系统采用的默认算法，点击标签展开理解卡调整 -->
+                <div class="ask__amb-opts">
+                  <el-tag
+                    v-for="opt in amb.options"
+                    :key="opt.order_by + opt.order"
+                    :type="opt.is_default ? 'warning' : 'info'"
+                    class="ask__amb-opt ask__amb-opt--static"
+                  >
+                    {{ opt.name }}<template v-if="opt.is_default">（当前默认）</template>
+                  </el-tag>
+                </div>
+              </template>
             </div>
           </template>
         </el-alert>

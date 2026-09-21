@@ -188,6 +188,18 @@ def _today_anchor() -> date:
     return date.today()
 
 
+def _maturity_pending(metric: Metric, end_d: date) -> bool:
+    """11.9 P1-2 观察期（成熟期）：N 天后才能定型的指标（如 90 天复购率），
+    请求区间 end + N 尚未到达时值必然偏低——一律留空（value=null）并在响应
+    标注 maturity_pending=true，与「数据截至」（数据没到）语义区分：
+    一个是时间没到不能下结论，一个是数据还没到但时间到了。
+    常数指标无时间性，不适用。"""
+    md = getattr(metric, "maturity_days", None)
+    if not md or md <= 0:
+        return False
+    return _today_anchor() < end_d + timedelta(days=md)
+
+
 def _compute_range(
     db: Session,
     metric: Metric,
@@ -293,6 +305,28 @@ def compute_metric_value(
     compiled = _compile_metric(db, metric)
     runtime = _dataset_runtime(db, compiled)
     is_constant = compiled.is_constant
+
+    # 11.9 P1-2 观察期未满：短路留空（不执行 SQL、不进缓存）
+    if not is_constant and _maturity_pending(metric, end_d):
+        return {
+            "metric_id": metric.id,
+            "metric_code": metric.code,
+            "name": metric.name,
+            "ver": metric.ver,
+            "start": start_d.isoformat(),
+            "end": end_d.isoformat(),
+            "value": None,
+            "period_complete": None,
+            "data_through": None,
+            "cache": "bypass",
+            "constant": False,
+            "maturity_pending": True,
+            "maturity_days": metric.maturity_days,
+            "coverage": {"start": None, "end": None},
+            "grain": compiled.grain,
+            "compare": None,
+        }
+
     current = _compute_range(db, metric, compiled, runtime, start_d, end_d)
 
     payload = {
@@ -376,14 +410,25 @@ def compute_metric_series(
     series = []
     cursor = start_d
     while cursor <= end_d:
-        point = _compute_range(db, metric, compiled, runtime, cursor, cursor)
-        series.append(
-            {
-                "date": cursor.isoformat(),
-                "value": point["value"],
-                "period_complete": point["period_complete"],
-            }
-        )
+        if _maturity_pending(metric, cursor):
+            # 11.9 P1-2 观察期未满的日期：留空（横线），不下结论
+            series.append(
+                {
+                    "date": cursor.isoformat(),
+                    "value": None,
+                    "period_complete": None,
+                    "maturity_pending": True,
+                }
+            )
+        else:
+            point = _compute_range(db, metric, compiled, runtime, cursor, cursor)
+            series.append(
+                {
+                    "date": cursor.isoformat(),
+                    "value": point["value"],
+                    "period_complete": point["period_complete"],
+                }
+            )
         cursor += timedelta(days=1)
     return series
 
@@ -557,6 +602,17 @@ def compute_metric_breakdown(
     is_constant = compiled.is_constant
 
     cov_start, cov_end = compiled.coverage_start, compiled.coverage_end
+    if not is_constant and _maturity_pending(metric, end_d):
+        # 11.9 P1-2 观察期未满：拆解无意义，整体短路
+        return {
+            "metric_id": metric.id, "metric_code": metric.code, "name": metric.name,
+            "ver": metric.ver, "dimension": dimension, "start": start_d.isoformat(),
+            "end": end_d.isoformat(), "constant": False, "coverage": {"start": None, "end": None},
+            "rows": [], "total_groups": 0, "period_complete": None, "data_through": None,
+            "maturity_pending": True, "maturity_days": metric.maturity_days,
+            "compare": None, "order_by": order_by, "order": order, "top_n": top_n,
+            "cache": "bypass",
+        }
     if not is_constant and (
         cov_start is None or cov_end is None or start_d > cov_end or end_d < cov_start
     ):
