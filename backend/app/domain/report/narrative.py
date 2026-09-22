@@ -17,15 +17,17 @@
 from __future__ import annotations
 
 import json
-import re
 
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.infra.llm import chat_json, resolve_llm_config
-
-PLACEHOLDER_RE = re.compile(r"\{\{ref:([A-Za-z0-9_]+)\}\}")
-BARE_DIGIT_RE = re.compile(r"\d")  # 去占位符后不允许任何数字残留
+from app.domain.ai_narrative import (
+    PLACEHOLDER_RE,
+    BARE_DIGIT_RE,
+    audit_sentence as _audit_sentence,
+    backfill as _backfill,
+)
 
 # LLM 可叙述的章节（attribution 保留规则句；insight 为建议素材组织）
 LLM_SECTIONS = ("overview", "metrics", "anomaly", "insight")
@@ -66,19 +68,6 @@ def _build_ref_table(result: dict, sections: dict, period: dict) -> dict[str, tu
     for i, mt in enumerate(result.get("insight_material") or [], 1):
         table[f"ins{i}"] = (mt["label"], mt["statement"])
     return table
-
-
-def _audit_sentence(sentence: str, ref_keys: set[str]) -> bool:
-    """三道审计之①②：未知 ref / 裸数字 → 句子不合格。"""
-    keys = PLACEHOLDER_RE.findall(sentence)
-    if any(k not in ref_keys for k in keys):
-        return False
-    without = PLACEHOLDER_RE.sub("", sentence)
-    return BARE_DIGIT_RE.search(without) is None
-
-
-def _backfill(sentence: str, table: dict[str, tuple[str, str]]) -> str:
-    return PLACEHOLDER_RE.sub(lambda m: table[m.group(1)][1], sentence)
 
 
 _SYSTEM_PROMPT = """你是企业经营报告的撰写助手，把给定的结论清单组织成流畅的中文报告段落。

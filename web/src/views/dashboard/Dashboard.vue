@@ -9,7 +9,9 @@ import * as echarts from "echarts";
 import { ElMessage } from "element-plus";
 
 import { metricValue, exportMetric, exportCsvBlob, anomalyScan } from "@/api/query";
+import { dashboardSummary } from "@/api/ai";
 import TrendBadge from "@/components/business/TrendBadge.vue";
+import TermTip from "@/components/glossary/TermTip.vue";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
 import { useMetricStore } from "@/stores/metric";
@@ -269,6 +271,59 @@ async function loadAnomalyBanner() {
 // B9.3：切换项目重新拉取看板
 watch(() => projectStore.currentId, fetchData);
 
+// P1 功能1：AI 看板速览（手动触发 + 按 项目×周期 会话缓存 + 无 AI 时隐藏按钮）
+// 红线：LLM 未配置/失败时后端降级为规则句，前端照常展示，绝不 500
+const aiSummary = reactive({
+  loaded: false,
+  loading: false,
+  hidden: false, // 已知未启用 AI 后隐藏按钮
+  llmConfigured: null,
+  source: "",
+  sections: [],
+  ruleText: "",
+});
+const summaryCache = {}; // `${pid}|${start}|${end}` -> 响应体（会话内复用）
+
+function summaryCacheKey() {
+  const pid = projectStore.currentId ?? "none";
+  return `${pid}|${range.value.start}|${range.value.end}`;
+}
+
+async function handleAiSummary() {
+  if (aiSummary.loading) return;
+  const key = summaryCacheKey();
+  if (summaryCache[key]) {
+    applySummary(summaryCache[key]);
+    return;
+  }
+  aiSummary.loading = true;
+  try {
+    const res = await dashboardSummary({
+      projectId: projectStore.currentId,
+      start: range.value.start,
+      end: range.value.end,
+    });
+    summaryCache[key] = res;
+    applySummary(res);
+  } catch {
+    // 拦截器已提示；速览失败不阻塞看板其余功能
+  } finally {
+    aiSummary.loading = false;
+  }
+}
+
+function applySummary(res) {
+  aiSummary.loaded = true;
+  aiSummary.llmConfigured = res.llm_configured;
+  aiSummary.source = res.source;
+  aiSummary.sections = res.sections ?? [];
+  aiSummary.ruleText = res.rule_text ?? "";
+  if (res.llm_configured === false) {
+    // 未启用 AI：仅展示规则计数句，并隐藏速览按钮
+    aiSummary.hidden = true;
+  }
+}
+
 onMounted(fetchData);
 </script>
 
@@ -289,6 +344,14 @@ onMounted(fetchData);
           end-placeholder="结束日期"
           :clearable="false"
         />
+        <el-button
+          v-if="!aiSummary.hidden"
+          :loading="aiSummary.loading"
+          :disabled="!visible.length"
+          @click="handleAiSummary"
+        >
+          AI 速览
+        </el-button>
         <el-button :disabled="!selected" type="primary" @click="handleExport">导出 CSV</el-button>
       </div>
     </div>
@@ -390,6 +453,24 @@ onMounted(fetchData);
     <p v-if="!auth.canWrite" class="dash__readonly">
       你当前为只读角色，仅可查看；如需建指标请联系管理员。
     </p>
+
+    <!-- P1 功能1：AI 看板速览（手动触发，按项目×周期缓存） -->
+    <section v-if="aiSummary.loaded" class="pwc-card dash__ai-card">
+      <div class="pwc-card__header">
+        <h4 class="dash__ai-title">
+          AI 看板速览
+          <TermTip term="ai_overview" />
+          <el-tag v-if="aiSummary.source === 'llm'" type="success" effect="light" size="small">AI 生成</el-tag>
+          <el-tag v-else-if="aiSummary.source === 'rule'" type="info" effect="light" size="small">规则摘要</el-tag>
+        </h4>
+      </div>
+      <template v-if="aiSummary.sections.length">
+        <p v-for="(sec, i) in aiSummary.sections" :key="i" class="dash__ai-section">
+          <span v-for="(s, j) in sec.sentences" :key="j" class="dash__ai-line">{{ s }}</span>
+        </p>
+      </template>
+      <p v-else class="dash__ai-rule">{{ aiSummary.ruleText }}</p>
+    </section>
   </div>
 </template>
 
@@ -442,6 +523,30 @@ onMounted(fetchData);
 
 .dash__readonly {
   margin-top: var(--pwc-space-5);
+  color: var(--pwc-text-secondary);
+}
+
+.dash__ai-card {
+  margin-top: var(--pwc-space-5);
+}
+
+.dash__ai-title {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-2);
+}
+
+.dash__ai-section {
+  margin: var(--pwc-space-2) 0;
+  line-height: 1.7;
+}
+
+.dash__ai-line {
+  display: block;
+}
+
+.dash__ai-rule {
+  margin: var(--pwc-space-2) 0;
   color: var(--pwc-text-secondary);
 }
 </style>

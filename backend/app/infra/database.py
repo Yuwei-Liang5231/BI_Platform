@@ -111,6 +111,11 @@ def migrate_project_columns() -> None:
                 rel_rows = conn.exec_driver_sql("PRAGMA table_info(dataset_relations)").fetchall()
                 if rel_rows and "column_pairs" not in {r[1] for r in rel_rows}:
                     conn.exec_driver_sql("ALTER TABLE dataset_relations ADD COLUMN column_pairs TEXT")
+                # 11.9 P1-2：字段语义标注列（存量表补列，{} 零迁移兼容）
+                if "column_semantics_json" not in cols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE datasets ADD COLUMN column_semantics_json TEXT DEFAULT '{}'"
+                    )
             # 11.9 P1-2/P2-1：指标成熟期与口径结构化说明（存量表补列，NULL/{} 零迁移兼容）
             if table == "metrics":
                 if "maturity_days" not in cols:

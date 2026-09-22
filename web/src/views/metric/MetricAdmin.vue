@@ -19,6 +19,7 @@ import {
 } from "@/api/metrics";
 import { getDataset, listRelations } from "@/api/datasets";
 import { getRestrictions, putRestrictions } from "@/api/auth";
+import { suggestCalcNotes } from "@/api/ai";
 import { useAuthStore } from "@/stores/auth";
 import TermTip from "@/components/glossary/TermTip.vue";
 import { useDatasetStore } from "@/stores/dataset";
@@ -540,6 +541,62 @@ const flatTimePlaceholder = computed(() => {
     ? "时间字段（该数据集无日期列，指标为全期常数）"
     : "时间字段（可选；留空则不按时间过滤）";
 });
+
+/* ---------- AI 帮写口径（P1 任务5） ----------
+   仅简单聚合模式可用：取当前数据集/字段/聚合 → 调口径助手生成名称/别名/口径说明，
+   回填到表单（用户可改），绝不自动保存。LLM 未配置时按钮禁用并提示。 */
+const aiCalcNotes = reactive({
+  loading: false,
+  llmConfigured: true, // 首次默认可点；后端返回 llm_configured=false 后禁用
+});
+
+async function handleAiCalcNotes() {
+  if (builder.mode !== "flat") {
+    ElMessage.warning("AI 帮写口径仅支持「简单聚合」模式（单数据集单字段）");
+    return;
+  }
+  const t = builder.flat.table;
+  const c = builder.flat.column;
+  const agg = builder.flat.aggregation;
+  if (!t || !c) {
+    ElMessage.warning("请先选择数据集与字段后再使用 AI 帮写口径");
+    return;
+  }
+  const ds = datasetStore.list.find((d) => d.name === t);
+  if (!ds) {
+    ElMessage.warning("未找到对应数据集，无法调用 AI 帮写口径");
+    return;
+  }
+  aiCalcNotes.loading = true;
+  try {
+    const res = await suggestCalcNotes({
+      datasetId: ds.id,
+      column: c,
+      aggregation: agg,
+      alias: form.name ? form.name.trim() : null,
+      sampleValues: null,
+    });
+    if (res?.llm_configured === false) {
+      aiCalcNotes.llmConfigured = false;
+      ElMessage.info("未启用 AI（LLM 未配置），暂不可用 AI 帮写口径");
+      return;
+    }
+    // 回填表单：用户可编辑，绝不自动保存
+    if (res?.name) form.name = res.name;
+    if (Array.isArray(res?.aliases) && res.aliases.length) {
+      form.aliases = res.aliases.join(", ");
+    }
+    const notes = res?.calc_notes ?? {};
+    if (notes.rationale) form.calc_notes.rationale = notes.rationale;
+    if (notes.alternatives) form.calc_notes.alternatives = notes.alternatives;
+    if (notes.pitfalls) form.calc_notes.pitfalls = notes.pitfalls;
+    ElMessage.success("已根据口径生成建议，请核对后手动保存");
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    aiCalcNotes.loading = false;
+  }
+}
 
 /* 试编译/保存前的本地预检：留空时间字段是合法选择（全期常数指标），
    但属于易被忽视的口径差异——弹确认框让用户知情，而不是静默生效或一刀切拦截。 */
@@ -1146,6 +1203,28 @@ watch(
               </el-tooltip>
               <el-button text type="primary" size="small" @click="builder.mode === 'expr' ? fillExprSample() : fillFlatSample()">
                 填充示例
+              </el-button>
+              <el-divider direction="vertical" />
+              <TermTip term="ai_calc_notes" />
+              <el-tooltip
+                v-if="!aiCalcNotes.llmConfigured"
+                content="未启用 AI（LLM 未配置），暂不可用 AI 帮写口径"
+                placement="top"
+              >
+                <span>
+                  <el-button text type="primary" size="small" disabled>AI 帮写口径</el-button>
+                </span>
+              </el-tooltip>
+              <el-button
+                v-else
+                text
+                type="primary"
+                size="small"
+                :loading="aiCalcNotes.loading"
+                :disabled="builder.mode !== 'flat' || !builder.flat.table || !builder.flat.column"
+                @click="handleAiCalcNotes"
+              >
+                AI 帮写口径
               </el-button>
             </div>
 

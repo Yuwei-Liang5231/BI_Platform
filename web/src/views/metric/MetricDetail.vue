@@ -9,7 +9,9 @@ import { useRoute, useRouter } from "vue-router";
 import * as echarts from "echarts";
 
 import { exportCsvBlob, attributeTreeNode } from "@/api/query";
+import { anomalyHypothesis } from "@/api/ai";
 import TrendBadge from "@/components/business/TrendBadge.vue";
+import TermTip from "@/components/glossary/TermTip.vue";
 import { ElMessage } from "element-plus";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
@@ -69,6 +71,7 @@ watch(dateRange, () => {
   if (!metricId.value) return;
   loadCurrent();
   loadTrend();
+  loadAiHypothesis();
   // 归因树与统计周期同源：区间变更后按当前层级重取（路径保留，节点值随区间变）
   if (treeDims.value.length >= 2) loadTreeNode();
 });
@@ -192,6 +195,38 @@ function changeSummary(row) {
 
 const notFound = ref(false);
 
+// P1 功能2：AI 异动假设解释（检测为异动时展示；LLM 未配置/失败时降级为固定动作提示）
+const aiHypothesis = reactive({
+  loading: false,
+  loaded: false,
+  hasAnomaly: false,
+  hypothesis: [],
+  fallbackActionHint: "",
+  source: "",
+});
+
+async function loadAiHypothesis() {
+  if (!metricId.value) return;
+  aiHypothesis.loading = true;
+  try {
+    const res = await anomalyHypothesis({
+      metricId: metricId.value,
+      start: range.value.start,
+      end: range.value.end,
+      compare: "mom",
+    });
+    aiHypothesis.loaded = true;
+    aiHypothesis.hasAnomaly = res.has_anomaly;
+    aiHypothesis.hypothesis = res.hypothesis ?? [];
+    aiHypothesis.fallbackActionHint = res.fallback_action_hint ?? "";
+    aiHypothesis.source = res.source;
+  } catch {
+    // 拦截器已提示；异动假设失败不阻塞详情页其余功能
+  } finally {
+    aiHypothesis.loading = false;
+  }
+}
+
 async function loadAll() {
   notFound.value = false;
   try {
@@ -203,7 +238,13 @@ async function loadAll() {
     metricStore.detail = null;
     return;
   }
-  await Promise.all([loadCurrent(), loadTrend(), loadSql(), metricStore.fetchChanges(metricId.value)]);
+  await Promise.all([
+    loadCurrent(),
+    loadTrend(),
+    loadSql(),
+    metricStore.fetchChanges(metricId.value),
+    loadAiHypothesis(),
+  ]);
 }
 
 // 请求序号守卫：快速改区间时旧响应后到会覆盖新状态，过期响应一律丢弃。
@@ -423,6 +464,29 @@ onMounted(async () => {
           </template>
         </section>
 
+        <!-- P1 功能2：AI 异动假设解释 -->
+        <section class="pwc-card col-span-12">
+          <div class="pwc-card__header">
+            <h4>
+              AI 异动假设
+              <TermTip term="ai_hypothesis" />
+              <el-tag v-if="aiHypothesis.source === 'llm'" type="success" effect="light" size="small">AI 生成</el-tag>
+              <el-tag v-else-if="aiHypothesis.source === 'rule'" type="info" effect="light" size="small">规则提示</el-tag>
+            </h4>
+          </div>
+          <template v-if="aiHypothesis.loaded">
+            <template v-if="aiHypothesis.hasAnomaly">
+              <p v-if="aiHypothesis.hypothesis.length" class="detail__ai-hyp">
+                <span v-for="(s, j) in aiHypothesis.hypothesis" :key="j" class="detail__ai-line">{{ s }}</span>
+              </p>
+              <p v-else class="detail__ai-rule">{{ aiHypothesis.fallbackActionHint }}</p>
+            </template>
+            <p v-else class="metric-empty">当前区间未检测到异动（指标正常），无需假设解释。</p>
+          </template>
+          <p v-else-if="aiHypothesis.loading" class="metric-empty">AI 正在分析异动…</p>
+          <p v-else class="metric-empty">—</p>
+        </section>
+
         <!-- 日序列趋势 -->
         <section class="pwc-card col-span-12">
           <div class="pwc-card__header">
@@ -624,6 +688,19 @@ onMounted(async () => {
 
 .detail__definition {
   white-space: pre-wrap;
+}
+
+.detail__ai-hyp {
+  line-height: 1.8;
+}
+
+.detail__ai-line {
+  display: block;
+}
+
+.detail__ai-rule {
+  color: var(--pwc-text-secondary);
+  line-height: 1.8;
 }
 
 .detail__subhead {

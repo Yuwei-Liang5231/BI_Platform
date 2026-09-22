@@ -69,6 +69,7 @@ class Dataset(Base):
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     column_count: Mapped[int] = mapped_column(Integer, default=0)
     schema_json: Mapped[str] = mapped_column(Text, default="[]")  # [{name,type,mixed,null_count,sample}]
+    column_semantics_json: Mapped[str] = mapped_column(Text, default="{}")  # P1 字段语义标注 {col: {label,description,type,example}}（11.9 P1-2）
     dataset_ver: Mapped[int] = mapped_column(Integer, default=1)  # 缓存键因子：指标ID:ver:dataset_ver
     project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # B9.3 项目工作区
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
