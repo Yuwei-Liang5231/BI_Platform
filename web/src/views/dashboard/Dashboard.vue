@@ -254,6 +254,11 @@ async function fetchData() {
   });
   await loadCards();
   loadAnomalyBanner();
+  // 切项目/重查后：AI 速览面板复位（会话缓存按 项目×周期 保留，重新点击即回填）
+  aiSummary.loaded = false;
+  aiSummary.sections = [];
+  aiSummary.ruleText = "";
+  aiSummary.source = "";
 }
 
 // B10-3 异动黄条：进入看板/切项目时扫描一次（结果与总览页同源）

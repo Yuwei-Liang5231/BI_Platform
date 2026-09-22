@@ -279,14 +279,38 @@ def _action_hint(direction: str) -> str:
 
 
 def _persist_notifications(db: Session, abnormal_results: list[dict], project_id: int | None) -> None:
-    """异动结论 → 站内通知（同 user+metric+日+方向去重）。"""
-    from app.infra.models import Notification
+    """异动结论 → 站内通知（同 user+metric+日+方向去重）。
 
-    recipients = (
-        db.query(User)
-        .filter(User.status == "active", User.role.in_(("admin", "analyst")))
-        .all()
-    )
+    收件人 = 全部 active 用户中**对该指标可见者**（权限同源：与看板/
+    问数同一套受限判定——admin 恒可见，其余按 role+department 受限登记
+    过滤；受限用户不收受限指标的异动通知，不泄露名称）。
+    """
+    from app.infra.models import MetricVisibilityRestriction, Notification
+
+    users = db.query(User).filter(User.status == "active").all()
+    # 批量构建「主体 -> 受限指标集」映射，避免逐用户查询
+    restrict_by_subject: dict[tuple[str, str], set[int]] = {}
+    for stype, svalue, mid in (
+        db.query(
+            MetricVisibilityRestriction.subject_type,
+            MetricVisibilityRestriction.subject_value,
+            MetricVisibilityRestriction.metric_id,
+        ).all()
+    ):
+        restrict_by_subject.setdefault((stype, svalue), set()).add(mid)
+
+    def _hidden_for(u: User) -> set[int]:
+        if u.role == "admin":
+            return set()
+        hidden: set[int] = set()
+        subjects = [("role", u.role)]
+        if u.department:
+            subjects.append(("department", u.department))
+        for s in subjects:
+            hidden |= restrict_by_subject.get(s, set())
+        return hidden
+
+    user_hidden = {u.id: _hidden_for(u) for u in users}
     for r in abnormal_results:
         if r.get("date") is None or r.get("direction") not in ("up", "down"):
             continue
@@ -300,7 +324,9 @@ def _persist_notifications(db: Session, abnormal_results: list[dict], project_id
             f"{r['date']} 值为 {round(r['current'], 1):,}，正常水平约 {round(baseline.get('mean', 0), 1):,}；"
             f"{r.get('reason') or ''} {_action_hint(r['direction'])}"
         )
-        for u in recipients:
+        for u in users:
+            if r["metric_id"] in user_hidden[u.id]:
+                continue
             dup = (
                 db.query(Notification)
                 .filter(

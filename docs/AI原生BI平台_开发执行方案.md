@@ -478,3 +478,118 @@ changed_by / changed_at），指标更新接口在写库前对旧值快照，关
   变更历史时间线）此前已完整实现，无需重建（规划时核查遗漏，已修正）。
 - 测试：`tests/test_gaps_p119.py` 6 用例（短路/回显与清除/非法键 400/
   Top3+折叠+refs 数量/建议动作）；全量 pytest **401 passed**；build:dev 通过。
+
+## 11.10 AI 能力扩展（2026-09-22 规划，P1/P2 批已交付）
+
+### 背景：AI 原生审查结论（2026-09-22 上午）
+
+以「AI 原生」为标尺全面盘点后确认：AI 能力集中在报告叙述层/问数 Agent/
+建模建议三个域，而**数据看板、异动检测+通知、归因下钻、指标创建、数据集接入**
+五个最高频场景缺位；且现有 AI 全部是「被动应答式」。本次扩展目标：把 AI 从
+创作端延伸到消费/分析辅助端，从被动应答走向主动洞察——补齐「检测（规则）→
+定位（算法）→ **解释（AI）**」链路的最后一环。
+
+### 规划（六项，分两批；配套 PRD/设计见 docs/software-company/）
+
+- **P1 批**：① 看板智能摘要（AI 速览按钮+会话缓存）② 异动 AI 假设解释
+  （常用维度拆解事实 → LLM 中性假设，替代固定文案）③ 指标口径 AI 助手
+  （列名+样本值 → 名称/别名/calc_notes 草稿，白名单防幻觉）。
+- **P2 批**（2026-09-22 已交付）：④ 数据集字段语义标注 ⑤ 问数主动推荐升级
+  （结合最近异动/趋势动态生成）⑥ 归因下钻 AI 解读（仅第一层一句）。
+- **P3 批**（2026-09-22 已交付）：⑦ 审计收紧（P1 xfail 转正——中文数量词
+  与畸形占位符缺口封堵）⑧ LLM 配置引导（模型管理页指引卡，内网 Ollama
+  等 OpenAI 兼容端点）。报告 insight 章节维持现状：LLM 只消费平台预写
+  结构提示，放开有幻觉风险（评审结论不变）。
+
+### 架构决策
+
+- **通用算写分离引擎**：新增 `app/domain/ai_narrative.py`（audit_sentence /
+  backfill / llm_narrative / fmt_metric_value / fmt_pct），报告 narrative.py
+  重构为消费方——三个新叙述类调用点（速览/异动假设/归因解读）全部复用
+  三道审计，LLM 只见 `{{ref:KEY}}`，数字服务端回填。
+- **降级契约**：所有新接口返回 `llm_configured/source/rule_text`，LLM 未
+  配置/失败/审计全剔均静默降级，绝不 500；新调用点 chat_json 统一
+  timeout=60、retries=0（retries 形参默认 1 不变，存量行为零影响）。
+- **防幻觉**：结构化 JSON 类（口径助手）白名单校验——column 必须真实存在
+  于 schema_json、aggregation ∈ {sum,avg,count_distinct,count,max,min}，
+  非法 40000 不进 LLM。
+- **权限同源**（验证关卡补强）：`/ai/*` 全部按 project_id 隔离；异动假设
+  与看板速览对受限指标做 `ensure_metric_visible` /
+  `restricted_metric_ids` 源头过滤（B9 契约：不泄露名称）。
+
+### P1 交付记录（2026-09-22）
+
+- 后端新增：`domain/ai_narrative.py`、`domain/ai/{dashboard_summary,
+  anomaly_hypothesis,calc_notes}.py`、`api/routes/ai.py`
+  （GET /ai/dashboard-summary、GET /ai/anomaly-hypothesis、
+  POST /ai/metric-calc-notes）；`infra/llm.py` chat_json 加 retries 形参；
+  `report/narrative.py` 重构为引擎消费方。
+- 后端修改：`infra/models.py` + `infra/database.py` datasets 表
+  `column_semantics_json` 幂等迁移（P2-④ 预埋）；`main.py` 注册 ai 路由。
+- 前端：`api/ai/index.js`；Dashboard「AI 速览」（手动触发 + 按
+  project_id×周期会话内缓存，未配 LLM 隐藏按钮显规则句）；
+  MetricDetail 异动假设卡（hypothesis / fallback_action_hint / 无异动三态）；
+  MetricAdmin「AI 帮写口径」（仅简单聚合模式可用，采纳后可编辑、绝不自动保存）；
+  glossary 新增 ai 分类 4 词条。
+- **验证关卡发现并修复**：① P0 权限泄露——/ai/anomaly-hypothesis 缺
+  ensure_metric_visible，受限指标名称/方向可泄露（已补同源校验）；
+  ② dashboard_summary 源头未过滤受限指标（改 restricted_metric_ids
+  集合纵深防御）+ metric_count 明文数字进 LLM prompt（删除，维持
+  「LLM 输入零数字」惯例）。补 3 个权限测试。
+- 已知缺口（xfail 挂账）：中文数量词（如"三成"）绕过裸数字审计正则、
+  畸形占位符 `{ref:x}` 回填残留——test_ai_p12.py TestAuditGaps 固化，
+  待收紧。
+- 测试：`tests/test_ai_p12.py` 21 passed + 2 xfailed；全量 **422 passed**；
+  build:dev 通过（6.0s）。
+
+### P2 交付记录（2026-09-22）
+
+- 后端新增：`domain/ai/semantic_annotations.py`（字段语义标注——键白名单
+  防幻觉、`_NOTE_MAX_LEN=80`、无 LLM→空标注）、`domain/ai/attribute_interpretation.py`
+  （归因解读——复用 `attribute_tree_node(path=[])` 权限/口径同源，
+  ref 只有分组名/占比占位符，方向词服务端推导，降级→null）。
+- 后端修改：`api/routes/ai.py` 新增 POST /ai/dataset-semantic-annotations
+  （建议）与 POST /ai/attribute-interpretation；`api/routes/datasets.py`
+  新增 PUT /{id}/semantic-annotations（admin，整组替换、列名校验 40400）；
+  `ingestion/service.py` dataset_to_dict 带 `column_semantics`（P1 预埋的
+  column_semantics_json 正式启用）；`ask/service.py` build_suggestions 注入
+  动态异动推荐——通知表 14 天窗口、每指标最新一条、变化率服务端 fmt_pct
+  预格式化（纯规则零 LLM）、权限同源（user 收件人+restricted_metric_ids），
+  动态问句排最前、长度 ≤60 硬截断。
+- 前端：DatasetManage「AI 语义标注」（建议→可编辑→admin 落库，字段语义
+  备注展示表）；MetricDetail 归因下钻根节点 AI 一句解读（失败静默不阻塞
+  下钻）；Ask 空态推荐首位动态异动问句。
+- **验证关卡发现并修复**：① 动态推荐时间窗语义——按 `anomaly_date` 过滤
+  在历史数据回扫时会把刚落库的通知整窗误杀，改为按 `created_at`（落库
+  时间）过滤并同步调整排序；② 测试桩缺口——attribute_interpretation 从
+  `app.infra.llm` 直接导入 `resolve_llm_config`，patch ai_narrative 命名
+  空间不生效，补 patch 模块自身引用。
+- 测试：`tests/test_ai_p12.py` 30 passed + 2 xfailed（新增
+  TestSemanticAnnotations 5 例、TestAttributeInterpretation 3 例、
+  TestAskDynamicSuggestions 1 例）；全量 **431 passed**（基线 422 + 9）；
+  build:dev 通过（12.1s）。
+
+### P3 交付记录（2026-09-22）
+
+- **⑦ 审计收紧**（P1 两个 xfail 转正，红线闭环）：
+  `ai_narrative.audit_sentence` 新增中文数量词检测（成/倍/折/百分之/
+  分之/翻番/一半/过半/翻倍——后缀收窄避免误杀「进一步/一致/三线城市」）
+  与畸形占位符检测（单花括号 `{ref:x}`、缺右括号——会明文残留，剔除）；
+  `backfill` 加纵深防御：畸形占位符 key 在表内回填、不在则移除，
+  输出保证无花括号残留。TestAuditGaps 2 个 xfail 转正 + 新增 8 个
+  边界用例（数量词变体剔除 + 正常文案防误杀放行）。
+- **⑧ LLM 配置引导**：模型管理页新增可折叠「如何配置模型」指引卡
+  （OpenAI 兼容端点格式、内网 Ollama 示例、test 连通验证、公网被屏蔽
+  提示、降级行为说明）——与各 AI 功能降级提示（「模型管理页可配置」）
+  形成配置引导闭环。
+- 报告 insight 章节**维持现状**（评审结论不变）：LLM 只消费平台预写
+  结构提示，放开自负有幻觉风险。
+- 测试：`tests/test_ai_p12.py` 44 passed（xfail 清零）；全量 **447 passed**；
+  build:dev 通过（12.5s）。
+
+### 协作方式说明
+
+本批采用多角色协作（PRD：许清楚 / 设计：高见远 / 实现：寇豆码 / 验证：
+主理人代行，QA 因平台用量限制中断）。过程文档：
+`docs/software-company/prd-ai-p12.md`（增量 PRD）、
+`docs/software-company/design-ai-p12.md`（增量设计+任务分解 §6）。

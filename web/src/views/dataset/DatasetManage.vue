@@ -10,6 +10,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { useRouter } from "vue-router";
 
 import { getDatasetQuality, importDatasetData } from "@/api/datasets";
+import { saveSemanticAnnotations, suggestSemanticAnnotations } from "@/api/ai";
 import TermTip from "@/components/glossary/TermTip.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useDatasetStore } from "@/stores/dataset";
@@ -112,7 +113,10 @@ async function fetchData() {
   const pid = projectStore.currentId;
   await datasetStore.fetchList(pid ? { project_id: pid } : undefined);
   if (selectedId.value && !datasetStore.list.some((d) => d.id === selectedId.value)) {
+    // 选中数据集不属于新项目：连同右侧详情一起清空（避免跨项目残留）
     selectedId.value = null;
+    detail.value = null;
+    previewRows.value = [];
   }
   if (selectedId.value) await loadDetail(selectedId.value);
 }
@@ -183,6 +187,54 @@ async function handleDelete(row) {
   await datasetStore.remove(row.id);
   ElMessage.success("已删除");
   await fetchData();
+}
+
+// P2 #4 字段语义标注：AI 生成建议（可编辑）→ admin 确认落库（整组替换）
+const semanticVisible = ref(false);
+const semanticLoading = ref(false);
+const semanticSaving = ref(false);
+const semanticRows = ref([]); // [{name, note}]
+
+const columnSemantics = computed(() => detail.value?.column_semantics ?? {});
+const semanticSavedRows = computed(() =>
+  Object.entries(columnSemantics.value).map(([name, note]) => ({ name, note })),
+);
+
+async function openSemantic() {
+  if (!selectedId.value) return;
+  semanticLoading.value = true;
+  try {
+    const res = await suggestSemanticAnnotations(selectedId.value);
+    const anns = res?.annotations ?? {};
+    const saved = columnSemantics.value;
+    semanticRows.value = columns.value.map((c) => ({
+      name: c.name,
+      note: anns[c.name] ?? saved[c.name] ?? "",
+    }));
+    semanticVisible.value = true;
+    if (!Object.keys(anns).length) {
+      ElMessage.warning("AI 未返回标注建议（未配置 LLM 或生成失败），可手动填写后保存");
+    }
+  } finally {
+    semanticLoading.value = false;
+  }
+}
+
+async function handleSemanticSave() {
+  if (semanticSaving.value) return;
+  semanticSaving.value = true;
+  try {
+    const annotations = {};
+    for (const r of semanticRows.value) {
+      if (r.note.trim()) annotations[r.name] = r.note.trim();
+    }
+    await saveSemanticAnnotations(selectedId.value, annotations);
+    ElMessage.success("字段语义标注已保存");
+    semanticVisible.value = false;
+    await loadDetail(selectedId.value);
+  } finally {
+    semanticSaving.value = false;
+  }
 }
 
 const selection = ref([]);
@@ -462,7 +514,18 @@ onMounted(fetchData);
           </el-table>
 
           <!-- 字段预览 -->
-          <h5 class="ds__subhead">字段（{{ columns.length }}）与样例（{{ previewRows.length }} 行）</h5>
+          <h5 class="ds__subhead">
+            字段（{{ columns.length }}）与样例（{{ previewRows.length }} 行）
+            <el-button
+              size="small"
+              text
+              type="primary"
+              :disabled="!auth.isAdmin"
+              @click.stop="openSemantic"
+            >
+              AI 语义标注<TermTip term="semantic_annotation" />
+            </el-button>
+          </h5>
           <el-table :data="previewRows" size="small" style="width: 100%" max-height="320">
             <el-table-column
               v-for="col in columns"
@@ -472,12 +535,50 @@ onMounted(fetchData);
               min-width="120"
             />
           </el-table>
+
+          <!-- 字段语义备注（P2 #4，已落库才展示） -->
+          <template v-if="semanticSavedRows.length">
+            <h5 class="ds__subhead">字段语义备注（{{ semanticSavedRows.length }}）</h5>
+            <el-table :data="semanticSavedRows" size="small" style="width: 100%" max-height="220">
+              <el-table-column prop="name" label="列名" width="160" />
+              <el-table-column prop="note" label="业务含义" min-width="220" />
+            </el-table>
+          </template>
         </template>
         <el-empty v-else description="点击左侧数据集查看字段与覆盖区间" />
       </section>
     </div>
 
     <!-- 上传 -->
+    <!-- AI 字段语义标注（P2 #4） -->
+    <el-dialog v-model="semanticVisible" title="AI 字段语义标注" width="600px">
+      <el-table
+        :data="semanticRows"
+        size="small"
+        max-height="420"
+        v-loading="semanticLoading"
+        :element-loading-text="'AI 生成标注建议中…'"
+      >
+        <el-table-column prop="name" label="列名" width="150" />
+        <el-table-column label="语义备注（可编辑，留空=不标注）">
+          <template #default="{ row }">
+            <el-input v-model="row.note" placeholder="该列的业务含义，如：订单金额（元）" />
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="semanticVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="semanticSaving"
+          :disabled="!auth.isAdmin"
+          @click="handleSemanticSave"
+        >
+          保存（整组替换）
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog
       v-model="uploadVisible"
       title="上传接入"

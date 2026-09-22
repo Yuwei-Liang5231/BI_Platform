@@ -14,6 +14,7 @@ import uuid
 from datetime import date, timedelta
 
 from app.domain import ai_narrative as an_mod
+from app.domain.ai import attribute_interpretation as ati_mod
 from app.domain.ai import calc_notes as cn_mod
 from app.domain.ai import dashboard_summary as ds_mod
 
@@ -25,15 +26,19 @@ def _suffix() -> str:
 
 
 def _build_rows() -> list[str]:
-    """双渠道日数据：平时每日 online+offline≈1000，突刺日 3000+2000=5000。"""
-    lines = ["d,channel,amount"]
+    """三列日数据：channel×region 双维度；平时每日 online+offline≈1000，突刺日 5000。"""
+    lines = ["d,channel,region,amount"]
     d = date(2026, 1, 5)
     end = date(2026, 3, 15)
     while d <= end:
         noise = (d.toordinal() % 5) * 10
-        online, offline = (3000, 2000) if d == date(2026, 3, 15) else (600 + noise, 400 + noise)
-        lines.append(f"{d.isoformat()},online,{online}")
-        lines.append(f"{d.isoformat()},offline,{offline}")
+        region = "east" if d.toordinal() % 2 == 0 else "west"
+        if d == date(2026, 3, 15):
+            lines.append(f"{d.isoformat()},online,east,3000")
+            lines.append(f"{d.isoformat()},offline,west,2000")
+        else:
+            lines.append(f"{d.isoformat()},online,{region},{600 + noise}")
+            lines.append(f"{d.isoformat()},offline,{region},{400 + noise}")
         d += timedelta(days=1)
     return lines
 
@@ -59,6 +64,30 @@ def _make_env(client):
     assert resp.status_code == 200, resp.text
     metric = resp.json()["data"]
     return {"metric": metric, "ds_name": ds_name, "sfx": sfx}
+
+
+def _make_env_tree(client):
+    """带两层常用维度（channel→region）的指标：归因解读测试专用。"""
+    sfx = _suffix()
+    ds_name = f"ai_dst_{sfx}"
+    csv = "\n".join(_build_rows()) + "\n"
+    resp = client.post(
+        "/api/datasets/upload",
+        files={"file": (f"{ds_name}.csv", io.BytesIO(csv.encode("utf-8")), "text/csv")},
+        data={"name": ds_name},
+    )
+    assert resp.status_code == 200, resp.text
+    resp = client.post("/api/metrics", json={
+        "code": f"ai_tree_{sfx}",
+        "name": "AI树销",
+        "calc_rule": {
+            "base_aggregation": "sum",
+            "source": {"table": ds_name, "column": "amount"},
+        },
+        "dimensions": ["channel", "region"],
+    })
+    assert resp.status_code == 200, resp.text
+    return {"metric": resp.json()["data"], "ds_name": ds_name, "sfx": sfx}
 
 
 def _enable_anomaly(client, metric_id: int) -> None:
@@ -121,35 +150,60 @@ class TestEnginePrimitives:
 
 
 class TestAuditGaps:
-    """红线复核：审计正则对"裸数字"的覆盖边界（独立 QA 发现，待工程师修复）。
+    """红线收紧（P3）：中文数量词与畸形占位符缺口已封堵，原 xfail 转正。
 
-    设计红线：去掉占位符后残留任何数字（裸数字，含日期/数量）整句剔除。
-    当前 ``BARE_DIGIT_RE = re.compile(r"\\d")`` 仅匹配 Unicode 十进制数字字符，
-    **中文数字（一/三/成 等表意文字，非 Nd 类）不被覆盖**——LLM 可写"环比上升约三成"
-    这类含数量的中文表述，绕过审计被原样放行，构成"LLM 偷产数量"的红线下钻缺口。
-    （全角数字 ３、ASCII 日期 2024 均已被正确拦截，已用下方用例固化。）
+    设计红线：去掉占位符后残留任何数字（含中文数量表述）整句剔除；
+    畸形占位符（单花括号）不得以明文残留。同时固化防误杀边界：
+    「进一步/一致/三线城市」等不含数量后缀的正常文案必须放行。
     """
 
     def test_audit_rejects_fullwidth_digit(self):
-        # 固化：全角数字应被拦截（证明 \\d 覆盖 Unicode 十进制数字）
+        # 固化：全角数字应被拦截（证明 \d 覆盖 Unicode 十进制数字）
         assert an_mod.audit_sentence("前３名应被剔除", {"m1"}) is False
 
-    @pytest.mark.xfail(
-        reason="已知缺口：中文数字（如'三成'）绕过裸数字审计，待收紧正则/加中文数字黑名单",
-        strict=False,
-    )
     def test_audit_rejects_chinese_numeral(self):
-        # 期望（红线要求）：含中文数量词的句子应被剔除，当前实现放行 → xfail
+        # P3 收紧：中文数量词不再绕过审计
         assert an_mod.audit_sentence("环比上升约三成，需关注", {"m1_value"}) is False
 
-    @pytest.mark.xfail(
-        reason="已知缺口：畸形占位符（单花括号 {ref:x}）回填后作为明文残留在输出中",
-        strict=False,
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "占比接近一半，需要关注",
+            "销售额环比翻倍，主要由线上贡献",
+            "整体约为去年的三分之一",
+            "利润率相当于打了八折",
+        ],
     )
+    def test_audit_rejects_chinese_quantity_variants(self, sentence):
+        assert an_mod.audit_sentence(sentence, set()) is False
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "整体持续向好，需保持关注",  # 「持续」无数量后缀
+            "改善仍在进一步深化",        # 「进一步」不放数量
+            "三线城市贡献最大，{{ref:m1_name}}整体上升",  # 「三线」非数量
+            "各区域表现较为一致",        # 「一致」
+        ],
+    )
+    def test_audit_keeps_normal_chinese_text(self, sentence):
+        assert an_mod.audit_sentence(sentence, {"m1_name"}) is True
+
+    def test_audit_rejects_malformed_placeholder(self):
+        # 畸形占位符（单花括号/缺右括号）会明文残留 → 审计剔除
+        assert an_mod.audit_sentence("值 {ref:m1_value} 结束", {"m1_value"}) is False
+        assert an_mod.audit_sentence("值 {{ref:m1_value 结束", {"m1_value"}) is False
+
     def test_backfill_does_not_leak_malformed_placeholder(self):
         table = {"m1_value": ("x", "9.0")}
         out = an_mod.backfill("值 {ref:m1_value} 结束", table)
         assert "{" not in out and "}" not in out
+        assert "9.0" in out  # key 在表内 → 正常回填
+
+    def test_backfill_strips_unknown_malformed_placeholder(self):
+        out = an_mod.backfill("值 {ref:ghost_key} 结束", {})
+        assert "{" not in out and "}" not in out
+        assert "ghost_key" not in out
 
 
 class TestEngineNarrative:
@@ -417,5 +471,238 @@ class TestAiPermission:
             )
             assert r.status_code == 200, r.text
             assert r.json()["data"]["has_anomaly"] is True
+        finally:
+            _cleanup(client, env)
+
+
+# ---------------------------------------------------------------- P2 #4 字段语义标注
+
+
+class TestSemanticAnnotations:
+    from app.domain.ai import semantic_annotations as sa_mod
+
+    def test_no_llm_returns_empty(self, client):
+        env = _make_env(client)
+        try:
+            ds_id = _dataset_id(client, env["ds_name"])
+            r = client.post("/api/ai/dataset-semantic-annotations",
+                            json={"dataset_id": ds_id})
+            assert r.status_code == 200, r.text
+            d = r.json()["data"]
+            assert d["llm_configured"] is False
+            assert d["annotations"] == {}
+        finally:
+            _cleanup(client, env)
+
+    def test_llm_filters_invalid_keys(self, client, monkeypatch):
+        from app.domain.ai import semantic_annotations as sa
+
+        env = _make_env(client)
+        try:
+            monkeypatch.setattr(sa, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
+
+            def fake_chat(config, system, user, timeout=60.0, retries=0):
+                return {"annotations": {
+                    "channel": "销售渠道",
+                    "ghost_col": "不应出现的列",
+                }}
+
+            monkeypatch.setattr(sa, "chat_json", fake_chat)
+            ds_id = _dataset_id(client, env["ds_name"])
+            r = client.post("/api/ai/dataset-semantic-annotations",
+                            json={"dataset_id": ds_id})
+            assert r.status_code == 200, r.text
+            d = r.json()["data"]
+            assert d["annotations"] == {"channel": "销售渠道"}  # 非法键被丢弃
+        finally:
+            _cleanup(client, env)
+
+    def test_save_roundtrip(self, client):
+        env = _make_env(client)
+        try:
+            ds_id = _dataset_id(client, env["ds_name"])
+            r = client.put(f"/api/datasets/{ds_id}/semantic-annotations",
+                           json={"annotations": {"channel": "销售渠道", "amount": "订单金额（元）"}})
+            assert r.status_code == 200, r.text
+            detail = client.get(f"/api/datasets/{ds_id}").json()["data"]
+            assert detail["column_semantics"] == {
+                "channel": "销售渠道", "amount": "订单金额（元）",
+            }
+            # 整组替换语义：空 map 清空
+            r = client.put(f"/api/datasets/{ds_id}/semantic-annotations",
+                           json={"annotations": {}})
+            assert r.status_code == 200, r.text
+            detail = client.get(f"/api/datasets/{ds_id}").json()["data"]
+            assert detail["column_semantics"] == {}
+        finally:
+            _cleanup(client, env)
+
+    def test_save_invalid_column_400(self, client):
+        env = _make_env(client)
+        try:
+            ds_id = _dataset_id(client, env["ds_name"])
+            r = client.put(f"/api/datasets/{ds_id}/semantic-annotations",
+                           json={"annotations": {"ghost": "x"}})
+            assert r.status_code == 400
+            assert r.json()["code"] == 40000
+        finally:
+            _cleanup(client, env)
+
+    def test_save_requires_admin(self, client):
+        from tests.conftest import create_test_user
+
+        env = _make_env(client)
+        try:
+            ds_id = _dataset_id(client, env["ds_name"])
+            viewer = create_test_user(client, f"vw_sem_{env['sfx']}", role="viewer")
+            r = client.put(f"/api/datasets/{ds_id}/semantic-annotations",
+                           json={"annotations": {"channel": "x"}}, headers=viewer)
+            assert r.status_code == 403, r.text
+        finally:
+            _cleanup(client, env)
+
+
+# ---------------------------------------------------------------- P2 #6 归因解读
+
+
+class TestAttributeInterpretation:
+    def test_no_llm_returns_null(self, client):
+        env = _make_env_tree(client)
+        try:
+            r = client.post("/api/ai/attribute-interpretation", json={
+                "metric_id": env["metric"]["id"],
+                "start": "2026-03-09", "end": "2026-03-15",
+                "dimensions": ["channel", "region"], "compare": "mom",
+            })
+            assert r.status_code == 200, r.text
+            d = r.json()["data"]
+            assert d["llm_configured"] is False
+            assert d["interpretation"] is None
+            assert d["reason"] == "llm_not_configured"  # 前端据此显降级提示
+        finally:
+            _cleanup(client, env)
+
+    def test_llm_backfills_single_sentence(self, client, monkeypatch):
+        env = _make_env_tree(client)
+        try:
+            # 归因解读模块从 app.infra.llm 直接导入 resolve_llm_config，
+            # 须 patch 其自身命名空间（patch an_mod 不影响它）
+            monkeypatch.setattr(ati_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
+            monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
+
+            def fake_chat(config, system, user, timeout=60.0, retries=0):
+                return {"sections": [{
+                    "section": "interpretation",
+                    "sentences": [
+                        "{{ref:metric_name}}整体{{ref:direction}}，"
+                        "主要由{{ref:g1_name}}贡献（{{ref:g1_pct}}）。",
+                        "裸数字 42 应被剔除。",
+                    ],
+                }]}
+
+            monkeypatch.setattr(an_mod, "chat_json", fake_chat)
+            r = client.post("/api/ai/attribute-interpretation", json={
+                "metric_id": env["metric"]["id"],
+                "start": "2026-03-09", "end": "2026-03-15",
+                "dimensions": ["channel", "region"], "compare": "mom",
+            })
+            assert r.status_code == 200, r.text
+            d = r.json()["data"]
+            assert d["source"] == "llm"
+            interp = d["interpretation"]
+            assert interp and "{{ref:" not in interp and "42" not in interp
+            assert "AI树销" in interp
+        finally:
+            _cleanup(client, env)
+
+    def test_single_dimension_rejected(self, client):
+        env = _make_env_tree(client)
+        try:
+            r = client.post("/api/ai/attribute-interpretation", json={
+                "metric_id": env["metric"]["id"],
+                "start": "2026-03-09", "end": "2026-03-15",
+                "dimensions": ["channel"], "compare": "mom",
+            })
+            assert r.status_code == 400  # 归因树契约：至少 2 层
+        finally:
+            _cleanup(client, env)
+
+    def test_section_name_mismatch_tolerated(self, client, monkeypatch):
+        """LLM 章节名不符（如返回中文 section 名）时取唯一章节，不整段降级。"""
+        env = _make_env_tree(client)
+        try:
+            monkeypatch.setattr(ati_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
+            monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
+
+            def fake_chat(config, system, user, timeout=60.0, retries=0):
+                return {"sections": [{
+                    "section": "解读",  # 非 interpretation
+                    "sentences": ["{{ref:metric_name}}整体{{ref:direction}}。"],
+                }]}
+
+            monkeypatch.setattr(an_mod, "chat_json", fake_chat)
+            r = client.post("/api/ai/attribute-interpretation", json={
+                "metric_id": env["metric"]["id"],
+                "start": "2026-03-09", "end": "2026-03-15",
+                "dimensions": ["channel", "region"], "compare": "mom",
+            })
+            assert r.status_code == 200, r.text
+            d = r.json()["data"]
+            assert d["source"] == "llm"
+            assert d["interpretation"] and "AI树销" in d["interpretation"]
+        finally:
+            _cleanup(client, env)
+
+    def test_candidate_sentences_first_valid_wins(self, client, monkeypatch):
+        """多候选句子：首个含裸数字被剔除，取第一个合格候选（单句场景健壮性）。"""
+        env = _make_env_tree(client)
+        try:
+            monkeypatch.setattr(ati_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
+            monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
+
+            def fake_chat(config, system, user, timeout=60.0, retries=0):
+                return {"sections": [{
+                    "section": "interpretation",
+                    "sentences": [
+                        "主要由前3大分组贡献。",  # 裸数字 → 剔除
+                        "{{ref:g1_name}}贡献最高，占{{ref:g1_pct}}。{{ref:g9_x}}",  # 未知 ref → 剔除
+                        "{{ref:metric_name}}整体{{ref:direction}}，主要由{{ref:g1_name}}贡献（{{ref:g1_pct}}）。",
+                    ],
+                }]}
+
+            monkeypatch.setattr(an_mod, "chat_json", fake_chat)
+            r = client.post("/api/ai/attribute-interpretation", json={
+                "metric_id": env["metric"]["id"],
+                "start": "2026-03-09", "end": "2026-03-15",
+                "dimensions": ["channel", "region"], "compare": "mom",
+            })
+            assert r.status_code == 200, r.text
+            d = r.json()["data"]
+            assert d["source"] == "llm"
+            interp = d["interpretation"]
+            assert interp.startswith("AI树销") and "3" not in interp and "{{ref:" not in interp
+        finally:
+            _cleanup(client, env)
+
+
+# ---------------------------------------------------------------- P2 #5 问数动态推荐
+
+
+class TestAskDynamicSuggestions:
+    def test_dynamic_anomaly_suggestion_first(self, client):
+        """有异动通知时推荐首位为动态异动问句（服务端预格式化，无裸数字审计问题）。"""
+        env = _make_env(client)
+        try:
+            _enable_anomaly(client, env["metric"]["id"])
+            # 项目级扫描 → 异常且要紧 → 通知落库（admin 为收件人）
+            r = client.get("/api/query/anomalies")
+            assert r.status_code == 200, r.text
+            scan = r.json()["data"]
+            assert scan["counts"].get("abnormal", 0) >= 1
+            # 建议：首位应为动态推荐（含指标名与方向词），长度契约 ≤60
+            sug = client.get("/api/query/ask/suggestions").json()["data"]
+            assert isinstance(sug, list) and sug
+            assert any("AI日销" in s and ("突增" in s or "骤降" in s) for s in sug)
+            assert all(len(s) <= 60 for s in sug)
         finally:
             _cleanup(client, env)

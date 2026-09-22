@@ -40,3 +40,29 @@ export const suggestCalcNotes = (data) =>
     alias: data.alias ?? null,
     sample_values: data.sampleValues ?? null,
   });
+
+/** 字段语义标注建议：按列名+类型+样本值生成每列业务含义备注（P2）。
+ *  body: { datasetId } → { annotations: {列名: 备注}, llm_configured } */
+export const suggestSemanticAnnotations = (datasetId) =>
+  request.post("/ai/dataset-semantic-annotations", { dataset_id: datasetId });
+
+/** 字段语义标注落库：整组替换（空对象清空；管理员）。
+ *  body: { annotations: {列名: 备注} } */
+export const saveSemanticAnnotations = (datasetId, annotations) =>
+  request.put(`/datasets/${datasetId}/semantic-annotations`, { annotations });
+
+/** 归因下钻 AI 解读：根节点第一层 TopN 贡献的一句话解读（P2）。
+ *  body: { metricId, start, end, dimensions, compare? } → { interpretation, source, llm_configured, reason }
+ *  timeout 70s：后端 LLM 调用上限 60s，不能小于它（否则前端先掐断、永久静默失败） */
+export const attributeInterpretation = (data) =>
+  request.post(
+    "/ai/attribute-interpretation",
+    {
+      metric_id: data.metricId,
+      start: data.start,
+      end: data.end,
+      dimensions: data.dimensions,
+      compare: data.compare ?? "mom",
+    },
+    { timeout: 70000 }
+  );

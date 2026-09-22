@@ -6,7 +6,7 @@
  * 空态明确「本期无异动」；点击卡片进指标详情；
  * 卡片展开调归因接口显示主要来源（Top3 + 其他）。
  */
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
@@ -38,6 +38,15 @@ async function fetchScan() {
     loading.value = false;
   }
 }
+
+// 切换项目重新扫描（含清空已加载的归因状态，避免跨项目残留）
+watch(
+  () => projectStore.lockedId,
+  () => {
+    Object.keys(attribution).forEach((k) => delete attribution[k]);
+    fetchScan();
+  },
+);
 
 async function loadAttribution(item) {
   const state = attribution[item.metric_id];

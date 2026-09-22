@@ -517,6 +517,15 @@ def ingest_file(
 # ---------------------------------------------------------------- 查询辅助
 
 
+def _load_semantics(dataset: Dataset) -> dict[str, str]:
+    """已落库字段语义标注（P2 #4；空/损坏 → 空对象，零影响）。"""
+    try:
+        raw = json.loads(getattr(dataset, "column_semantics_json", None) or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
 def dataset_to_dict(dataset: Dataset, coverages: list[DatasetCoverage] | None = None) -> dict:
     detail = {
         "id": dataset.id,
@@ -527,6 +536,7 @@ def dataset_to_dict(dataset: Dataset, coverages: list[DatasetCoverage] | None = 
         "column_count": dataset.column_count,
         "project_id": dataset.project_id,
         "columns": json.loads(dataset.schema_json),
+        "column_semantics": _load_semantics(dataset),
         "dataset_ver": dataset.dataset_ver,
         "created_at": dataset.created_at.isoformat() if dataset.created_at else None,
     }

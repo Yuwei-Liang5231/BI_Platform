@@ -599,6 +599,18 @@ async function fetchTemplates() {
   );
 }
 
+// 切换项目：模板列表按新项目重取，选中模板/正文/历史随之前清空
+watch(
+  () => projectStore.lockedId,
+  async () => {
+    selectedTemplateId.value = null;
+    report.value = null;
+    viewingInstanceId.value = null;
+    instances.value = [];
+    await fetchTemplates();
+  },
+);
+
 function selectTemplate(t) {
   selectedTemplateId.value = t.id;
 }

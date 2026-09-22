@@ -39,6 +39,12 @@ MAX_UPLOAD_MB = 500
 VALID_RELATION_TYPES = {"many_to_one", "one_to_one", "one_to_many", "many_to_many"}
 
 
+class SemanticAnnotationsIn(BaseModel):
+    """字段语义标注落库请求（列名 → 备注，整组替换）。"""
+
+    annotations: dict[str, str] = {}
+
+
 def _unlink_quiet(path: Path) -> None:
     """尽力删除临时文件；Windows 下句柄未释放等场景不能掩盖原始业务异常
     （回归：unlink 抛 PermissionError 把「超限」提示顶成 500）。"""
@@ -195,6 +201,17 @@ def rename_dataset(dataset_id: int, body: RenameIn, db: DbDep, _: AdminUser):
         {"id": dataset_id, "old_name": old_name, "name": new_name},
         message="数据集已重命名",
     )
+
+
+@router.put("/{dataset_id}/semantic-annotations")
+def save_semantic_annotations(
+    dataset_id: int, body: SemanticAnnotationsIn, db: DbDep, _: AdminUser
+):
+    """落库字段语义标注（整组替换，空 map 清空；管理员专用，与改名同级权限）。"""
+    from app.domain.ai import semantic_annotations as svc
+
+    data = svc.save_annotations(db, dataset_id, body.annotations)
+    return ok_response(data, message="字段语义标注已保存")
 
 
 @router.get("/{dataset_id}/preview")

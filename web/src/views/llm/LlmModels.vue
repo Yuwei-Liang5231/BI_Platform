@@ -204,6 +204,38 @@ onMounted(load);
       class="llm-effective"
     />
 
+    <!-- P3：LLM 配置引导（内网 Ollama 等 OpenAI 兼容端点） -->
+    <el-collapse class="llm-guide pwc-card">
+      <el-collapse-item name="guide">
+        <template #title>
+          <span class="llm-guide__title">如何配置模型？（OpenAI 兼容端点，含内网 Ollama 示例）</span>
+        </template>
+        <ul class="llm-guide__list">
+          <li>
+            平台所有 AI 能力（问数理解、看板速览、异动假设、口径助手、语义标注、
+            归因解读、报告叙述）共用这一处配置，走 <b>OpenAI 兼容</b>接口——
+            接口地址需以 <code>/v1</code> 结尾。
+          </li>
+          <li>
+            <b>内网 Ollama 示例</b>：接口地址 <code>http://&lt;内网主机&gt;:11434/v1</code>，
+            模型标识如 <code>qwen2.5:14b</code>，API Key 填任意占位值（如 <code>ollama</code>）。
+          </li>
+          <li>
+            vLLM、one-api、公司自建网关等 OpenAI 兼容服务同理：
+            地址 + 模型标识 + Key 三项即可。
+          </li>
+          <li>
+            保存后点该行「<b>测试</b>」验证连通，再点「启用」切换生效；
+            公司网络可能屏蔽公网大模型，测试失败时优先确认网络可达性（推荐内网部署）。
+          </li>
+          <li>
+            未配置或调用失败时，各 AI 功能都会<b>静默降级</b>（关键词解析/规则句/隐藏入口），
+            不影响平台其余功能使用。
+          </li>
+        </ul>
+      </el-collapse-item>
+    </el-collapse>
+
     <el-table :data="models" v-loading="loading" class="pwc-card">
       <el-table-column label="名称" min-width="140">
         <template #default="{ row }">
@@ -277,6 +309,31 @@ onMounted(load);
 <style scoped>
 .llm-effective {
   margin-bottom: var(--pwc-space-5, 16px);
+}
+
+/* P3：配置指引卡 */
+.llm-guide {
+  margin-bottom: var(--pwc-space-5, 16px);
+  padding: 0 var(--pwc-space-4, 16px);
+}
+.llm-guide__title {
+  font-size: var(--pwc-font-body-s, 13px);
+  color: var(--pwc-text-secondary, #535353);
+}
+.llm-guide__list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: var(--pwc-font-body-s, 13px);
+  color: var(--pwc-text-primary);
+  line-height: 1.7;
+}
+.llm-guide__list code {
+  background: var(--pwc-bg-muted, #f5f5f5);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
 }
 
 .llm-name {

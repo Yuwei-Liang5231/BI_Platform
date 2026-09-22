@@ -936,6 +936,10 @@ def build_suggestions(db: Session, user, limit: int = 5, project_id: int | None 
     if not visible:
         return []
 
+    # P2 #5 主动推荐升级：注入最近的异动动态推荐（通知表为源——收件人=user
+    # 天然权限同源；变化率由服务端 fmt_pct 预格式化，纯规则拼装无 LLM）。
+    dynamic = _recent_anomaly_suggestions(db, user, visible, project_id, limit=2)
+
     def _readable(s: str) -> bool:
         return any("\u4e00" <= ch <= "\u9fff" for ch in (s or ""))
 
@@ -968,4 +972,70 @@ def build_suggestions(db: Session, user, limit: int = 5, project_id: int | None 
                 if len(out) >= limit:
                     break
         idx += 1
-    return out[:limit]
+    # 动态异动推荐排最前（「主动洞察」优先于静态示例），静态截断补位
+    merged = dynamic + [q for q in out if q not in dynamic]
+    return merged[:limit]
+
+
+def _recent_anomaly_suggestions(
+    db: Session, user, visible_metrics: list[Metric], project_id: int | None, *, limit: int = 2
+) -> list[str]:
+    """最近异动 → 动态推荐问题（轻量：读已落库通知，不触发检测/不落新通知）。
+
+    窗口 = 最近 14 天内落库（created_at）的通知；每指标取最新一条；变化率服务端预格式化（fmt_pct），
+    纯规则拼装、零 LLM；无通知/解析失败 → 空列表（回退静态推荐）。
+    """
+    from datetime import datetime, timedelta
+
+    from app.domain.ai_narrative import fmt_pct
+    from app.infra.models import Notification
+
+    try:
+        # 「最近」= 最近落库的（created_at），而非异动发生日——历史数据回扫
+        # 时 anomaly_date 是旧日期，按它过滤会把刚发现的通知整窗误杀。
+        since = datetime.now() - timedelta(days=14)
+        q = (
+            db.query(Notification)
+            .filter(
+                Notification.user_id == user.id,
+                Notification.direction.in_(("up", "down")),
+                Notification.created_at >= since,
+            )
+            .order_by(Notification.created_at.desc(), Notification.id.desc())
+        )
+        if project_id is not None:
+            q = q.filter(Notification.project_id == project_id)
+        notes = q.limit(limit * 3).all()
+    except Exception:
+        return []
+
+    visible_ids = {m.id for m in visible_metrics}
+    metric_by_id = {m.id: m for m in visible_metrics}
+    out: list[str] = []
+    seen: set[int] = set()
+    for n in notes:
+        if n.metric_id in seen or n.metric_id not in visible_ids:
+            continue
+        m = metric_by_id.get(n.metric_id)
+        if m is None or n.current is None or not n.baseline_mean:
+            continue
+        seen.add(n.metric_id)
+        pct = (n.current - n.baseline_mean) / abs(n.baseline_mean) * 100
+        word = "突增" if n.direction == "up" else "骤降"
+        head = f"最近{m.name}{word}了 {fmt_pct(pct)}，是什么原因"
+        try:
+            dims = json.loads(m.dimensions_json or "[]")
+            if dims and isinstance(dims[0], str):
+                tail = f"，并按「{dims[0]}」拆解原因"
+            else:
+                tail = ""
+        except (ValueError, TypeError):
+            tail = ""
+        # 模板句保持短句（既有契约 ≤60）：超长先去维度段，再超长硬截断
+        s = head + tail
+        if len(s) > 60:
+            s = head
+        out.append(s[:60])
+        if len(out) >= limit:
+            break
+    return out

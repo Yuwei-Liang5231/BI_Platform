@@ -461,6 +461,45 @@ class TestNotifications:
         assert listing == []
         client.delete(f"/api/projects/{p['id']}")
 
+    def test_viewer_receives_notification_and_dynamic_suggestion(self, client, anomaly_env):
+        """viewer 也是收件人（可见指标权限同源）：通知落库 + 问数动态推荐出现。"""
+        from tests.conftest import create_test_user
+
+        client.put(f"/api/metrics/{anomaly_env['metric']['id']}/anomaly-config", json={"enabled": True})
+        vw = create_test_user(client, f"notif_vw_{anomaly_env['sfx']}", role="viewer")
+        scan = client.get("/api/query/anomalies")
+        assert scan.status_code == 200, scan.text
+        notes = client.get("/api/notifications", headers=vw).json()["data"]
+        assert any(n["metric_id"] == anomaly_env["metric"]["id"] for n in notes)
+        sug = client.get("/api/query/ask/suggestions", headers=vw).json()["data"]
+        assert any(("突增" in s or "骤降" in s) for s in sug)
+
+    def test_restricted_viewer_excluded_from_fanout(self, client, anomaly_env):
+        """受限用户不收受限指标的异动通知（不泄露名称），解除后恢复。"""
+        from tests.conftest import create_test_user
+
+        client.put(f"/api/metrics/{anomaly_env['metric']['id']}/anomaly-config", json={"enabled": True})
+        vw = create_test_user(client, f"notif_res_{anomaly_env['sfx']}", role="viewer")
+        # 临时把 viewer 角色对该指标设为受限（整组替换，finally 清理）
+        client.put(
+            f"/api/auth/metrics/{anomaly_env['metric']['id']}/restrictions",
+            json={"items": [{"subject_type": "role", "subject_value": "viewer"}]},
+        )
+        try:
+            scan = client.get("/api/query/anomalies")
+            assert scan.status_code == 200, scan.text
+            notes = client.get("/api/notifications", headers=vw).json()["data"]
+            assert not any(n["metric_id"] == anomaly_env["metric"]["id"] for n in notes)
+        finally:
+            client.put(
+                f"/api/auth/metrics/{anomaly_env['metric']['id']}/restrictions",
+                json={"items": []},
+            )
+        # 解除受限后再次扫描：viewer 收到（同 metric+日+方向去重，解除前没发过）
+        client.get("/api/query/anomalies")
+        notes = client.get("/api/notifications", headers=vw).json()["data"]
+        assert any(n["metric_id"] == anomaly_env["metric"]["id"] for n in notes)
+
 
 # ---------------------------------------------------------------- B14 多层归因
 

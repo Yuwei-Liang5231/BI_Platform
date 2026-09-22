@@ -11,9 +11,15 @@ from typing import Any
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
 
-from app.api.deps import CurrentUser, DbDep
+from app.api.deps import AdminUser, CurrentUser, DbDep
 from app.core.response import ok_response
-from app.domain.ai import anomaly_hypothesis, calc_notes, dashboard_summary
+from app.domain.ai import (
+    anomaly_hypothesis,
+    attribute_interpretation,
+    calc_notes,
+    dashboard_summary,
+    semantic_annotations,
+)
 from app.domain.project.service import resolve_project_id
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -83,5 +89,59 @@ def post_metric_calc_notes(
         aggregation=payload.aggregation,
         alias=payload.alias,
         sample_values=payload.sample_values,
+    )
+    return ok_response(data)
+
+
+# ---------------------------------------------------------------- 字段语义标注（P2 #4）
+
+
+@router.post("/dataset-semantic-annotations")
+def post_semantic_annotations(
+    db: DbDep,
+    user: CurrentUser,
+    payload: SemanticAnnotationsRequest,
+):
+    """生成字段语义标注建议（键白名单防幻觉；无 LLM → 空标注）。"""
+    data = semantic_annotations.suggest_annotations(db, payload.dataset_id)
+    return ok_response(data)
+
+
+class SemanticAnnotationsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_id: int
+
+
+class SemanticSaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    annotations: dict[str, str]
+
+
+# ---------------------------------------------------------------- 归因下钻 AI 解读（P2 #6）
+
+
+class AttributeInterpretationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metric_id: int | str
+    start: str
+    end: str
+    dimensions: list[str]
+    compare: str = "mom"
+
+
+@router.post("/attribute-interpretation")
+def post_attribute_interpretation(
+    db: DbDep,
+    user: CurrentUser,
+    payload: AttributeInterpretationRequest,
+):
+    """归因根节点一句话 AI 解读（权限/口径同源 attribute-tree；降级 → null）。"""
+    data = attribute_interpretation.build_interpretation(
+        db, user,
+        metric_id=payload.metric_id, start=payload.start, end=payload.end,
+        dimensions=payload.dimensions, compare=payload.compare,
     )
     return ok_response(data)

@@ -9,6 +9,7 @@ import { useRoute, useRouter } from "vue-router";
 import * as echarts from "echarts";
 
 import { exportCsvBlob, attributeTreeNode } from "@/api/query";
+import { attributeInterpretation } from "@/api/ai";
 import { anomalyHypothesis } from "@/api/ai";
 import TrendBadge from "@/components/business/TrendBadge.vue";
 import TermTip from "@/components/glossary/TermTip.vue";
@@ -127,8 +128,46 @@ async function loadTreeNode(path = treePath.value) {
       top_n: 50,
     });
     treePath.value = path;
+    // P2 #6：根节点生成一句 AI 解读（下钻子层不展示；失败静默——下钻结果照常）
+    if (!path.length) {
+      loadAttrInterpretation();
+    } else {
+      attrInterp.value = null;
+      attrInterpHint.value = "";
+    }
   } finally {
     treeLoading.value = false;
+  }
+}
+
+const attrInterp = ref(null);
+const attrInterpLoading = ref(false);
+const attrInterpHint = ref(""); // 降级提示（成功时清空；no_groups 时保持空 → 整块隐藏）
+
+async function loadAttrInterpretation() {
+  attrInterpLoading.value = true;
+  attrInterpHint.value = "";
+  try {
+    const res = await attributeInterpretation({
+      metricId: metricId.value,
+      start: range.value.start,
+      end: range.value.end,
+      dimensions: treeDims.value,
+      compare: "mom",
+    });
+    attrInterp.value = res?.interpretation ?? null;
+    if (!attrInterp.value && res?.reason !== "no_groups") {
+      // 明确告知降级原因，不再无声消失
+      attrInterpHint.value =
+        res?.reason === "llm_not_configured"
+          ? "未配置 AI 模型，暂无法生成解读（管理员可在「模型管理」页配置）"
+          : "解读生成失败：模型暂不可达或输出未通过安全审计";
+    }
+  } catch {
+    attrInterp.value = null; // 零阻塞：解读失败不影响归因树展示
+    attrInterpHint.value = "解读生成失败：请求超时或服务异常";
+  } finally {
+    attrInterpLoading.value = false;
   }
 }
 
@@ -556,6 +595,25 @@ onMounted(async () => {
           </div>
 
           <template v-if="treeNode">
+            <!-- AI 解读（P2 #6：仅根节点生成一句；降级给原因提示+重试，不再无声消失） -->
+            <div
+              v-if="treePath.length === 0 && (attrInterpLoading || attrInterp || attrInterpHint)"
+              class="attr__interp"
+            >
+              <span class="attr__interp-badge">AI 解读</span>
+              <span v-if="attrInterpLoading" class="attr__interp-text">生成中…</span>
+              <span v-else-if="attrInterp" class="attr__interp-text">{{ attrInterp }}</span>
+              <span v-else class="attr__interp-text attr__interp-hint">
+                {{ attrInterpHint }}
+                <el-link
+                  type="primary"
+                  :underline="false"
+                  class="attr__interp-retry"
+                  @click="loadAttrInterpretation"
+                  >重试</el-link
+                >
+              </span>
+            </div>
             <!-- 节点概要 + 面包屑（父级可点击回退到对应层级） -->
             <div class="attr__node">
               <el-breadcrumb separator="›">
@@ -743,6 +801,40 @@ onMounted(async () => {
 }
 
 /* ── 归因下钻（B14） ── */
+/* AI 解读句（P2 #6）：浅底虚线框，弱化装饰、强调文字 */
+.attr__interp {
+  display: flex;
+  align-items: baseline;
+  gap: var(--pwc-space-2);
+  margin-bottom: var(--pwc-space-3);
+  padding: var(--pwc-space-2) var(--pwc-space-3);
+  background: var(--pwc-surface-subtle, #f7f7f8);
+  border-left: 3px solid var(--pwc-primary, #0058a0);
+  border-radius: 4px;
+}
+
+.attr__interp-badge {
+  flex: none;
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-primary, #0058a0);
+  font-weight: 600;
+}
+
+.attr__interp-text {
+  font-size: var(--pwc-font-body-s);
+  color: var(--pwc-text-primary);
+}
+
+/* 降级提示（未配置模型/生成失败）：弱化但可见，附重试入口 */
+.attr__interp-hint {
+  color: var(--pwc-text-secondary);
+}
+.attr__interp-retry {
+  margin-left: var(--pwc-space-2);
+  font-size: var(--pwc-font-body-s);
+  vertical-align: baseline;
+}
+
 .attr__builder {
   display: flex;
   align-items: center;
