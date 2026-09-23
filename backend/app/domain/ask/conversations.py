@@ -48,11 +48,18 @@ def list_conversations(db: Session, user, project_id: int | None = None) -> list
 def get_or_create_conversation(
     db: Session, user, conversation_id: int | None, project_id: int | None = None
 ) -> AskConversation:
-    """首问无会话则新建（B9.3：挂当前项目）；带会话 id 则校验归属。"""
+    """首问无会话则新建（B9.3：挂当前项目）；带会话 id 则校验归属。
+
+    2026-09-23 修订：新建会话必须**立即 commit**（此前 flush 挂起写事务直到
+    请求结束）——build_card 随后要调 LLM（30~60s）并在中途走 record_llm_call
+    旁路落库，SQLite 单写者：主连接的未提交写事务会让观测旁路 INSERT
+    「database is locked」被静默吞掉（问数调用记录全部丢失的根因，实测复现）。
+    """
     if conversation_id is None:
         conv = AskConversation(user_id=user.id, project_id=project_id)
         db.add(conv)
-        db.flush()  # 取 id
+        db.commit()  # 取 id + 结束写事务（LLM 调用期间不得持有写锁）
+        db.refresh(conv)
         return conv
     return _owned_conversation(db, user, conversation_id)
 

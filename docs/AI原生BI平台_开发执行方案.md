@@ -653,3 +653,57 @@ P5 验收后按演进规划继续，用户明确「邮件/企微推送先不用�
   向前扩到 7 天、>31 天截最近 31 天（响应带 window.expanded，前端显示
   「已按 XX ~ XX 分析」提示）；详情页组件传 show-empty，空态/失败给明确
   说明不再静默。新增 1 用例；全量 **461 passed**；build:dev 11.6s。
+
+## 11.14 AI-P8：AI 调用观测面板（2026-09-23，B2 落地，第二梯队）
+
+第一梯队清零后按规划进入第二梯队，补齐 B2 观测面板（反馈概览之外的另一半）。
+详见评估文档「P8 交付记录」：
+
+- **观测表** `ai_call_logs`：kind / outcome（ok · llm_failed · audit_filtered）/
+  duration_ms / model / prompt_tokens / completion_tokens；create_all 自动建表。
+- **基建**：`chat_json` 加非破坏性 `meta` 参数（attempted/ok/duration_ms/token
+  用量就地回填）；未真正发起请求（LLM 未配置）不产生记录。
+- **记录器** `domain/ai/observability.py`：独立会话落库（fresh_session），
+  与调用方事务隔离，失败只记日志零阻塞。
+- **全功能点接线**：引擎侧 llm_narrative 加 kind 参数（4 个调用方）+
+  7 个 chat_json 直调点（口径助手/语义标注/问数意图/问数引导/报告叙述/
+  关系复审/建模建议）。
+- **接口与前端**：`GET /ai/observability`（admin，近 N 天聚合 + 异常明细）；
+  模型管理页「AI 调用观测」卡（反馈概览上方）。
+- **验证**：+4 用例（ok/failed/audit 落库、未配置不记、聚合端点+403）；
+  存量 9 个 chat_json 测试桩补 meta 形参；全量 **465 passed**；build:dev 13.2s。
+- 至此第二梯队过半（B1 ✅ + B2 ✅）；剩余第三梯队：C2 审计日志、C3 项目级
+  权限、C4 血缘与质量常态化（C1 邮件/企微按用户要求暂缓）。
+- **验收修订（用户反馈：统计近 30 天 + 区分项目）**：`ai_call_logs` 补
+  project_id 列（存量表幂等加列）并全功能点接线项目归属（指标/数据集/模板
+  上下文）；接口默认 days=30 且按项目过滤（NULL=默认项目约定）；前端跟随
+  项目切换器刷新并显示当前项目名。全量 **466 passed**；build:dev 12.9s。
+
+## 11.15 C2：操作审计日志（2026-09-23，第三梯队）
+
+第二梯队（B1 反馈闭环 + B2 观测面板）全部落地后进入第三梯队，先做 C2 合规审计。
+
+- **表** `audit_logs`：user_id / username（冗余存，用户删除后可读）/ action
+  （如 dataset.upload / metric.delete）/ resource_type / resource_id / method /
+  path / status_code / detail_json / created_at；create_all 自动建表。
+- **零埋点中间件**：`domain/audit/service.py` 按「方法 + 路径白名单」自动记录
+  （33 条规则，覆盖认证/用户/数据集/表关系/指标/项目/模板导入/报告/LLM 模型/
+  洞察触发全部写接口），新写接口在 `_AUDIT_RULES` 加一行即可。只记 2xx 成功
+  操作 + 登录成败（4xx 参数错误噪音大不记；登录失败是安全审计信号）。
+- **响应后台任务落库**：审计 INSERT 挂 `response.background`（响应发送完成、
+  依赖 teardown 之后执行）——规避 SQLite 主会话写锁（同 2026-09-23 B2 观测
+  「database is locked」静默丢记录教训）；create 类动作路径无 id，从响应体
+  `data.id` 捕获 resource_id（读完 body_iterator 后重建响应）。
+- **中间件工程坑**：①JSON body 必须在 call_next **之前**读（之后 receive 流
+  已结束读到空；Starlette _CachedRequest 会缓存并重放给下游）；②call_next
+  绝不能调用两次（第二次破坏 ASGI 消息流，报 assert http.response.start）。
+- **detail 轻量摘要**：仅 JSON body 标量字段（截断 200），敏感键（password/
+  api_key/token 等）脱敏为 \*\*\*，multipart（文件上传）不解析 body。
+- **查询接口**：`GET /api/audit-logs`（admin，分页 + user_id/action 前缀/
+  resource_type/日期过滤）+ `GET /api/audit-logs/meta`（distinct 用户与动作）。
+- **前端**：admin 新页面「审计日志」（/audit-logs，导航栏 adminOnly）——
+  用户/动作/日期过滤 + 表格（动作中文化映射）+ 分页。
+- **验证**：+7 用例（写操作落库、resource_id 捕获、登录成败记录、读接口与
+  4xx 不记、过滤生效、meta、viewer 403）；全量 **473 passed**；build:dev 12.5s。
+- 至此第三梯队 1/3（C2 ✅）；剩余：C3 项目级权限（B15）、C4 血缘与质量常态化
+  （C1 邮件/企微按用户要求暂缓）。

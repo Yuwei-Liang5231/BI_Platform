@@ -61,6 +61,16 @@ def get_db() -> Generator[Session, None, None]:
         session.close()
 
 
+def fresh_session() -> Session:
+    """独立短会话（旁路写入用，如 AI 调用观测落库）。
+
+    与调用方事务互不影响：观测记录不随主流程回滚/提交，也绝不污染主流程。
+    """
+    if _session_factory is None:
+        init_engine()
+    return _session_factory()  # type: ignore[misc]
+
+
 def check_database() -> bool:
     """健康检查：SELECT 1。"""
     try:
@@ -97,7 +107,7 @@ def migrate_project_columns() -> None:
       不到旧约束时迁移为空操作。
     """
     with get_engine().begin() as conn:
-        for table in ("datasets", "metrics", "ask_conversations", "anomaly_configs", "notifications"):
+        for table in ("datasets", "metrics", "ask_conversations", "anomaly_configs", "notifications", "ai_call_logs"):
             rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
             if not rows:
                 continue  # 表尚不存在：create_all 已按新结构处理

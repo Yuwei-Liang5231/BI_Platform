@@ -164,6 +164,8 @@ def build_anomaly_hypothesis(
         user_payload=user_payload,
         timeout=60.0,
         retries=0,
+        kind="anomaly_hypothesis",
+        project_id=getattr(get_metric(db, metric_id), "project_id", None),
     )
     if result is None:
         return {

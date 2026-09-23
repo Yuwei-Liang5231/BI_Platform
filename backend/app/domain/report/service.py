@@ -562,7 +562,7 @@ def generate_report(
     result["rule_narrative"] = rule
     from app.domain.report.narrative import try_narrative
 
-    narr = try_narrative(db, result, sections, period_info)
+    narr = try_narrative(db, result, sections, period_info, project_id=project_id)
     return {
         "title": f"{PERIOD_LABELS[period_type]} · {period_info['label']}",
         "period": period_info,

@@ -93,6 +93,7 @@ def llm_narrative(
     result: dict,
     sections: dict,
     period: dict,
+    project_id: int | None = None,
 ) -> dict | None:
     """尝试用 LLM 生成章节叙述。可用 → {"sections", "source", "degraded"}；
     未配置/失败/全部被剔除 → None（调用方整段走规则句）。"""
@@ -115,7 +116,11 @@ def llm_narrative(
         "available_refs": {k: v[0] for k, v in table.items()},
         "sections_to_write": allowed,
     }
-    obj = chat_json(config, _SYSTEM_PROMPT, json.dumps(user_payload, ensure_ascii=False), timeout=60.0)
+    meta: dict = {}
+    obj = chat_json(config, _SYSTEM_PROMPT, json.dumps(user_payload, ensure_ascii=False), timeout=60.0, meta=meta)
+    from app.domain.ai.observability import record_llm_call
+
+    record_llm_call("report_narrative", meta, project_id=project_id)
     if not obj or not isinstance(obj.get("sections"), list):
         return None
 
@@ -150,7 +155,7 @@ def llm_narrative(
     return {"sections": out_sections, "source": "llm", "degraded": degraded}
 
 
-def try_narrative(db: Session, result: dict, sections: dict, period: dict) -> dict:
+def try_narrative(db: Session, result: dict, sections: dict, period: dict, project_id: int | None = None) -> dict:
     """preview 入口：LLM 可用则叙述层接管（章节级降级到规则句），否则整段规则句。
 
     返回 {"narrative", "narrative_source", "llm_degraded"}。
@@ -158,7 +163,7 @@ def try_narrative(db: Session, result: dict, sections: dict, period: dict) -> di
     settings = get_settings()
     result.setdefault("rule_narrative", [])  # 供降级取句（由调用方塞入）
     try:
-        out = llm_narrative(db, settings, result, sections, period)
+        out = llm_narrative(db, settings, result, sections, period, project_id=project_id)
     except Exception:  # 叙述层任何意外都不阻塞报告
         out = None
     if out is not None:

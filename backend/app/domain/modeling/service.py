@@ -215,7 +215,7 @@ def suggest_relations(db: Session, project_id: int) -> tuple[list[dict], list[di
             item["evidence"]["isolated_pair"] = True
 
     out = sorted(raw.values(), key=lambda x: -x["score"])[:MAX_SUGGEST_RELATIONS]
-    _llm_relation_review(db, out, samples)
+    _llm_relation_review(db, out, samples, project_id=project_id)
 
     # 每表参与说明：让"某张表为什么没有建议"在向导里可见可解释
     participating = {d for it in out for d in (it["from_dataset"], it["to_dataset"])}
@@ -245,7 +245,9 @@ def _sample_preview(samples: dict, ds: str, col: str, k: int = 8, width: int = 4
     return ", ".join(parts)
 
 
-def _llm_relation_review(db: Session, suggestions: list[dict], samples: dict) -> None:
+def _llm_relation_review(
+    db: Session, suggestions: list[dict], samples: dict, project_id: int | None = None,
+) -> None:
     """可选 LLM 语义复审：批量判断每对列是否业务同一实体键（就地附 llm_review）。
 
     未配置 LLM / 调用失败 → 静默跳过（建议引擎本身不依赖 LLM）。
@@ -276,7 +278,15 @@ def _llm_relation_review(db: Session, suggestions: list[dict], samples: dict) ->
         '只输出 JSON {"reviews":[{"index":序号,"verdict":"likely|unlikely|uncertain",'
         '"reason":"一句话"}]}，序号必须来自给定清单。'
     )
-    obj = chat_json(config, system, "\n".join(lines), timeout=60.0)
+    meta: dict = {}
+    obj = chat_json(config, system, "\n".join(lines), timeout=60.0, meta=meta)
+    from app.domain.ai.observability import record_llm_call
+
+    # 观测按项目区分：候选关系两侧数据集同属一个项目，按 from_dataset 解析
+    from app.infra.models import Dataset as _Dataset
+
+    _ds = db.query(_Dataset).filter(_Dataset.name == suggestions[0]["from_dataset"]).first()
+    record_llm_call("relation_review", meta, project_id=_ds.project_id if _ds else None)
     reviews = obj.get("reviews") if isinstance(obj, dict) else None
     if not isinstance(reviews, list):
         return
@@ -357,7 +367,11 @@ def _llm_metric_candidates(db: Session, datasets: list[Dataset]) -> list[dict]:
         "count_distinct/count/max/min）；只提议有业务意义的组合，宁缺毋滥，最多 15 条；"
         '只输出 JSON {"candidates":[{"dataset","column","aggregation","name","reason"}]}。'
     )
-    obj = chat_json(config, system, json.dumps(summary, ensure_ascii=False), timeout=60.0)
+    meta: dict = {}
+    obj = chat_json(config, system, json.dumps(summary, ensure_ascii=False), timeout=60.0, meta=meta)
+    from app.domain.ai.observability import record_llm_call
+
+    record_llm_call("modeling_suggest", meta, project_id=datasets[0].project_id if datasets else None)
     if not obj or not isinstance(obj.get("candidates"), list):
         return []
     valid = {}

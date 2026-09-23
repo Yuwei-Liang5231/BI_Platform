@@ -77,6 +77,7 @@ def suggest_annotations(db: Session, dataset_id: int) -> dict[str, Any]:
     config = resolve_llm_config(db, settings)
     # P4-1：把人工已确认的语义回传，让建议风格一致且不与之矛盾（记忆打通）
     confirmed = load_annotations(dataset)
+    meta: dict = {}
     obj = chat_json(
         config,
         _SEMANTIC_SYSTEM,
@@ -86,7 +87,11 @@ def suggest_annotations(db: Session, dataset_id: int) -> dict[str, Any]:
         ),
         timeout=60.0,
         retries=0,
+        meta=meta,
     )
+    from app.domain.ai.observability import record_llm_call
+
+    record_llm_call("semantic_annotations", meta, project_id=dataset.project_id)
     if not isinstance(obj, dict) or not isinstance(obj.get("annotations"), dict):
         return empty
 

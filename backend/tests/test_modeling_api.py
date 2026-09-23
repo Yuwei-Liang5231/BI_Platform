@@ -316,7 +316,7 @@ class TestLlmRelationReview:
         )
         seen_prompts: list[str] = []
 
-        def fake_chat(config, system, user, timeout=30.0):
+        def fake_chat(config, system, user, timeout=30.0, meta=None):
             if "评审员" in system:  # 关系语义复审调用
                 seen_prompts.append(user)
                 return {"reviews": [{"index": 0, "verdict": "likely", "reason": "同实体键"}]}

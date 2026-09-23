@@ -253,3 +253,51 @@
 经营视角联想的跃迁。剩余：第二梯队 B2 观测面板补齐（审计命中率/降级率/延迟/
 Token 成本）；第三梯队 C2 审计日志、C3 项目级权限、C4 血缘与质量常态化
 （C1 邮件/企微按用户要求暂缓）。**
+
+---
+
+## 九、P8 交付记录（2026-09-23，第二梯队 B2 落地）
+
+**B2 AI 观测面板补齐**（反馈概览之外的另一半：LLM 调用的成功率/降级/审计剔除、
+耗时与 Token 用量——AI 质量从「用户主观评价」到「系统客观观测」闭环）：
+
+- **观测表** `ai_call_logs`（kind / outcome / duration_ms / model /
+  prompt_tokens / completion_tokens / created_at；create_all 自动建表）。
+  outcome 语义：ok（成功产出）/ llm_failed（请求失败或返回非法结构）/
+  audit_filtered（返回被三道审计全剔）。
+- **基建层**：`infra/llm.chat_json` 加非破坏性 `meta` 参数（就地回填
+  attempted / ok / duration_ms（多次尝试累加）/ model / token 用量，usage
+  取自接口响应）；`_post_chat` 返回 (obj, usage)。未真正发起请求（LLM 未
+  配置）不产生记录——面板只反映真实用量。
+- **记录器** `domain/ai/observability.py`：`record_llm_call` 走独立会话
+  （fresh_session）落库，与调用方事务互不影响，任何失败只记日志（零阻塞）。
+- **全功能点接线**（kind）：dashboard_summary / anomaly_hypothesis /
+  attribute_interpretation / metric_linkage（经 llm_narrative 引擎，
+  引擎加 kind 参数统一记录，含 audit_filtered 判定）+ calc_notes /
+  semantic_annotations / ask_intent / ask_reply / report_narrative /
+  relation_review / modeling_suggest（chat_json 直调点逐一挂 meta+record）。
+- **接口** `GET /ai/observability?days=7`（admin）：按功能聚合
+  （调用/成功/失败/审计剔除/成功率/平均耗时/Token 入出）+ 最近 20 条异常
+  明细；系统健康视图，不做项目隔离。
+- **前端**：模型管理页新增「AI 调用观测」卡（反馈概览上方）——按功能表格 +
+  最近异常调用列表；kind 中文映射补齐（问数·意图解析/问数·引导回复/
+  报告叙述/关系复审/建模建议/联动归因）。
+- **验证**：`test_ai_p12.py` +4 用例（ok/failed/audit_filtered 落库、
+  未配置不记、聚合端点 + viewer 403）；存量 8+1 个 chat_json 测试桩补
+  meta 形参；全量 **465 passed**（基线 461 + 4）；build:dev 13.2s 通过。
+- 验收口径：配置模型并使用任意 AI 功能 → 模型管理页「AI 调用观测」出现
+  对应功能的调用计数、成功率、耗时与 Token；拔掉模型配置再调用 → 出现
+  llm_failed 明细（此时各 AI 功能仍静默降级不报错）。
+- 已知边界：Token 用量依赖接口返回 usage（缺失时为空）；观测为全局视图
+  （暂不按项目过滤）；报告叙述层与引擎是两套审计实现（历史设计），均已
+  分别接观测。
+
+**验收修订（2026-09-23 用户反馈）**：①统计窗口改为**近 30 天**（接口默认
+days=30，上限放宽到 180）；②观测**按项目区分**——`ai_call_logs` 补
+`project_id` 列（存量表 migrate_project_columns 幂等加列，B10 规矩），
+全部 11 个功能点接线项目归属（看板速览=项目、异动假设/归因解读/联动归因=
+指标所属项目、口径助手/语义标注=数据集所属项目、问数=候选指标所属项目、
+报告=模板项目、建模=数据集所属项目）；接口按项目过滤，NULL 记录按
+「NULL=默认项目」约定归默认项目视图；前端与反馈概览同模式（跟随顶部项目
+切换器刷新 + 副标题显示当前项目名）。端点用例扩展项目过滤断言；
+全量 **466 passed**；build:dev 12.9s。

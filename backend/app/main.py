@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import app
-from app.api.routes import ai, auth, datasets, health, llm, metrics, modeling, notifications, projects, query, reports, templates
+from app.api.routes import ai, audit, auth, datasets, health, llm, metrics, modeling, notifications, projects, query, reports, templates
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.core.response import (
@@ -108,6 +108,11 @@ def create_app() -> FastAPI:
     application.include_router(modeling.router, prefix=settings.api_prefix)
     application.include_router(llm.router, prefix=settings.api_prefix)
     application.include_router(ai.router, prefix=settings.api_prefix)
+    application.include_router(audit.router, prefix=settings.api_prefix)
+    # C2 操作审计：写操作白名单自动落库（响应后台任务，零埋点）
+    from app.domain.audit.service import register_audit_middleware
+
+    register_audit_middleware(application, api_prefix=settings.api_prefix)
     _register_exception_handlers(application)
 
     @application.get("/", include_in_schema=False)

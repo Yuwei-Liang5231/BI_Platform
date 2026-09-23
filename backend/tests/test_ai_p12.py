@@ -210,7 +210,7 @@ class TestEngineNarrative:
     def test_strips_bad_sentences_and_backfills(self, monkeypatch):
         monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-        def fake_chat(config, system, user, timeout=60.0, retries=0):
+        def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
             return {"sections": [{
                 "section": "overview",
                 "sentences": [
@@ -244,7 +244,7 @@ class TestEngineNarrative:
     def test_degrades_to_rule_when_all_stripped(self, monkeypatch):
         monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-        def fake_chat(config, system, user, timeout=60.0, retries=0):
+        def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
             return {"sections": [{"section": "overview", "sentences": ["裸数字 999 被剔除"]}]}
 
         monkeypatch.setattr(an_mod, "chat_json", fake_chat)
@@ -348,7 +348,7 @@ class TestDashboardSummaryLLM:
             monkeypatch.setattr(ds_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
             monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-            def fake_chat(config, system, user, timeout=60.0, retries=0):
+            def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
                 return {"sections": [{
                     "section": "overview",
                     "sentences": ["{{ref:m1_name}} 本期 {{ref:m1_value}}，环比 {{ref:m1_mom}}。"],
@@ -376,7 +376,7 @@ class TestCalcNotesLLM:
         try:
             monkeypatch.setattr(cn_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-            def fake_chat(config, system, user, timeout=60.0, retries=0):
+            def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
                 return {
                     "name": "日销售额",
                     "aliases": ["销售额"],
@@ -501,7 +501,7 @@ class TestSemanticAnnotations:
         try:
             monkeypatch.setattr(sa, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-            def fake_chat(config, system, user, timeout=60.0, retries=0):
+            def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
                 return {"annotations": {
                     "channel": "销售渠道",
                     "ghost_col": "不应出现的列",
@@ -590,7 +590,7 @@ class TestAttributeInterpretation:
             monkeypatch.setattr(ati_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
             monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-            def fake_chat(config, system, user, timeout=60.0, retries=0):
+            def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
                 return {"sections": [{
                     "section": "interpretation",
                     "sentences": [
@@ -634,7 +634,7 @@ class TestAttributeInterpretation:
             monkeypatch.setattr(ati_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
             monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-            def fake_chat(config, system, user, timeout=60.0, retries=0):
+            def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
                 return {"sections": [{
                     "section": "解读",  # 非 interpretation
                     "sentences": ["{{ref:metric_name}}整体{{ref:direction}}。"],
@@ -660,7 +660,7 @@ class TestAttributeInterpretation:
             monkeypatch.setattr(ati_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
             monkeypatch.setattr(an_mod, "resolve_llm_config", lambda *a, **k: _FAKE_LLM)
 
-            def fake_chat(config, system, user, timeout=60.0, retries=0):
+            def fake_chat(config, system, user, timeout=60.0, retries=0, meta=None):
                 return {"sections": [{
                     "section": "interpretation",
                     "sentences": [
@@ -795,3 +795,248 @@ class TestAskDynamicSuggestions:
             assert all(len(s) <= 60 for s in sug)
         finally:
             _cleanup(client, env)
+
+
+# ---------------------------------------------------------------- B2 AI 调用观测
+
+
+class TestObservability:
+    """B2 观测面板：llm_narrative 调用落库（ok / llm_failed / audit_filtered）
+    + admin 聚合接口。落库走独立会话，绝不阻塞主流程。"""
+
+    @staticmethod
+    def _patch_llm(monkeypatch, responder):
+        from app.domain import ai_narrative as an_mod
+
+        monkeypatch.setattr(
+            an_mod,
+            "resolve_llm_config",
+            lambda db, s: {"base_url": "http://mock", "api_key": "k", "model": "mock-model"},
+        )
+        monkeypatch.setattr(an_mod, "chat_json", responder)
+
+    @staticmethod
+    def _last_row(kind):
+        from app.infra.database import get_db
+        from app.infra.models import AiCallLog
+
+        db = next(get_db())
+        try:
+            return (
+                db.query(AiCallLog)
+                .filter(AiCallLog.kind == kind)
+                .order_by(AiCallLog.id.desc())
+                .first()
+            )
+        finally:
+            db.close()
+
+    def test_llm_narrative_records_ok(self, client, monkeypatch):
+        """成功产出：outcome=ok + 耗时 + token 用量落库。"""
+        from app.core.config import get_settings
+        from app.domain import ai_narrative as an_mod
+
+        def fake_ok(config, system, user, **kw):
+            meta = kw.get("meta")
+            if meta is not None:
+                meta.update({
+                    "attempted": True, "ok": True, "duration_ms": 123,
+                    "model": "mock-model", "prompt_tokens": 10, "completion_tokens": 5,
+                })
+            return {"sections": [{"section": "s", "sentences": ["本指标与{{ref:k}}同步变化"]}]}
+
+        self._patch_llm(monkeypatch, fake_ok)
+        from app.infra.database import get_db
+
+        db = next(get_db())
+        try:
+            out = an_mod.llm_narrative(
+                db, get_settings(),
+                ref_table={"k": ("参照指标", "参照值")},
+                sections_to_write=["s"],
+                system_prompt="sys",
+                user_payload={},
+                kind="unit_obs_ok",
+                project_id=321,
+            )
+        finally:
+            db.rollback()
+            db.close()
+        assert out is not None
+        row = self._last_row("unit_obs_ok")
+        assert row is not None
+        assert row.outcome == "ok"
+        assert row.duration_ms == 123
+        assert row.prompt_tokens == 10 and row.completion_tokens == 5
+        assert row.model == "mock-model"
+        assert row.project_id == 321
+
+    def test_llm_narrative_records_failed_and_audit(self, client, monkeypatch):
+        """请求失败 → llm_failed；返回被审计全剔 → audit_filtered。"""
+        from app.core.config import get_settings
+        from app.domain import ai_narrative as an_mod
+        from app.infra.database import get_db
+
+        def fake_fail(config, system, user, **kw):
+            meta = kw.get("meta")
+            if meta is not None:
+                meta.update({"attempted": True, "ok": False, "duration_ms": 40, "model": "mock-model"})
+            return None
+
+        self._patch_llm(monkeypatch, fake_fail)
+        db = next(get_db())
+        try:
+            out = an_mod.llm_narrative(
+                db, get_settings(),
+                ref_table={"k": ("参照指标", "参照值")},
+                sections_to_write=["s"],
+                system_prompt="sys",
+                user_payload={},
+                kind="unit_obs_fail",
+            )
+            assert out is None
+        finally:
+            db.rollback()
+            db.close()
+        assert self._last_row("unit_obs_fail").outcome == "llm_failed"
+
+        def fake_dirty(config, system, user, **kw):
+            meta = kw.get("meta")
+            if meta is not None:
+                meta.update({"attempted": True, "ok": True, "duration_ms": 60, "model": "mock-model"})
+            return {"sections": [{"section": "s", "sentences": ["上升了 50 个点"]}]}
+
+        self._patch_llm(monkeypatch, fake_dirty)
+        db = next(get_db())
+        try:
+            out = an_mod.llm_narrative(
+                db, get_settings(),
+                ref_table={"k": ("参照指标", "参照值")},
+                sections_to_write=["s"],
+                system_prompt="sys",
+                user_payload={},
+                kind="unit_obs_audit",
+            )
+            assert out is None  # 裸数字被审计全剔 → 整段降级
+        finally:
+            db.rollback()
+            db.close()
+        assert self._last_row("unit_obs_audit").outcome == "audit_filtered"
+
+    def test_no_record_without_llm_call(self, client, monkeypatch):
+        """LLM 未配置：不发请求、不产生观测记录（面板只反映真实用量）。"""
+        from app.core.config import get_settings
+        from app.domain import ai_narrative as an_mod
+        from app.infra.database import get_db
+        from app.infra.models import AiCallLog
+
+        monkeypatch.setattr(an_mod, "resolve_llm_config", lambda db, s: None)
+        db = next(get_db())
+        try:
+            before = db.query(AiCallLog).filter(AiCallLog.kind == "unit_obs_none").count()
+            out = an_mod.llm_narrative(
+                db, get_settings(),
+                ref_table={"k": ("参照指标", "参照值")},
+                sections_to_write=["s"],
+                system_prompt="sys",
+                user_payload={},
+                kind="unit_obs_none",
+            )
+            after = db.query(AiCallLog).filter(AiCallLog.kind == "unit_obs_none").count()
+            assert out is None
+            assert after == before
+        finally:
+            db.rollback()
+            db.close()
+
+    def test_observability_endpoint(self, client):
+        """GET /ai/observability（admin）：按功能聚合 + 最近异常明细 + 项目过滤；viewer 403。"""
+        from app.infra.database import fresh_session
+        from app.infra.models import AiCallLog
+
+        sfx = _suffix()
+        pa = client.post("/api/projects", json={"name": f"obsp_{sfx}"}).json()["data"]
+        try:
+            session = fresh_session()
+            try:
+                session.add_all([
+                    AiCallLog(kind=f"obs_ep_ok_{sfx}", outcome="ok", duration_ms=100,
+                              model="m", prompt_tokens=7, completion_tokens=3),
+                    AiCallLog(kind=f"obs_ep_ok_{sfx}", outcome="llm_failed", duration_ms=900,
+                              model="m"),
+                    AiCallLog(kind=f"obs_ep_ok_{sfx}", outcome="audit_filtered", duration_ms=80,
+                              model="m"),
+                    # B 项目行：不应混入默认项目视图
+                    AiCallLog(kind=f"obs_ep_ok_{sfx}", outcome="ok", duration_ms=1,
+                              model="m", project_id=pa["id"]),
+                ])
+                session.commit()
+            finally:
+                session.close()
+
+            r = client.get("/api/ai/observability", params={"days": 30})
+            assert r.status_code == 200, r.text
+            data = r.json()["data"]
+            assert data["days"] == 30
+            row = next(k for k in data["by_kind"] if k["kind"] == f"obs_ep_ok_{sfx}")
+            assert row["total"] == 3 and row["ok"] == 1
+            assert row["llm_failed"] == 1 and row["audit_filtered"] == 1
+            assert row["ok_rate"] == round(1 / 3 * 100, 1)
+            assert row["prompt_tokens"] == 7 and row["completion_tokens"] == 3
+            assert row["avg_ms"] == round((100 + 900 + 80) / 3)
+            assert any(i["kind"] == f"obs_ep_ok_{sfx}" for i in data["recent_issues"])
+
+            # 项目过滤：A 项目的行不混入默认项目视图
+            ra = client.get("/api/ai/observability", params={
+                "days": 30, "project_id": pa["id"],
+            })
+            assert ra.status_code == 200, ra.text
+            row_a = next(
+                (k for k in ra.json()["data"]["by_kind"] if k["kind"] == f"obs_ep_ok_{sfx}"),
+                None,
+            )
+            assert row_a is not None and row_a["total"] == 1 and row_a["ok"] == 1
+
+            from tests.conftest import create_test_user
+
+            vw = create_test_user(client, f"vw_obs_{sfx}", role="viewer")
+            r2 = client.get("/api/ai/observability", headers=vw)
+            assert r2.status_code == 403
+        finally:
+            client.delete(f"/api/projects/{pa['id']}")
+
+    def test_observability_project_filter(self, client):
+        """B2 观测按项目区分：缺省 → 默认项目（含 NULL 存量行归入）；
+        显式 project_id → 只看该项目；days 缺省 = 30。"""
+        from app.infra.database import fresh_session
+        from app.infra.models import AiCallLog
+
+        sfx = _suffix()
+        pa = client.post("/api/projects", json={"name": f"obspa_{sfx}"}).json()["data"]
+        pb = client.post("/api/projects", json={"name": f"obspb_{sfx}"}).json()["data"]
+        session = fresh_session()
+        try:
+            session.add_all([
+                AiCallLog(kind=f"obs_pa_{sfx}", outcome="ok", project_id=pa["id"], model="m"),
+                AiCallLog(kind=f"obs_pb_{sfx}", outcome="ok", project_id=pb["id"], model="m"),
+                AiCallLog(kind=f"obs_null_{sfx}", outcome="ok", project_id=None, model="m"),
+            ])
+            session.commit()
+        finally:
+            session.close()
+
+        # 默认项目视图（缺省）：NULL 存量行归默认项目，A/B 项目行不可见
+        r = client.get("/api/ai/observability")
+        assert r.status_code == 200, r.text
+        data = r.json()["data"]
+        assert data["days"] == 30
+        kinds = {k["kind"] for k in data["by_kind"]}
+        assert f"obs_null_{sfx}" in kinds
+        assert f"obs_pa_{sfx}" not in kinds and f"obs_pb_{sfx}" not in kinds
+
+        # 显式项目 A：只看 A
+        ra = client.get("/api/ai/observability", params={"project_id": pa["id"]})
+        assert ra.status_code == 200, ra.text
+        kinds_a = {k["kind"] for k in ra.json()["data"]["by_kind"]}
+        assert f"obs_pa_{sfx}" in kinds_a
+        assert f"obs_null_{sfx}" not in kinds_a and f"obs_pb_{sfx}" not in kinds_a

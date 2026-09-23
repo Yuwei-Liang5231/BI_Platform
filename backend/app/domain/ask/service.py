@@ -240,11 +240,13 @@ def match_metrics(question: str, metrics: list[Metric]) -> tuple[list[Metric], d
 
 def _llm_intent(
     config: dict, question: str, metrics: list[Metric], today: date,
-    dim_candidates: list[dict],
+    dim_candidates: list[dict], project_id: int | None = None,
 ) -> tuple[dict | None, str | None]:
     """LLM 意图解析。输出经严格校验：指标必须在候选清单内、维度列/筛选值必须在
     真实数据候选内、枚举字段在白名单内——任何越纲/非法字段一律丢弃（宁缺毋滥，防幻觉）。
 
+    project_id：问数会话锁定的项目（观测归属用，与 B9.3 会话挂项目语义一致；
+    候选指标可能来自全部项目视图，其所属项目≠用户所处的问数项目）。
     返回 (意图, 失败原因)：意图为 None 时失败原因非空，供理解卡向用户解释降级。
     """
     metric_list = "\n".join(
@@ -274,7 +276,13 @@ def _llm_intent(
         f"候选维度列（当前用户可见、可拆解）：\n{dim_list}\n"
         f"用户问题：{question}"
     )
-    intent = chat_json(config, system, user)
+    meta: dict = {}
+    intent = chat_json(config, system, user, meta=meta)
+    from app.domain.ai.observability import record_llm_call
+
+    # 观测按项目区分：归属问数会话锁定的项目（非指标所属项目——全部项目视图下
+    # 候选可跨项目，指标项目≠用户所处的问数项目，2026-09-23 用户实测修正）
+    record_llm_call("ask_intent", meta, project_id=project_id)
     if not isinstance(intent, dict):
         logger.info("LLM 意图解析：模型未返回有效 JSON（降级规则解析器），question=%r", question[:80])
         return None, "模型返回格式异常（可能为推理型模型输出被截断），已用规则解析兜底"
@@ -335,7 +343,9 @@ def _llm_intent(
     return validated, None
 
 
-def _llm_help_reply(config: dict, question: str, metric_names: list[str]) -> str | None:
+def _llm_help_reply(
+    config: dict, question: str, metric_names: list[str], project_id: int | None = None,
+) -> str | None:
     """逃生舱（B9.2-2）：意图解析不出可执行结构时，LLM 纯对话兜底——
     只做引导与建议改写，禁止出现任何数值（含 % 的行一律拒收降级）。"""
     system = (
@@ -346,7 +356,11 @@ def _llm_help_reply(config: dict, question: str, metric_names: list[str]) -> str
     )
     user = f"指标目录：{json.dumps(metric_names[:50], ensure_ascii=False)}\n用户问题：{question}"
     try:
-        reply = chat_json(config, system + '\n输出格式：{"reply": "中文回复"}', user)
+        meta: dict = {}
+        reply = chat_json(config, system + '\n输出格式：{"reply": "中文回复"}', user, meta=meta)
+        from app.domain.ai.observability import record_llm_call
+
+        record_llm_call("ask_reply", meta, project_id=project_id)
         if isinstance(reply, dict):
             reply = reply.get("reply")
         if isinstance(reply, str) and reply.strip() and not re.search(r"\d+(\.\d+)?%", reply):
@@ -556,7 +570,9 @@ def build_card(
     source = "fallback"
     source_note: str | None = None
     if llm_cfg:
-        intent, source_note = _llm_intent(llm_cfg, question, visible, today, dim_candidates)
+        intent, source_note = _llm_intent(
+            llm_cfg, question, visible, today, dim_candidates, project_id=project_id,
+        )
         if intent:
             source = "llm"
             source_note = None
@@ -730,7 +746,8 @@ def build_card(
         help_reply = None
         if llm_cfg:
             help_reply = _llm_help_reply(
-                llm_cfg, question, [m.name for m in visible]
+                llm_cfg, question, [m.name for m in visible],
+                project_id=project_id,
             )
         card["help_reply"] = help_reply or (
             "我暂时理解不了这个问题。本平台可以回答已有指标的数值、按维度拆解和时间对比，"

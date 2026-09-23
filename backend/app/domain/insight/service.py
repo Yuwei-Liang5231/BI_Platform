@@ -194,6 +194,10 @@ def run_daily_insight(
                     )
                 )
                 notified += 1
+        # 每项目一提交：结束本项目的写事务——后续项目的 build_anomaly_hypothesis
+        # 内部有 record_llm_call 旁路落库，SQLite 单写者，未提交写事务会让它
+        # 「database is locked」被静默吞掉（2026-09-23 问数观测丢记录同因）
+        db.commit()
         project_report.append(pid_report)
 
     db.commit()

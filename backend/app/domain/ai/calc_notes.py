@@ -110,13 +110,18 @@ def suggest_calc_notes(
         "samples": samples,
         "confirmed_semantics": confirmed or None,  # 人工确认语义（权威）
     }
+    meta: dict = {}
     obj = chat_json(
         config,
         _CALC_NOTES_SYSTEM,
         json.dumps(user_payload, ensure_ascii=False),
         timeout=60.0,
         retries=0,
+        meta=meta,
     )
+    from app.domain.ai.observability import record_llm_call
+
+    record_llm_call("calc_notes", meta, project_id=dataset.project_id)
     if not isinstance(obj, dict):
         return empty
 

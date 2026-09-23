@@ -108,6 +108,8 @@ def llm_narrative(
     user_payload: dict,
     timeout: float = 60.0,
     retries: int = 0,
+    kind: str = "",
+    project_id: int | None = None,
 ) -> dict | None:
     """通用叙事生成：LLM + 服务端回填 + 审计 + 章节级降级。
 
@@ -116,12 +118,16 @@ def llm_narrative(
     - sections_to_write: 本次要写的章节键列表；
     - system_prompt / user_payload: 透传给 LLM；user_payload 会追加
       ``available_refs``（KEY→标签）供 LLM 引用；
-    - retries: 透传给 chat_json（默认 0；调用方可按需开启重试）。
+    - retries: 透传给 chat_json（默认 0；调用方可按需开启重试）；
+    - kind: 功能点标识（B2 观测落库用，如 "dashboard_summary"）；
+    - project_id: 调用所属项目（B2 观测按项目区分）。
 
     返回 ``{"sections":[{section,sentences,source}], "source":"llm",
     "degraded":[...]}``；若 LLM 不可用、返回非法、或全部章节降级 → 返回 None
     （调用方整段走规则句或固定兜底）。
     """
+    from app.domain.ai.observability import record_llm_call
+
     config = resolve_llm_config(db, settings)
     if not config:
         return None
@@ -130,17 +136,20 @@ def llm_narrative(
         **user_payload,
         "available_refs": {k: v[0] for k, v in ref_table.items()},
     }
+    meta: dict = {}
     obj = chat_json(
         config,
         system_prompt,
         json.dumps(send_payload, ensure_ascii=False),
         timeout=timeout,
         retries=retries,
+        meta=meta,
     )
     if not isinstance(obj, dict) or not isinstance(obj.get("sections"), list):
         logger.warning(
             "llm_narrative: LLM 返回非法结构，整段降级（type=%s）", type(obj).__name__
         )
+        record_llm_call(kind, meta, outcome="llm_failed", project_id=project_id)
         return None
 
     ref_keys = set(ref_table)
@@ -189,5 +198,7 @@ def llm_narrative(
             "llm_narrative: 章节全部被审计剔除/无内容，整段降级（sections=%s）",
             sections_to_write,
         )
+        record_llm_call(kind, meta, outcome="audit_filtered", project_id=project_id)
         return None
+    record_llm_call(kind, meta, outcome="ok", project_id=project_id)
     return {"sections": out, "source": "llm", "degraded": degraded}

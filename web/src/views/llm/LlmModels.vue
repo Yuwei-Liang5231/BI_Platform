@@ -15,7 +15,7 @@ import {
   testLlmModel,
   updateLlmModel,
 } from "@/api/llm";
-import { aiFeedbackSummary } from "@/api/ai";
+import { aiFeedbackSummary, aiObservability } from "@/api/ai";
 import { useProjectStore } from "@/stores/project";
 
 const projectStore = useProjectStore();
@@ -176,6 +176,32 @@ async function testForm() {
   }
 }
 
+/* ---------- AI 调用观测（B2）：近 30 天各功能 LLM 调用成功/降级/审计剔除、耗时、Token ---------- */
+const OBS_DAYS = 30;
+const obs = ref(null); // { days, total, by_kind, recent_issues }
+const obsLoading = ref(false);
+
+// 观测跟随顶部项目切换器（与反馈概览同模式；NULL 记录归默认项目）
+const obsProjectName = computed(
+  () => projectStore.projects.find((p) => p.id === projectStore.lockedId)?.name ?? "",
+);
+
+async function loadObservability() {
+  obsLoading.value = true;
+  try {
+    obs.value = await aiObservability(OBS_DAYS, projectStore.lockedId);
+  } catch {
+    obs.value = null; // 观测失败不影响本页主功能
+  } finally {
+    obsLoading.value = false;
+  }
+}
+
+const obsKindLabel = (k) => KIND_LABELS[k] ?? k;
+const fmtMs = (ms) => (ms === null || ms === undefined ? "—" : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
+const obsOutcomeText = (o) =>
+  o === "llm_failed" ? "调用失败" : o === "audit_filtered" ? "审计剔除" : o;
+
 /* ---------- AI 反馈质量概览（P4 反馈闭环的 admin 视图 + P6 daily_insight 维度） ---------- */
 const KIND_LABELS = {
   dashboard_summary: "看板速览",
@@ -185,6 +211,12 @@ const KIND_LABELS = {
   semantic_annotations: "语义标注",
   ask: "问数",
   daily_insight: "每日洞察",
+  metric_linkage: "联动归因",
+  ask_intent: "问数·意图解析",
+  ask_reply: "问数·引导回复",
+  report_narrative: "报告叙述",
+  relation_review: "关系复审",
+  modeling_suggest: "建模建议",
 };
 const kindLabel = (k) => KIND_LABELS[k] ?? k;
 
@@ -210,10 +242,13 @@ async function loadFeedback() {
   }
 }
 
-// 切项目重新拉取（模型登记是全局的，只刷新概览）
+// 切项目重新拉取（模型登记是全局的，概览与观测按项目刷新）
 watch(
   () => projectStore.lockedId,
-  loadFeedback,
+  () => {
+    loadFeedback();
+    loadObservability();
+  },
 );
 
 const fmtTime = (t) => (t || "").slice(0, 16).replace("T", " ");
@@ -221,6 +256,7 @@ const fmtTime = (t) => (t || "").slice(0, 16).replace("T", " ");
 onMounted(() => {
   load();
   loadFeedback();
+  loadObservability();
 });
 </script>
 
@@ -313,6 +349,60 @@ onMounted(() => {
         <el-empty description="还没有登记模型，点击右上角「添加模型」" />
       </template>
     </el-table>
+
+    <!-- AI 调用观测（B2）：近 30 天各功能 LLM 调用成功/降级/审计剔除、耗时、Token（跟随项目切换器） -->
+    <section class="pwc-card llm-fb">
+      <div class="pwc-card__header llm-fb__head">
+        <h4>AI 调用观测</h4>
+        <span class="llm-fb__sub">
+          近 {{ OBS_DAYS }} 天各功能 LLM 调用的成功 / 降级 / 审计剔除、耗时与 Token 用量
+          <template v-if="obsProjectName">· 当前项目：{{ obsProjectName }}</template>
+        </span>
+        <el-button size="small" text type="primary" :loading="obsLoading" @click="loadObservability">
+          刷新
+        </el-button>
+      </div>
+      <el-table
+        v-if="obs?.by_kind?.length"
+        :data="obs.by_kind"
+        v-loading="obsLoading"
+        size="small"
+      >
+        <el-table-column label="功能" min-width="120">
+          <template #default="{ row }">{{ obsKindLabel(row.kind) }}</template>
+        </el-table-column>
+        <el-table-column prop="total" label="调用" width="80" />
+        <el-table-column prop="ok" label="成功" width="80" />
+        <el-table-column prop="llm_failed" label="调用失败" width="90" />
+        <el-table-column prop="audit_filtered" label="审计剔除" width="90" />
+        <el-table-column label="成功率" width="90">
+          <template #default="{ row }">{{ row.ok_rate }}%</template>
+        </el-table-column>
+        <el-table-column label="平均耗时" width="100">
+          <template #default="{ row }">{{ fmtMs(row.avg_ms) }}</template>
+        </el-table-column>
+        <el-table-column label="Token（入/出）" min-width="120">
+          <template #default="{ row }">
+            {{ row.prompt_tokens || 0 }} / {{ row.completion_tokens || 0 }}
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty
+        v-else-if="!obsLoading"
+        :image-size="60"
+        description="暂无 LLM 调用记录：配置并使用 AI 功能后，这里会统计真实调用的成功率、耗时与 Token"
+      />
+      <template v-if="obs?.recent_issues?.length">
+        <h5 class="llm-fb__bad-title">最近异常调用（调用失败 / 审计剔除，最多 20 条）</h5>
+        <ul class="llm-fb__bad">
+          <li v-for="r in obs.recent_issues" :key="r.id" class="llm-fb__bad-item">
+            <el-tag size="small" effect="light" type="warning">{{ obsOutcomeText(r.outcome) }}</el-tag>
+            <span class="llm-fb__bad-target">{{ obsKindLabel(r.kind) }}</span>
+            <span class="llm-fb__bad-meta">{{ r.model || "—" }} · {{ fmtMs(r.duration_ms) }} · {{ fmtTime(r.created_at) }}</span>
+          </li>
+        </ul>
+      </template>
+    </section>
 
     <!-- AI 反馈质量概览（P4 反馈闭环 admin 视图，含 P6 每日洞察 daily_insight 维度；
          跟随顶部项目切换器过滤，NULL 存量反馈归默认项目） -->

@@ -143,6 +143,8 @@ def build_dashboard_summary(
         user_payload=user_payload,
         timeout=60.0,
         retries=0,
+        kind="dashboard_summary",
+        project_id=pid,
     )
     if result is None:
         return {

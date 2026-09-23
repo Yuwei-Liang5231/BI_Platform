@@ -59,6 +59,16 @@ export const aiFeedbackSummary = (params) =>
     params: { project_id: params?.projectId ?? undefined },
   });
 
+/** AI 调用观测（admin，B2）：近 N 天（默认 30）各功能 LLM 调用成功/降级/审计剔除、
+ *  耗时与 Token 用量聚合 + 最近异常明细（按项目过滤，跟随顶部项目切换器）。 */
+export const aiObservability = (days = 30, projectId) =>
+  request.get("/ai/observability", {
+    params: {
+      days,
+      project_id: projectId ?? undefined,
+    },
+  });
+
 /** 字段语义标注建议：按列名+类型+样本值生成每列业务含义备注（P2）。
  *  body: { datasetId } → { annotations: {列名: 备注}, llm_configured } */
 export const suggestSemanticAnnotations = (datasetId) =>

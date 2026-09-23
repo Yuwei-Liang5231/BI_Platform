@@ -30,6 +30,7 @@ const navItems = [
   { path: "/metrics/admin", label: "指标管理", writeOnly: true },
   { path: "/datasets", label: "数据集与表关系" },
   { path: "/llm-models", label: "模型管理", adminOnly: true },
+  { path: "/audit-logs", label: "审计日志", adminOnly: true },
 ];
 
 const visibleNav = navItems.filter(

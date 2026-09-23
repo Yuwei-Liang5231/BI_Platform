@@ -286,6 +286,8 @@ def build_metric_linkage(
         user_payload=user_payload,
         timeout=60.0,
         retries=1,  # 单句场景脆弱：网络抖动重试一次
+        kind="metric_linkage",
+        project_id=target.project_id,
     )
     if result is None:
         out["reason"] = "llm_failed"

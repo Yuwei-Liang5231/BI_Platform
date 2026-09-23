@@ -349,6 +349,31 @@ class AiInsight(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
 
 
+class AiCallLog(Base):
+    """LLM 调用观测（B2 AI 观测面板）：每次真实发起的 LLM 请求落一条。
+
+    kind：功能点（dashboard_summary / anomaly_hypothesis / ask_intent /
+    report_narrative / metric_linkage / calc_notes / …）；
+    outcome：ok（成功产出）/ llm_failed（请求失败或返回非法）/
+    audit_filtered（返回被审计全剔）；
+    duration_ms：多次尝试累加耗时；tokens 取自接口 usage（可能缺失）。
+    project_id：调用所属项目（B10 规矩挂 project_id；无项目上下文的调用为
+    NULL，按「NULL=默认项目」约定归默认项目视图）。记录零阻塞主流程。
+    """
+
+    __tablename__ = "ai_call_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    outcome: Mapped[str] = mapped_column(String(16), default="ok")  # ok / llm_failed / audit_filtered
+    duration_ms: Mapped[int | None] = mapped_column(nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, index=True)
+
+
 class AiFeedback(Base):
     """AI 输出反馈（P4-2 反馈闭环）：人工对 AI 产出的评价与修正。
 
@@ -368,6 +393,31 @@ class AiFeedback(Base):
     rating: Mapped[str] = mapped_column(String(8))                  # up / down
     correction: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+
+
+class AuditLog(Base):
+    """操作审计日志（C2，合规）：谁在什么时候对什么资源做了什么写操作。
+
+    - 由 HTTP 中间件按「方法 + 路径白名单」自动记录（零埋点遗漏），仅记 2xx
+      成功操作 + 登录成败（安全审计）；写入走响应后台任务（依赖 teardown 完成后，
+      规避 SQLite 主会话写锁——同 B2 观测落库教训）；
+    - username 冗余存储：用户被删除后审计记录仍可读；
+    - detail_json：请求体轻量摘要（标量字段截断，大载荷不入库）。
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    action: Mapped[str] = mapped_column(String(60), index=True)      # 如 dataset.upload / metric.delete
+    resource_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    method: Mapped[str] = mapped_column(String(8))
+    path: Mapped[str] = mapped_column(String(200))
+    status_code: Mapped[int] = mapped_column(Integer, default=200)
+    detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now, index=True)
 
 
 class ReportTemplate(Base):

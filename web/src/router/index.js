@@ -76,6 +76,12 @@ const routes = [
         component: () => import("@/views/llm/LlmModels.vue"),
         meta: { title: "模型管理", adminOnly: true },
       },
+      {
+        path: "audit-logs",
+        name: "AuditLogs",
+        component: () => import("@/views/admin/AuditLogs.vue"),
+        meta: { title: "审计日志", adminOnly: true },
+      },
     ],
   },
   { path: "/:pathMatch(.*)*", redirect: "/dashboard" },

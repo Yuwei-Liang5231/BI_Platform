@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 import httpx
 from sqlalchemy.orm import Session
@@ -146,8 +147,12 @@ def _extract_json_object(content: str) -> dict | None:
     return None
 
 
-def _post_chat(config: dict, payload: dict, timeout: float) -> dict | None:
-    """单次 chat 请求 + JSON 提取。失败返回 None（不抛异常）。"""
+def _post_chat(config: dict, payload: dict, timeout: float) -> tuple[dict | None, dict | None]:
+    """单次 chat 请求 + JSON 提取。失败返回 (None, None)（不抛异常）。
+
+    第二个返回值为该次响应的 token 用量（{prompt_tokens, completion_tokens}），
+    供 AI 观测面板（B2）记录；接口未返回 usage 时为 None。
+    """
     url = config["base_url"].rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {config['api_key']}"}
     # 连接 5s 快速失败（外网不可达时尽快降级关键词解析器），生成读取给足 timeout
@@ -155,20 +160,25 @@ def _post_chat(config: dict, payload: dict, timeout: float) -> dict | None:
     try:
         resp = httpx.post(url, json=payload, headers=headers, timeout=timeout_policy, verify=_http_verify(config))
         resp.raise_for_status()
-        message = resp.json()["choices"][0]["message"]
+        body = resp.json()
+        message = body["choices"][0]["message"]
+        usage = body.get("usage") or {}
+        usage_clean = {
+            k: usage[k] for k in ("prompt_tokens", "completion_tokens") if isinstance(usage.get(k), int)
+        } or None
         obj = _extract_json_object(message.get("content") or "")
         if obj is None:
             # content 为空/非 JSON：推理型模型 token 耗尽或输出夹带说明文字
             logger.warning(
                 "LLM 返回无法解析为 JSON 对象: finish=%s content=%.200r reasoning_len=%s",
-                resp.json()["choices"][0].get("finish_reason"),
+                body["choices"][0].get("finish_reason"),
                 message.get("content"),
                 len(message.get("reasoning_content") or ""),
             )
-        return obj
+        return obj, usage_clean
     except Exception as exc:  # 网络/超时/JSON/结构任一失败
         logger.warning("LLM 请求失败: %s", exc)
-        return None
+        return None, None
 
 
 def chat_json(
@@ -177,6 +187,7 @@ def chat_json(
     user_prompt: str,
     timeout: float = 30.0,
     retries: int = 1,
+    meta: dict | None = None,
 ) -> dict | None:
     """请求 LLM 并解析 JSON 响应。任何失败返回 None（调用方降级，不致命）。
 
@@ -189,6 +200,10 @@ def chat_json(
     **失败自动重试**：retries 表示额外重试次数，总尝试次数 = retries + 1。
     默认 retries=1（总 2 次，与历史行为一致）；新调用点传 retries=0 关闭重试
     （2026-09-15：网关偶发超时/限流，temperature=0 输出确定性，重试安全）。
+
+    meta（B2 观测，可选）：传入 dict 就地回填调用元数据——
+    attempted（是否真的发起了请求）/ ok / duration_ms（多次尝试累加）/
+    model / prompt_tokens / completion_tokens。供 AI 调用观测落库。
     """
     if not config or not (config.get("base_url") and config.get("api_key") and config.get("model")):
         return None
@@ -206,8 +221,20 @@ def chat_json(
     if isinstance(extra, dict):
         payload.update(extra)
 
+    if meta is not None:
+        meta["attempted"] = True
+        meta["model"] = config.get("model") or ""
+        meta.setdefault("duration_ms", 0)
+
     for attempt in range(1, retries + 2):
-        obj = _post_chat(config, payload, timeout)
+        t0 = time.monotonic()
+        obj, usage = _post_chat(config, payload, timeout)
+        if meta is not None:
+            meta["duration_ms"] = int(meta.get("duration_ms", 0)) + int((time.monotonic() - t0) * 1000)
+            meta["ok"] = obj is not None
+            if usage:
+                meta["prompt_tokens"] = usage.get("prompt_tokens")
+                meta["completion_tokens"] = usage.get("completion_tokens")
         if obj is not None:
             if attempt > 1:
                 logger.info("LLM 请求第 %s 次重试成功", attempt)

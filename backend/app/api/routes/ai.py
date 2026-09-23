@@ -221,6 +221,97 @@ def post_ai_feedback(db: DbDep, user: CurrentUser, payload: AiFeedbackIn):
     return ok_response({"recorded": True, "id": row.id})
 
 
+@router.get("/observability")
+def get_ai_observability(
+    db: DbDep,
+    _admin: AdminUser,
+    days: int = Query(30, ge=1, le=180),
+    project_id: int | None = None,
+):
+    """AI 调用观测（B2，admin）：近 N 天（默认 30）各功能 LLM 调用的成功/降级/
+    审计剔除、耗时与 Token 用量聚合 + 最近异常调用明细。
+
+    项目区分：与反馈质量概览同模式——入参缺省 → 默认项目；
+    NULL project_id 的存量调用行视为默认项目（B9.3「NULL=默认项目」约定）。
+    """
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import func, or_
+
+    from app.domain.project.service import default_project_id
+    from app.infra.models import AiCallLog
+
+    pid = resolve_project_id(db, project_id)
+    conds = [AiCallLog.project_id == pid]
+    if pid == default_project_id(db):
+        conds = [or_(AiCallLog.project_id == pid, AiCallLog.project_id.is_(None))]
+
+    since = datetime.now() - timedelta(days=days)
+    rows = (
+        db.query(
+            AiCallLog.kind,
+            AiCallLog.outcome,
+            func.count(AiCallLog.id),
+            func.avg(AiCallLog.duration_ms),
+            func.sum(AiCallLog.prompt_tokens),
+            func.sum(AiCallLog.completion_tokens),
+        )
+        .filter(AiCallLog.created_at >= since, *conds)
+        .group_by(AiCallLog.kind, AiCallLog.outcome)
+        .all()
+    )
+    stat: dict[str, dict[str, Any]] = {}
+    for kind, outcome, cnt, avg_ms, p_tok, c_tok in rows:
+        s = stat.setdefault(
+            kind,
+            {"ok": 0, "llm_failed": 0, "audit_filtered": 0, "ms_sum": 0.0, "ms_cnt": 0, "p_tok": 0, "c_tok": 0},
+        )
+        s[outcome if outcome in ("ok", "llm_failed", "audit_filtered") else "llm_failed"] = cnt
+        if avg_ms is not None:
+            s["ms_sum"] += float(avg_ms) * cnt
+            s["ms_cnt"] += cnt
+        s["p_tok"] += p_tok or 0
+        s["c_tok"] += c_tok or 0
+
+    by_kind = []
+    for kind, s in sorted(stat.items(), key=lambda kv: -(kv[1]["ok"] + kv[1]["llm_failed"] + kv[1]["audit_filtered"])):
+        total = s["ok"] + s["llm_failed"] + s["audit_filtered"]
+        by_kind.append(
+            {
+                "kind": kind,
+                "total": total,
+                "ok": s["ok"],
+                "llm_failed": s["llm_failed"],
+                "audit_filtered": s["audit_filtered"],
+                "ok_rate": round(s["ok"] / total * 100, 1) if total else 0.0,
+                "avg_ms": round(s["ms_sum"] / s["ms_cnt"]) if s["ms_cnt"] else None,
+                "prompt_tokens": s["p_tok"],
+                "completion_tokens": s["c_tok"],
+            }
+        )
+
+    recent = (
+        db.query(AiCallLog)
+        .filter(AiCallLog.created_at >= since, AiCallLog.outcome != "ok")
+        .order_by(AiCallLog.id.desc())
+        .limit(20)
+        .all()
+    )
+    recent_issues = [
+        {
+            "id": r.id,
+            "kind": r.kind,
+            "outcome": r.outcome,
+            "duration_ms": r.duration_ms,
+            "model": r.model,
+            "created_at": r.created_at,
+        }
+        for r in recent
+    ]
+    total = sum(k["total"] for k in by_kind)
+    return ok_response({"days": days, "project_id": pid, "total": total, "by_kind": by_kind, "recent_issues": recent_issues})
+
+
 @router.get("/feedback/summary")
 def get_ai_feedback_summary(db: DbDep, _admin: AdminUser, project_id: int | None = None):
     """AI 质量概览（admin）：各功能赞踩、差评率与最近 bad case（按项目过滤）。

@@ -55,6 +55,13 @@ def build_interpretation(
         metric_ref=metric_id, start=start, end=end,
         dimensions=dimensions, path=[], compare=compare,
     )
+    # B2 观测按项目区分：目标指标归属项目（解析失败不影响主流程）
+    try:
+        from app.domain.query.service import _resolve_metric
+
+        obs_project_id = _resolve_metric(db, metric_id).project_id
+    except Exception:  # noqa: BLE001
+        obs_project_id = None
     children = [c for c in (tree.get("children") or []) if c.get("contribution_pct") is not None]
     top = children[:_TOP_N]
     if not top:
@@ -107,6 +114,8 @@ def build_interpretation(
         user_payload=user_payload,
         timeout=60.0,
         retries=1,  # 单句场景脆弱：网络抖动重试一次
+        kind="attribute_interpretation",
+        project_id=obs_project_id,
     )
     if result is None:
         return {
