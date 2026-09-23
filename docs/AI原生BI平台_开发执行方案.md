@@ -629,3 +629,27 @@ P5 验收后按演进规划继续，用户明确「邮件/企微推送先不用�
 - **验证**：`tests/test_insight.py` +2 用例；全量 **456 passed**；
   build:dev 14.0s 通过。
 - 下一步候选：A4 多指标联动归因（第一梯队收尾）。
+
+## 11.13 AI-P7：多指标联动归因（2026-09-23，A4 落地，第一梯队清零）
+
+用户确认继续（含「记得更新对应的文档」）。详见评估文档「P7 交付记录」：
+
+- **后端**：`domain/ai/metric_linkage.py`——同项目 active 且当前用户可见的候选
+  指标（限量 12），对齐日值 Pearson 相关（|r|≥0.6、对齐≥5 对、零方差排除），
+  本期 vs 前等长窗口判方向与变化幅度，|r| 倒序 TOP 3；AI 传播假设走
+  llm_narrative 引擎（数字全部 {{ref:KEY}} 预格式化回填、强制「可能」措辞、
+  1~3 候选句逐句审计），无 LLM/失败 → 规则句兜底、候选清单不受影响；
+  `GET /ai/metric-linkage`（软删目标显式报错）；_AI_KINDS + metric_linkage。
+- **前端**：`MetricLinkage.vue` 组件（红涨绿跌、r 保留 2 位、候选点击跳详情、
+  AiFeedback）；指标详情页异动假设卡内自动出现 + 总览异动卡片「关联指标」
+  按钮展开（weekWindow 抽取与归因共用自然周窗口）。
+- **验证**：`tests/test_linkage.py` 3 用例；全量 **460 passed**；build:dev 7.0s。
+- 至此第一梯队 A1~A4 全部落地；后续候选：B2 AI 观测面板补齐、C2 审计日志、
+  C3 项目级权限（C1 邮件/企微按用户要求暂缓）。
+- 工程纪要：①bash shim 抖动（dirname/tail 丢失）→ 构建与测试一律走 python
+  subprocess 包装；②pytest 默认临时目录 garbage 清理触发安全删除护栏
+  （>50 文件）→ runner 加 --basetemp 规避。
+- **验收修复（用户实测单日区间无清单）**：联动窗口归一——<7 天以 end 为锚
+  向前扩到 7 天、>31 天截最近 31 天（响应带 window.expanded，前端显示
+  「已按 XX ~ XX 分析」提示）；详情页组件传 show-empty，空态/失败给明确
+  说明不再静默。新增 1 用例；全量 **461 passed**；build:dev 11.6s。

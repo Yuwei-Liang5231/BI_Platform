@@ -13,6 +13,7 @@ import { attributeInterpretation } from "@/api/ai";
 import { anomalyHypothesis } from "@/api/ai";
 import TrendBadge from "@/components/business/TrendBadge.vue";
 import AiFeedback from "@/components/business/AiFeedback.vue";
+import MetricLinkage from "@/components/business/MetricLinkage.vue";
 import TermTip from "@/components/glossary/TermTip.vue";
 import { ElMessage } from "element-plus";
 import { formatMetricValue } from "@/utils/format";
@@ -525,6 +526,16 @@ onMounted(async () => {
                 />
               </p>
               <p v-else class="detail__ai-rule">{{ aiHypothesis.fallbackActionHint }}</p>
+              <!-- A4 多指标联动归因：检测为异动时自动找同期联动指标 + AI 传播假设；
+                   show-empty：无联动/请求失败时给明确说明，不静默消失 -->
+              <MetricLinkage
+                v-if="aiHypothesis.hasAnomaly"
+                :metric-id="metricId"
+                :start="range.start"
+                :end="range.end"
+                show-empty
+                class="detail__linkage"
+              />
             </template>
             <p v-else class="metric-empty">当前区间未检测到异动（指标正常），无需假设解释。</p>
           </template>
@@ -770,6 +781,12 @@ onMounted(async () => {
 .detail__ai-rule {
   color: var(--pwc-text-secondary);
   line-height: 1.8;
+}
+
+.detail__linkage {
+  margin-top: var(--pwc-space-3);
+  border-top: 1px dashed var(--pwc-border-color, #eef0f2);
+  padding-top: var(--pwc-space-3);
 }
 
 .detail__subhead {

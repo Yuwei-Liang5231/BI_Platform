@@ -18,6 +18,7 @@ from app.domain.ai import (
     attribute_interpretation,
     calc_notes,
     dashboard_summary,
+    metric_linkage,
     semantic_annotations,
 )
 from app.domain.project.service import resolve_project_id
@@ -147,6 +148,26 @@ def post_attribute_interpretation(
     return ok_response(data)
 
 
+# ---------------------------------------------------------------- 多指标联动归因（A4/P7）
+
+
+@router.get("/metric-linkage")
+def get_metric_linkage(
+    db: DbDep,
+    user: CurrentUser,
+    metric_id: int = Query(...),
+    start: str = Query(...),
+    end: str = Query(...),
+    top_n: int = Query(3, ge=1, le=5),
+):
+    """同期联动指标分析：同项目内与本指标相关性最高的 TOP N（权限同源，
+    受限候选剔除；r 为统计量按 2 位小数展示；AI 传播假设算写分离、可降级）。"""
+    data = metric_linkage.build_metric_linkage(
+        db, user, metric_id=metric_id, start=start, end=end, top_n=top_n
+    )
+    return ok_response(data)
+
+
 # ---------------------------------------------------------------- AI 反馈闭环（P4-2）
 
 
@@ -158,6 +179,7 @@ _AI_KINDS = (
     "semantic_annotations",
     "ask",
     "daily_insight",
+    "metric_linkage",
 )
 
 

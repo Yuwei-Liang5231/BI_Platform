@@ -100,3 +100,17 @@ export const listAiInsights = (params) =>
  *  最坏 TOP N(3) × 60s，timeout 200s 必须覆盖它（同归因解读教训） */
 export const runDailyInsight = () =>
   request.post("/ai/insight/run", null, { timeout: 200000 });
+
+/** 多指标联动归因（A4）：同期与本指标相关性最高的 TOP N + AI 传播假设。
+ *  query: { metricId, start, end, topN? } → { candidates, interpretation, rule_text, source, reason }
+ *  timeout 70s：后端 LLM 调用上限 60s（同归因解读教训） */
+export const metricLinkage = (params) =>
+  request.get("/ai/metric-linkage", {
+    params: {
+      metric_id: params.metricId,
+      start: params.start,
+      end: params.end,
+      top_n: params.topN ?? undefined,
+    },
+    timeout: 70000,
+  });

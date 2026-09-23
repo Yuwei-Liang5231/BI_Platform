@@ -20,6 +20,7 @@ import {
 } from "@/api/query";
 import { listNotifications, markRead } from "@/api/notifications";
 import AiInsightBar from "@/components/business/AiInsightBar.vue";
+import MetricLinkage from "@/components/business/MetricLinkage.vue";
 import { glossaryTerm } from "@/constants/glossary";
 import { formatMetricValue } from "@/utils/format";
 import { useProjectStore } from "@/stores/project";
@@ -49,6 +50,19 @@ watch(
   },
 );
 
+// 异动日所在自然周（周一~周日）——归因与联动分析共用同一窗口口径
+function weekWindow(dateStr) {
+  const d = new Date(dateStr);
+  const day = (d.getDay() + 6) % 7;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - day);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const iso = (x) =>
+    `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+  return [iso(monday), iso(sunday)];
+}
+
 async function loadAttribution(item) {
   const state = attribution[item.metric_id];
   if (state?.data || state?.loading) return;
@@ -62,18 +76,11 @@ async function loadAttribution(item) {
       return;
     }
     // 归因区间 = 异动日所在的自然周（周一~周日）
-    const d = new Date(item.date);
-    const day = (d.getDay() + 6) % 7;
-    const monday = new Date(d);
-    monday.setDate(d.getDate() - day);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    const iso = (x) =>
-      `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+    const [start, end] = weekWindow(item.date);
     const data = await attributeDelta({
       metric: item.metric_id,
-      start: iso(monday),
-      end: iso(sunday),
+      start,
+      end,
       dimension: column,
       compare: "mom",
       top_n: 3,
@@ -86,6 +93,19 @@ async function loadAttribution(item) {
       error: "该指标暂无法归因（比率类或归因区间无数据）",
     };
   }
+}
+
+// A4 多指标联动归因：异动卡片内按需展开（同项目同期联动指标 + AI 传播假设）
+const linkage = reactive({}); // { [metricId]: { open, start, end } }
+
+function toggleLinkage(item) {
+  const st = linkage[item.metric_id];
+  if (st?.open) {
+    st.open = false;
+    return;
+  }
+  const [start, end] = weekWindow(item.date);
+  linkage[item.metric_id] = { open: true, start, end };
 }
 
 async function toggleDetail(item) {
@@ -243,6 +263,18 @@ onMounted(fetchScan);
           <el-button text type="primary" size="small" @click="loadAttribution(item)">
             查看主要来源
           </el-button>
+          <el-button text type="primary" size="small" @click="toggleLinkage(item)">
+            {{ linkage[item.metric_id]?.open ? "收起关联指标" : "关联指标" }}
+          </el-button>
+          <!-- A4 多指标联动归因：同项目同期联动指标 + AI 传播假设（自然周窗口同归因口径） -->
+          <MetricLinkage
+            v-if="linkage[item.metric_id]?.open"
+            :metric-id="item.metric_id"
+            :start="linkage[item.metric_id].start"
+            :end="linkage[item.metric_id].end"
+            :project-id="projectStore.lockedId"
+            show-empty
+          />
           <template v-if="attribution[item.metric_id]">
             <span v-if="attribution[item.metric_id].loading" class="overview__attr-loading">
               归因计算中…
