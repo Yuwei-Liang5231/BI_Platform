@@ -685,6 +685,95 @@ class TestAttributeInterpretation:
             _cleanup(client, env)
 
 
+# ---------------------------------------------------------------- P4 反馈闭环与语义下游
+
+
+class TestAiFeedback:
+    def test_feedback_roundtrip_and_summary(self, client):
+        """有用/无用反馈落库 + admin 质量概览（按功能聚合、差评率、最近 bad case）。"""
+        r = client.post("/api/ai/feedback", json={
+            "kind": "dashboard_summary", "target": "period:2026-01-01~2026-01-31",
+            "rating": "down", "correction": "数字对不上",
+        })
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["recorded"] is True
+        r2 = client.post("/api/ai/feedback", json={
+            "kind": "dashboard_summary", "rating": "up",
+        })
+        assert r2.json()["data"]["recorded"] is True
+
+        s = client.get("/api/ai/feedback/summary")
+        assert s.status_code == 200, s.text
+        d = s.json()["data"]
+        row = next(x for x in d["by_kind"] if x["kind"] == "dashboard_summary")
+        assert row["up"] >= 1 and row["down"] >= 1
+        assert row["down_rate"] > 0
+        assert any(b["correction"] == "数字对不上" for b in d["recent_bad"])
+
+    def test_feedback_rejects_unknown_kind(self, client):
+        r = client.post("/api/ai/feedback", json={"kind": "whatever", "rating": "up"})
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["recorded"] is False
+
+    def test_feedback_summary_requires_admin(self, client):
+        from tests.conftest import create_test_user
+
+        vw = create_test_user(client, f"vw_fb_{_suffix()}", role="viewer")
+        r = client.get("/api/ai/feedback/summary", headers=vw)
+        assert r.status_code == 403
+
+    def test_feedback_summary_scoped_by_project(self, client):
+        """概览按项目过滤：A 项目的反馈不混入 B 项目视图；NULL 存量归默认项目。"""
+        import uuid
+
+        pa = client.post("/api/projects", json={"name": f"fbpa_{uuid.uuid4().hex[:6]}"}).json()["data"]
+        pb = client.post("/api/projects", json={"name": f"fbpb_{uuid.uuid4().hex[:6]}"}).json()["data"]
+        try:
+            # NULL（不带 project_id）→ 默认项目；A/B 各一条 down
+            client.post("/api/ai/feedback", json={"kind": "ask", "rating": "down", "correction": "默认项目"})
+            client.post("/api/ai/feedback", json={
+                "kind": "ask", "rating": "down", "correction": "项目A", "project_id": pa["id"],
+            })
+            client.post("/api/ai/feedback", json={
+                "kind": "ask", "rating": "down", "correction": "项目B", "project_id": pb["id"],
+            })
+
+            sa = client.get("/api/ai/feedback/summary", params={"project_id": pa["id"]}).json()["data"]
+            assert any(b["correction"] == "项目A" for b in sa["recent_bad"])
+            assert not any(b["correction"] in ("项目B", "默认项目") for b in sa["recent_bad"])
+
+            # 缺省 → 默认项目：NULL 行可见，A/B 项目行不可见
+            sd = client.get("/api/ai/feedback/summary").json()["data"]
+            assert any(b["correction"] == "默认项目" for b in sd["recent_bad"])
+            assert not any(b["correction"] in ("项目A", "项目B") for b in sd["recent_bad"])
+        finally:
+            client.delete(f"/api/projects/{pa['id']}")
+            client.delete(f"/api/projects/{pb['id']}")
+
+
+class TestSemanticsDownstream:
+    def test_calc_notes_carries_confirmed_semantics(self, client):
+        """P4-1：已人工确认的字段语义随口径助手返回（无标注时为空串，零退化）。"""
+        env = _make_env(client)
+        try:
+            ds_id = _dataset_id(client, env["ds_name"])
+            r = client.post("/api/ai/metric-calc-notes", json={
+                "dataset_id": ds_id, "column": "amount", "aggregation": "sum",
+            })
+            assert r.status_code == 200, r.text
+            assert r.json()["data"]["confirmed_semantics"] == ""
+
+            client.put(f"/api/datasets/{ds_id}/semantic-annotations",
+                       json={"annotations": {"amount": "销售金额，单位元"}})
+            r2 = client.post("/api/ai/metric-calc-notes", json={
+                "dataset_id": ds_id, "column": "amount", "aggregation": "sum",
+            })
+            assert r2.status_code == 200, r2.text
+            assert r2.json()["data"]["confirmed_semantics"] == "销售金额，单位元"
+        finally:
+            _cleanup(client, env)
+
+
 # ---------------------------------------------------------------- P2 #5 问数动态推荐
 
 

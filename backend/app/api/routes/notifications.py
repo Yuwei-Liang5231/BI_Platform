@@ -33,6 +33,7 @@ def _to_dict(n: Notification) -> dict:
         "baseline_mean": n.baseline_mean,
         "abnormality": n.abnormality,
         "read": n.read_at is not None,
+        "kind": n.kind or "anomaly",
         "created_at": n.created_at,
     }
 

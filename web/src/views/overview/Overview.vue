@@ -19,6 +19,7 @@ import {
   breakdownDimensions,
 } from "@/api/query";
 import { listNotifications, markRead } from "@/api/notifications";
+import AiInsightBar from "@/components/business/AiInsightBar.vue";
 import { glossaryTerm } from "@/constants/glossary";
 import { formatMetricValue } from "@/utils/format";
 import { useProjectStore } from "@/stores/project";
@@ -172,6 +173,10 @@ onMounted(fetchScan);
         检测口径：{{ glossaryTerm("anomaly")?.detail }}{{ glossaryTerm("materiality")?.brief }}逐指标阈值可在指标管理中调整。
       </template>
     </el-alert>
+
+    <!-- A2 常驻 AI 洞察条：每日定时洞察的页面呈现（与统一看板一致：紧凑模式
+         默认收起为一行摘要，展开才看 AI 解释；空态不渲染） -->
+    <AiInsightBar :project-id="projectStore.lockedId" compact />
 
     <template v-if="scan">
       <p class="overview__summary">

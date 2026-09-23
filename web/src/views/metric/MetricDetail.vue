@@ -12,6 +12,7 @@ import { exportCsvBlob, attributeTreeNode } from "@/api/query";
 import { attributeInterpretation } from "@/api/ai";
 import { anomalyHypothesis } from "@/api/ai";
 import TrendBadge from "@/components/business/TrendBadge.vue";
+import AiFeedback from "@/components/business/AiFeedback.vue";
 import TermTip from "@/components/glossary/TermTip.vue";
 import { ElMessage } from "element-plus";
 import { formatMetricValue } from "@/utils/format";
@@ -517,6 +518,11 @@ onMounted(async () => {
             <template v-if="aiHypothesis.hasAnomaly">
               <p v-if="aiHypothesis.hypothesis.length" class="detail__ai-hyp">
                 <span v-for="(s, j) in aiHypothesis.hypothesis" :key="j" class="detail__ai-line">{{ s }}</span>
+                <AiFeedback
+                  v-if="aiHypothesis.source === 'llm'"
+                  kind="anomaly_hypothesis"
+                  :target="`metric:${metricId}`"
+                />
               </p>
               <p v-else class="detail__ai-rule">{{ aiHypothesis.fallbackActionHint }}</p>
             </template>
@@ -603,6 +609,11 @@ onMounted(async () => {
               <span class="attr__interp-badge">AI 解读</span>
               <span v-if="attrInterpLoading" class="attr__interp-text">生成中…</span>
               <span v-else-if="attrInterp" class="attr__interp-text">{{ attrInterp }}</span>
+              <AiFeedback
+                v-if="attrInterp"
+                kind="attribute_interpretation"
+                :target="`metric:${metricId}`"
+              />
               <span v-else class="attr__interp-text attr__interp-hint">
                 {{ attrInterpHint }}
                 <el-link

@@ -4,7 +4,7 @@
  * LLM 模型管理（admin）：多模型登记（OpenAI 兼容接口）/ 切换启用 /
  * 连通性测试 / 删除。启用中的模型优先于 env 兜底配置，供 AI 问数使用。
  */
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import {
@@ -15,6 +15,10 @@ import {
   testLlmModel,
   updateLlmModel,
 } from "@/api/llm";
+import { aiFeedbackSummary } from "@/api/ai";
+import { useProjectStore } from "@/stores/project";
+
+const projectStore = useProjectStore();
 
 const loading = ref(false);
 const models = ref([]);
@@ -172,7 +176,52 @@ async function testForm() {
   }
 }
 
-onMounted(load);
+/* ---------- AI 反馈质量概览（P4 反馈闭环的 admin 视图 + P6 daily_insight 维度） ---------- */
+const KIND_LABELS = {
+  dashboard_summary: "看板速览",
+  anomaly_hypothesis: "异动假设",
+  attribute_interpretation: "归因解读",
+  calc_notes: "口径助手",
+  semantic_annotations: "语义标注",
+  ask: "问数",
+  daily_insight: "每日洞察",
+};
+const kindLabel = (k) => KIND_LABELS[k] ?? k;
+
+const fbStats = ref([]); // [{ kind, up, down, total, down_rate }]
+const fbBad = ref([]);   // 最近 20 条无用途（含人工修正）
+const fbLoading = ref(false);
+
+// 概览跟随顶部项目切换器（锁定为具体项目；全部项目视图回落默认项目）
+const fbProjectName = computed(
+  () => projectStore.projects.find((p) => p.id === projectStore.lockedId)?.name ?? "",
+);
+
+async function loadFeedback() {
+  fbLoading.value = true;
+  try {
+    const data = await aiFeedbackSummary({ projectId: projectStore.lockedId });
+    fbStats.value = data?.by_kind ?? [];
+    fbBad.value = data?.recent_bad ?? [];
+  } catch {
+    /* 概览失败不影响本页主功能 */
+  } finally {
+    fbLoading.value = false;
+  }
+}
+
+// 切项目重新拉取（模型登记是全局的，只刷新概览）
+watch(
+  () => projectStore.lockedId,
+  loadFeedback,
+);
+
+const fmtTime = (t) => (t || "").slice(0, 16).replace("T", " ");
+
+onMounted(() => {
+  load();
+  loadFeedback();
+});
 </script>
 
 <template>
@@ -265,6 +314,48 @@ onMounted(load);
       </template>
     </el-table>
 
+    <!-- AI 反馈质量概览（P4 反馈闭环 admin 视图，含 P6 每日洞察 daily_insight 维度；
+         跟随顶部项目切换器过滤，NULL 存量反馈归默认项目） -->
+    <section class="pwc-card llm-fb">
+      <div class="pwc-card__header llm-fb__head">
+        <h4>AI 反馈质量概览</h4>
+        <span class="llm-fb__sub">
+          用户在各 AI 输出旁「有用 / 无用」的评价汇总与最近人工修正 ·
+          <template v-if="fbProjectName">当前项目：{{ fbProjectName }}</template>
+        </span>
+        <el-button size="small" text type="primary" :loading="fbLoading" @click="loadFeedback">
+          刷新
+        </el-button>
+      </div>
+      <el-table v-if="fbStats.length" :data="fbStats" v-loading="fbLoading" size="small">
+        <el-table-column label="功能" min-width="120">
+          <template #default="{ row }">{{ kindLabel(row.kind) }}</template>
+        </el-table-column>
+        <el-table-column prop="up" label="有用" width="90" />
+        <el-table-column prop="down" label="无用" width="90" />
+        <el-table-column prop="total" label="合计" width="90" />
+        <el-table-column label="差评率" width="110">
+          <template #default="{ row }">{{ row.down_rate }}%</template>
+        </el-table-column>
+      </el-table>
+      <el-empty
+        v-else-if="!fbLoading"
+        :image-size="60"
+        description="暂无反馈数据：用户在各 AI 输出旁点「有用 / 无用」后这里会自动汇总"
+      />
+      <template v-if="fbBad.length">
+        <h5 class="llm-fb__bad-title">最近无用途（含人工修正，按时间倒序，最多 20 条）</h5>
+        <ul class="llm-fb__bad">
+          <li v-for="(b, i) in fbBad" :key="i" class="llm-fb__bad-item">
+            <el-tag size="small" effect="light" type="danger">{{ kindLabel(b.kind) }}</el-tag>
+            <span class="llm-fb__bad-target">{{ b.target }}</span>
+            <span v-if="b.correction" class="llm-fb__bad-correction">修正：{{ b.correction }}</span>
+            <span class="llm-fb__bad-meta">{{ b.username }} · {{ fmtTime(b.created_at) }}</span>
+          </li>
+        </ul>
+      </template>
+    </section>
+
     <el-dialog
       v-model="dialogVisible"
       :title="editingId === null ? '添加模型' : '编辑模型'"
@@ -340,4 +431,72 @@ onMounted(load);
   font-weight: 600;
   margin-right: 8px;
 }
+
+/* AI 反馈质量概览 */
+.llm-fb {
+  margin-top: var(--pwc-space-5, 16px);
+}
+
+.llm-fb__head {
+  display: flex;
+  align-items: center;
+  gap: var(--pwc-space-3, 12px);
+}
+
+.llm-fb__head h4 {
+  display: flex;
+  align-items: center;
+}
+
+.llm-fb__head .el-button {
+  margin-left: auto;
+}
+
+.llm-fb__sub {
+  font-size: var(--pwc-font-body-s, 13px);
+  font-weight: 400;
+  color: var(--pwc-text-secondary, #535353);
+}
+
+.llm-fb__bad-title {
+  margin: var(--pwc-space-3, 12px) 0 var(--pwc-space-1, 4px);
+  font-size: var(--pwc-font-body-s, 13px);
+  color: var(--pwc-text-secondary, #535353);
+}
+
+.llm-fb__bad {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.llm-fb__bad-item {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: var(--pwc-font-body-s, 13px);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--pwc-border-color, #eef0f2);
+}
+
+.llm-fb__bad-item:last-child {
+  border-bottom: none;
+}
+
+.llm-fb__bad-target {
+  color: var(--pwc-text-primary);
+}
+
+.llm-fb__bad-correction {
+  color: var(--pwc-text-primary);
+}
+
+.llm-fb__bad-meta {
+  margin-left: auto;
+  color: var(--pwc-text-secondary, #535353);
+}
+
 </style>

@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     # 如 '{"enable_thinking": false}' 关闭推理型模型的思考过程（省时省钱）
     llm_extra_body: str = ""
 
+    # ---- 每日定时洞察（P5/A1 主动洞察）----
+    # 后台任务每日到达 ai_insight_hour 点后自动执行一次（当日幂等）；
+    # 关闭后仍可通过 POST /ai/insight/run（admin）手动触发。
+    ai_insight_enabled: bool = True
+    ai_insight_hour: int = 8
+    # 每项目每次洞察最多生成的 AI 假设条数（控制 LLM 成本）
+    ai_insight_top_n: int = 3
+
     model_config = SettingsConfigDict(extra="ignore")
 
     # ---- 派生路径 ----

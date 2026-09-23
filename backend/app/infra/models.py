@@ -320,6 +320,53 @@ class Notification(Base):
     baseline_mean: Mapped[float | None] = mapped_column(nullable=True)
     abnormality: Mapped[float | None] = mapped_column(nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 通知类别（P5）：anomaly=异动扫描 / insight=每日定时洞察（AI 假设摘要）
+    kind: Mapped[str] = mapped_column(String(16), default="anomaly")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+
+
+class AiInsight(Base):
+    """每日定时洞察（P5/A1 主动洞察）：后台任务自动扫描 → AI 假设 → 站内推送。
+
+    去重语义：同 (project_id, insight_date, metric_id, direction) 只生成一条。
+    source：llm（AI 假设）/ rule（规则文案降级）。
+    body 由服务端拼装（算写分离：数字来自检测结果，AI 只提供解释句）。
+    """
+    __tablename__ = "ai_insights"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    insight_date: Mapped[date] = mapped_column(Date, index=True)
+    metric_id: Mapped[int] = mapped_column(ForeignKey("metrics.id"), index=True)
+    metric_code: Mapped[str] = mapped_column(String(100))
+    direction: Mapped[str] = mapped_column(String(10))               # up / down
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(8), default="rule")   # llm / rule
+    current: Mapped[float | None] = mapped_column(nullable=True)
+    baseline_mean: Mapped[float | None] = mapped_column(nullable=True)
+    abnormality: Mapped[float | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+
+
+class AiFeedback(Base):
+    """AI 输出反馈（P4-2 反馈闭环）：人工对 AI 产出的评价与修正。
+
+    kind：功能点（dashboard_summary / anomaly_hypothesis /
+    attribute_interpretation / calc_notes / semantic_annotations / ask）；
+    rating：up（有用）/ down（无用）；correction：人工修正文本（可选）。
+    用途：① AI 质量观测（各功能赞踩、bad case 收集）② 后续提示词与口径优化回流。
+    B10 规矩：新表挂 project_id。
+    """
+    __tablename__ = "ai_feedbacks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    target: Mapped[str] = mapped_column(String(200), default="")
+    rating: Mapped[str] = mapped_column(String(8))                  # up / down
+    correction: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
 
 

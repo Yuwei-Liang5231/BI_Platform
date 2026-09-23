@@ -41,6 +41,24 @@ export const suggestCalcNotes = (data) =>
     sample_values: data.sampleValues ?? null,
   });
 
+/** AI 输出反馈（P4-2）：有用/无用 + 人工修正。
+ *  body: { kind, target, rating:'up'|'down', correction?, projectId? } */
+export const submitAiFeedback = (data) =>
+  request.post("/ai/feedback", {
+    kind: data.kind,
+    target: data.target ?? "",
+    rating: data.rating,
+    correction: data.correction ?? "",
+    project_id: data.projectId ?? null,
+  });
+
+/** AI 质量概览（admin）：各功能赞踩 + 差评率 + 最近 bad case（按项目过滤，
+ *  缺省 → 默认项目；跟随顶部项目切换器）。 */
+export const aiFeedbackSummary = (params) =>
+  request.get("/ai/feedback/summary", {
+    params: { project_id: params?.projectId ?? undefined },
+  });
+
 /** 字段语义标注建议：按列名+类型+样本值生成每列业务含义备注（P2）。
  *  body: { datasetId } → { annotations: {列名: 备注}, llm_configured } */
 export const suggestSemanticAnnotations = (datasetId) =>
@@ -66,3 +84,19 @@ export const attributeInterpretation = (data) =>
     },
     { timeout: 70000 }
   );
+
+/** 常驻洞察条（A2）：最近 N 天的每日洞察，按指标去重取最新（权限同源，受限指标隐藏）。
+ *  query: { projectId?, limit?, days? } → { items, generated_today, insight_date } */
+export const listAiInsights = (params) =>
+  request.get("/ai/insights", {
+    params: {
+      project_id: params.projectId ?? undefined,
+      limit: params.limit ?? undefined,
+      days: params.days ?? undefined,
+    },
+  });
+
+/** 手动触发一次每日洞察（admin，幂等）：无 LLM 秒回；有 LLM 时逐条生成
+ *  最坏 TOP N(3) × 60s，timeout 200s 必须覆盖它（同归因解读教训） */
+export const runDailyInsight = () =>
+  request.post("/ai/insight/run", null, { timeout: 200000 });

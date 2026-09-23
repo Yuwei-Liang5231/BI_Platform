@@ -243,7 +243,16 @@ async function handleDeleteProject(p) {
               role="button"
               @click="openNotificationMetric(n)"
             >
-              <p class="notif__title">{{ n.title }}</p>
+              <p class="notif__title">
+                <el-tag
+                  v-if="n.kind === 'insight'"
+                  type="warning"
+                  effect="light"
+                  size="small"
+                  class="notif__kind"
+                >每日洞察</el-tag>
+                {{ n.title }}
+              </p>
               <p class="notif__body">{{ n.body }}</p>
               <p class="notif__time">{{ shortTime(n.created_at) }}</p>
             </div>
@@ -447,6 +456,12 @@ async function handleDeleteProject(p) {
 
 .notif__title {
   font-size: var(--pwc-font-body-s);
+}
+
+/* P5：每日洞察标签（与异动通知区分） */
+.notif__kind {
+  margin-right: 6px;
+  vertical-align: middle;
 }
 
 .notif__body {

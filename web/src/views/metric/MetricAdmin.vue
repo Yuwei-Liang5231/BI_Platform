@@ -21,6 +21,7 @@ import { getDataset, listRelations } from "@/api/datasets";
 import { getRestrictions, putRestrictions } from "@/api/auth";
 import { suggestCalcNotes } from "@/api/ai";
 import { useAuthStore } from "@/stores/auth";
+import AiFeedback from "@/components/business/AiFeedback.vue";
 import TermTip from "@/components/glossary/TermTip.vue";
 import { useDatasetStore } from "@/stores/dataset";
 import { useMetricStore } from "@/stores/metric";
@@ -548,6 +549,8 @@ const flatTimePlaceholder = computed(() => {
 const aiCalcNotes = reactive({
   loading: false,
   llmConfigured: true, // 首次默认可点；后端返回 llm_configured=false 后禁用
+  generated: false, // 本次已生成（用于展示反馈入口）
+  semantics: "", // 本次使用的已确认字段语义（P4-1，可为空）
 });
 
 async function handleAiCalcNotes() {
@@ -590,7 +593,14 @@ async function handleAiCalcNotes() {
     if (notes.rationale) form.calc_notes.rationale = notes.rationale;
     if (notes.alternatives) form.calc_notes.alternatives = notes.alternatives;
     if (notes.pitfalls) form.calc_notes.pitfalls = notes.pitfalls;
-    ElMessage.success("已根据口径生成建议，请核对后手动保存");
+    // P4-1：消费人工确认的字段语义（有则口径以它为准，提示用户可感知）
+    aiCalcNotes.semantics = res?.confirmed_semantics || "";
+    aiCalcNotes.generated = true;
+    ElMessage.success(
+      aiCalcNotes.semantics
+        ? `已结合人工确认的字段语义「${aiCalcNotes.semantics}」生成建议，请核对后手动保存`
+        : "已根据口径生成建议，请核对后手动保存",
+    );
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -1226,6 +1236,11 @@ watch(
               >
                 AI 帮写口径
               </el-button>
+              <AiFeedback
+                v-if="aiCalcNotes.generated"
+                kind="calc_notes"
+                :target="`dataset:${builder.flat.table}:${builder.flat.column}`"
+              />
             </div>
 
             <!-- 简单聚合 -->

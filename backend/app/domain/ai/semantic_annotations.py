@@ -37,7 +37,9 @@ _SEMANTIC_SYSTEM = """你是数据表字段语义标注助手。给定一张表�
 2. 键必须严格使用给定列名，不得发明不存在的列；
 3. 备注一句话（不超过 40 字），说清该列业务含义/单位/粒度，不确定时写"待确认"；
 4. 日期列标注格式粒度（如"日粒度日期"），维度列标注业务实体（如"销售渠道"），
-   数值列标注度量含义与单位（如"订单金额，单位元"）。"""
+   数值列标注度量含义与单位（如"订单金额，单位元"）；
+5. 若输入含 confirmed_semantics（人工已确认的语义），它是权威口径：
+   同一列的建议不得与之矛盾，术语与风格向其看齐。"""
 
 
 def _columns_of(dataset: Dataset) -> list[dict]:
@@ -73,10 +75,15 @@ def suggest_annotations(db: Session, dataset_id: int) -> dict[str, Any]:
         for c in cols
     ]
     config = resolve_llm_config(db, settings)
+    # P4-1：把人工已确认的语义回传，让建议风格一致且不与之矛盾（记忆打通）
+    confirmed = load_annotations(dataset)
     obj = chat_json(
         config,
         _SEMANTIC_SYSTEM,
-        json.dumps({"columns": payload_cols}, ensure_ascii=False),
+        json.dumps(
+            {"columns": payload_cols, "confirmed_semantics": confirmed or None},
+            ensure_ascii=False,
+        ),
         timeout=60.0,
         retries=0,
     )

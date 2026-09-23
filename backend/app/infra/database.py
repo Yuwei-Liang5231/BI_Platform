@@ -97,13 +97,20 @@ def migrate_project_columns() -> None:
       不到旧约束时迁移为空操作。
     """
     with get_engine().begin() as conn:
-        for table in ("datasets", "metrics", "ask_conversations", "anomaly_configs"):
+        for table in ("datasets", "metrics", "ask_conversations", "anomaly_configs", "notifications"):
             rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
             if not rows:
                 continue  # 表尚不存在：create_all 已按新结构处理
             cols = {r[1] for r in rows}
-            if "project_id" not in cols:
+            if "project_id" not in cols and table != "notifications":
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN project_id INTEGER")
+            # P5：notifications 补 kind 列（存量行默认 anomaly，零迁移兼容）
+            if table == "notifications":
+                if "kind" not in cols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE notifications ADD COLUMN kind TEXT DEFAULT 'anomaly'"
+                    )
+                continue
             if table == "anomaly_configs" and "materiality_pct" not in cols:
                 conn.exec_driver_sql("ALTER TABLE anomaly_configs ADD COLUMN materiality_pct REAL DEFAULT 5.0")
             # P2 复合键关系：存量表补 column_pairs JSON 列（NULL = 单列键，零迁移兼容）

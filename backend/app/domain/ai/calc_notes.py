@@ -8,6 +8,10 @@
 - aggregation ∈ {sum, avg, count_distinct, count, max, min}；
 - column 必须真实存在于 dataset.schema_json 的字段清单中。
 非法 → 抛 40000 业务错误（不进 LLM）。
+
+P4-1 语义标注下游打通：若该字段已有**人工确认**的业务含义（AI 字段语义标注
+落库），则作为强约束传给 LLM——口径说明必须以人工语义为准，不得与之矛盾。
+无标注时行为与 P1 完全一致（零退化）。
 """
 
 from __future__ import annotations
@@ -36,7 +40,10 @@ _CALC_NOTES_SYSTEM = """你是企业指标口径编写助手。基于列名、�
    "alternatives": ["其他可选聚合方式或口径视角"],
    "pitfalls": "口径易踩坑处（如空值处理、重复计数、单位口径等）"
 }}
-不要输出任何额外字段或说明文字。"""
+不要输出任何额外字段或说明文字。
+
+若输入中带有 confirmed_semantics（人工确认的字段业务含义），它是权威口径：
+生成的所有内容必须与之保持一致，不得给出与之矛盾的解释或别名。"""
 
 
 def suggest_calc_notes(
@@ -73,11 +80,16 @@ def suggest_calc_notes(
         )
 
     llm_configured = resolve_llm_config(db, settings) is not None
+    # P4-1：人工确认的字段语义（下游消费 column_semantics，无则空串）
+    from app.domain.ai.semantic_annotations import load_annotations
+
+    confirmed = (load_annotations(dataset).get(column) or "").strip()
     empty = {
         "name": "",
         "aliases": [],
         "calc_notes": {"rationale": "", "alternatives": [], "pitfalls": ""},
         "llm_configured": llm_configured,
+        "confirmed_semantics": confirmed,
     }
     if not llm_configured:
         return empty
@@ -96,6 +108,7 @@ def suggest_calc_notes(
         "aggregation": aggregation,
         "alias": alias or "",
         "samples": samples,
+        "confirmed_semantics": confirmed or None,  # 人工确认语义（权威）
     }
     obj = chat_json(
         config,
@@ -117,4 +130,5 @@ def suggest_calc_notes(
             "pitfalls": str(notes.get("pitfalls") or ""),
         },
         "llm_configured": True,
+        "confirmed_semantics": confirmed,
     }

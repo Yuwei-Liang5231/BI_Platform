@@ -157,6 +157,41 @@ def restricted_metric_ids(db: Session, user: User) -> set[int]:
     return {row.metric_id for row in rows}
 
 
+def build_user_hidden_map(db: Session) -> dict[int, set[int]]:
+    """批量构建「用户 id -> 受限指标集合」映射（P5 提取共用）。
+
+    供通知 fan-out（异动扫描/每日洞察）等需要按用户逐个判权的场景使用，
+    一次查询全部受限登记，避免逐用户 N 次查询；语义与 restricted_metric_ids
+    完全一致（admin 恒空集，其余按 role+department 命中）。
+    """
+    from app.infra.models import MetricVisibilityRestriction
+
+    restrict_by_subject: dict[tuple[str, str], set[int]] = {}
+    for stype, svalue, mid in (
+        db.query(
+            MetricVisibilityRestriction.subject_type,
+            MetricVisibilityRestriction.subject_value,
+            MetricVisibilityRestriction.metric_id,
+        ).all()
+    ):
+        restrict_by_subject.setdefault((stype, svalue), set()).add(mid)
+
+    users = db.query(User).filter(User.status == "active").all()
+    out: dict[int, set[int]] = {}
+    for u in users:
+        if u.role == "admin":
+            out[u.id] = set()
+            continue
+        hidden: set[int] = set()
+        subjects = [("role", u.role)]
+        if u.department:
+            subjects.append(("department", u.department))
+        for s in subjects:
+            hidden |= restrict_by_subject.get(s, set())
+        out[u.id] = hidden
+    return out
+
+
 def filter_visible_metrics(db: Session, user: User, metrics: list[Metric]) -> list[Metric]:
     hidden = restricted_metric_ids(db, user)
     if not hidden:

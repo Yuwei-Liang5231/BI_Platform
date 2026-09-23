@@ -145,3 +145,207 @@ def post_attribute_interpretation(
         dimensions=payload.dimensions, compare=payload.compare,
     )
     return ok_response(data)
+
+
+# ---------------------------------------------------------------- AI 反馈闭环（P4-2）
+
+
+_AI_KINDS = (
+    "dashboard_summary",
+    "anomaly_hypothesis",
+    "attribute_interpretation",
+    "calc_notes",
+    "semantic_annotations",
+    "ask",
+    "daily_insight",
+)
+
+
+class AiFeedbackIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    target: str = ""
+    rating: str          # up / down
+    correction: str = ""
+    project_id: int | None = None
+
+
+@router.post("/feedback")
+def post_ai_feedback(db: DbDep, user: CurrentUser, payload: AiFeedbackIn):
+    """记录一次 AI 输出反馈（有用/无用 + 可选人工修正）。
+
+    零阻塞：反馈失败不影响任何 AI 主流程；kind 白名单防脏数据。
+    """
+    from app.infra.models import AiFeedback
+
+    kind = (payload.kind or "").strip()
+    rating = (payload.rating or "").strip().lower()
+    if kind not in _AI_KINDS:
+        return ok_response({"recorded": False, "reason": "unknown_kind"})
+    if rating not in ("up", "down"):
+        return ok_response({"recorded": False, "reason": "bad_rating"})
+
+    row = AiFeedback(
+        user_id=user.id,
+        project_id=payload.project_id,
+        kind=kind,
+        target=(payload.target or "")[:200],
+        rating=rating,
+        correction=(payload.correction or "")[:2000],
+    )
+    db.add(row)
+    db.commit()
+    return ok_response({"recorded": True, "id": row.id})
+
+
+@router.get("/feedback/summary")
+def get_ai_feedback_summary(db: DbDep, _admin: AdminUser, project_id: int | None = None):
+    """AI 质量概览（admin）：各功能赞踩、差评率与最近 bad case（按项目过滤）。
+
+    项目归属：入参缺省 → 默认项目；NULL project_id 的存量反馈行视为默认项目。
+    """
+    from sqlalchemy import func, or_
+
+    from app.domain.project.service import default_project_id, resolve_project_id
+    from app.infra.models import AiFeedback, User
+
+    pid = resolve_project_id(db, project_id)
+    conds = [AiFeedback.project_id == pid]
+    if pid == default_project_id(db):
+        # NULL = 未指定项目的存量反馈，归默认项目（与 B9.3「NULL=默认项目」约定一致）
+        conds = [or_(AiFeedback.project_id == pid, AiFeedback.project_id.is_(None))]
+
+    rows = (
+        db.query(
+            AiFeedback.kind,
+            AiFeedback.rating,
+            func.count(AiFeedback.id),
+        )
+        .filter(*conds)
+        .group_by(AiFeedback.kind, AiFeedback.rating)
+        .all()
+    )
+    stat: dict[str, dict[str, int]] = {}
+    for kind, rating, cnt in rows:
+        s = stat.setdefault(kind, {"up": 0, "down": 0})
+        s[rating] = cnt
+    by_kind = [
+        {
+            "kind": k,
+            "up": v["up"],
+            "down": v["down"],
+            "total": v["up"] + v["down"],
+            "down_rate": round(v["down"] / (v["up"] + v["down"]) * 100, 1)
+            if (v["up"] + v["down"])
+            else 0.0,
+        }
+        for k, v in sorted(stat.items(), key=lambda kv: -kv[1]["down"])
+    ]
+
+    bad = (
+        db.query(AiFeedback, User.username)
+        .outerjoin(User, User.id == AiFeedback.user_id)
+        .filter(AiFeedback.rating == "down", *conds)
+        .order_by(AiFeedback.id.desc())
+        .limit(20)
+        .all()
+    )
+    recent_bad = [
+        {
+            "kind": f.kind,
+            "target": f.target,
+            "correction": f.correction,
+            "username": uname or "",
+            "created_at": f.created_at,
+        }
+        for f, uname in bad
+    ]
+    return ok_response({"by_kind": by_kind, "recent_bad": recent_bad})
+
+
+# ---------------------------------------------------------------- 每日洞察（P5/A1）
+
+
+@router.post("/insight/run")
+def post_insight_run(db: DbDep, _admin: AdminUser):
+    """手动触发一次每日洞察（幂等；调度器每日自动执行，此接口用于验收/补跑）。"""
+    from app.domain.insight.service import run_daily_insight
+
+    data = run_daily_insight(db)
+    return ok_response(data)
+
+
+@router.get("/insights")
+def get_ai_insights(
+    db: DbDep,
+    user: CurrentUser,
+    project_id: int | None = None,
+    limit: int = Query(3, ge=1, le=10),
+    days: int = Query(3, ge=1, le=30),
+):
+    """洞察条数据源（A2 常驻 AI 洞察条）：最近 N 天的每日洞察，按指标去重取最新。
+
+    - 权限同源：受限指标（role+department 登记）的洞察对当前用户隐藏；
+    - 软删指标不再展示（join metrics.status == active）；
+    - 纯读接口无副作用：空结果由前端决定是否提示 admin 手动生成。
+    """
+    from datetime import date, timedelta
+
+    from sqlalchemy import exists
+
+    from app.domain.auth.service import build_user_hidden_map
+    from app.domain.project.service import resolve_project_id
+    from app.infra.models import AiInsight, Metric
+
+    pid = resolve_project_id(db, project_id)
+    hidden = build_user_hidden_map(db).get(user.id, set())
+    today = date.today()
+    since = today - timedelta(days=days - 1)
+
+    rows = (
+        db.query(AiInsight, Metric.name)
+        .join(Metric, Metric.id == AiInsight.metric_id)
+        .filter(
+            AiInsight.project_id == pid,
+            AiInsight.insight_date >= since,
+            Metric.status == "active",
+        )
+        .order_by(AiInsight.insight_date.desc(), AiInsight.id.desc())
+        .all()
+    )
+    items: list[dict] = []
+    seen: set[int] = set()
+    for ins, metric_name in rows:
+        if ins.metric_id in hidden or ins.metric_id in seen:
+            continue
+        seen.add(ins.metric_id)
+        items.append(
+            {
+                "id": ins.id,
+                "insight_date": ins.insight_date.isoformat(),
+                "metric_id": ins.metric_id,
+                "metric_code": ins.metric_code,
+                "metric_name": metric_name or ins.metric_code,
+                "direction": ins.direction,
+                "title": ins.title,
+                "body": ins.body,
+                "source": ins.source,
+                "current": ins.current,
+                "baseline_mean": ins.baseline_mean,
+                "abnormality": ins.abnormality,
+            }
+        )
+        if len(items) >= limit:
+            break
+
+    generated_today = bool(
+        db.query(exists().where(AiInsight.project_id == pid, AiInsight.insight_date == today)).scalar()
+    )
+    return ok_response(
+        {
+            "items": items,
+            "generated_today": generated_today,
+            "insight_date": today.isoformat(),
+        }
+    )

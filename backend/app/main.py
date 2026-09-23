@@ -79,6 +79,10 @@ def create_app() -> FastAPI:
             db.commit()  # 手动取的会话不走 get_db 的自动 commit
         finally:
             db.close()
+        # P5/A1：每日定时洞察（AI 主动洞察；ai_insight_enabled 可关）
+        from app.infra.scheduler import start_scheduler
+
+        start_scheduler()
         logger.info(
             "启动完成 env=%s data_dir=%s db=%s",
             settings.app_env,

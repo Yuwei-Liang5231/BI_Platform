@@ -227,7 +227,7 @@ def detect_for_project(db: Session, user: User, project_id: int | None = None) -
     扫描范围为 **opt-in 语义**：只扫「显式配置过且 enabled=1」的指标——
     全量默认扫描在大目录下不可行（每指标一次序列计算，数十指标即超时），
     且用户只关心自己开启检测的指标。结果只含反常项，限量 5 条宁缺毋滥；
-    反常且要紧的结论落库生成站内通知（去重，收件人 = 活跃 admin/analyst）。
+    反常且要紧的结论落库生成站内通知（去重，收件人 = 对该指标可见的全部活跃用户）。
     """
     from app.domain.project.service import resolve_project_id
 
@@ -282,35 +282,14 @@ def _persist_notifications(db: Session, abnormal_results: list[dict], project_id
     """异动结论 → 站内通知（同 user+metric+日+方向去重）。
 
     收件人 = 全部 active 用户中**对该指标可见者**（权限同源：与看板/
-    问数同一套受限判定——admin 恒可见，其余按 role+department 受限登记
-    过滤；受限用户不收受限指标的异动通知，不泄露名称）。
+    问数同一套受限判定，共用 auth.build_user_hidden_map 批量映射；
+    受限用户不收受限指标的异动通知，不泄露名称）。
     """
-    from app.infra.models import MetricVisibilityRestriction, Notification
+    from app.domain.auth.service import build_user_hidden_map
+    from app.infra.models import Notification
 
     users = db.query(User).filter(User.status == "active").all()
-    # 批量构建「主体 -> 受限指标集」映射，避免逐用户查询
-    restrict_by_subject: dict[tuple[str, str], set[int]] = {}
-    for stype, svalue, mid in (
-        db.query(
-            MetricVisibilityRestriction.subject_type,
-            MetricVisibilityRestriction.subject_value,
-            MetricVisibilityRestriction.metric_id,
-        ).all()
-    ):
-        restrict_by_subject.setdefault((stype, svalue), set()).add(mid)
-
-    def _hidden_for(u: User) -> set[int]:
-        if u.role == "admin":
-            return set()
-        hidden: set[int] = set()
-        subjects = [("role", u.role)]
-        if u.department:
-            subjects.append(("department", u.department))
-        for s in subjects:
-            hidden |= restrict_by_subject.get(s, set())
-        return hidden
-
-    user_hidden = {u.id: _hidden_for(u) for u in users}
+    user_hidden = build_user_hidden_map(db)
     for r in abnormal_results:
         if r.get("date") is None or r.get("direction") not in ("up", "down"):
             continue
@@ -352,6 +331,7 @@ def _persist_notifications(db: Session, abnormal_results: list[dict], project_id
                     current=r.get("current"),
                     baseline_mean=baseline.get("mean"),
                     abnormality=r.get("abnormality"),
+                    kind="anomaly",
                 )
             )
     db.flush()

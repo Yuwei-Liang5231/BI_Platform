@@ -11,6 +11,8 @@ import { ElMessage } from "element-plus";
 import { metricValue, exportMetric, exportCsvBlob, anomalyScan } from "@/api/query";
 import { dashboardSummary } from "@/api/ai";
 import TrendBadge from "@/components/business/TrendBadge.vue";
+import AiFeedback from "@/components/business/AiFeedback.vue";
+import AiInsightBar from "@/components/business/AiInsightBar.vue";
 import TermTip from "@/components/glossary/TermTip.vue";
 import { formatMetricValue } from "@/utils/format";
 import { usePeriodRange } from "@/composables/usePeriodRange";
@@ -377,6 +379,10 @@ onMounted(fetchData);
       </template>
     </el-alert>
 
+    <!-- A2 常驻 AI 洞察条：每日定时洞察的页面呈现（最近 3 天、按指标去重、权限同源；
+         紧凑模式默认收起为一行摘要，展开才看 AI 解释——不把关键指标卡顶下去） -->
+    <AiInsightBar :project-id="projectStore.lockedId" compact />
+
     <div class="dash__topics">
       <button
         v-for="t in topics"
@@ -475,6 +481,13 @@ onMounted(fetchData);
         </p>
       </template>
       <p v-else class="dash__ai-rule">{{ aiSummary.ruleText }}</p>
+      <div v-if="aiSummary.source === 'llm'" class="dash__ai-fb">
+        <AiFeedback
+          kind="dashboard_summary"
+          :target="`period:${range.start}~${range.end}`"
+          :project-id="projectStore.currentId"
+        />
+      </div>
     </section>
   </div>
 </template>
