@@ -25,7 +25,7 @@ try {
     # PowerShell 7+ 或非控制台宿主时忽略
 }
 
-$Py = 'C:\Users\William Y Liang\.workbuddy\binaries\python\envs\default\Scripts\python.exe'
+$Py = 'C:\Users\William Y Liang\Desktop\工作内容\AI Agent\BI Platform_WorkBuddy\bi-platform\backend\.venv\Scripts\python.exe'
 $Root = Split-Path -Parent $PSScriptRoot
 
 if (-not (Test-Path $Py)) {

@@ -3,7 +3,7 @@
 > 配套文档：**《AI原生BI平台_开发操作手册.md》**（常用命令、环境路径、报错处理、接口契约、问答沉淀）——操作类问题先查它。
 
 > 维护规则：每批次交付后更新本文件。任何新会话先读本文件再继续，不依赖对话记忆。
-> 最后更新：2026-09-10
+> 最后更新：2026-10-19
 
 ## 一、批次状态
 
@@ -213,7 +213,7 @@ Windows PowerShell / PyCharm 终端用同功能脚本：
 
 ## 六、环境备忘
 
-- Python：`C:\Users\William Y Liang\.workbuddy\binaries\python\envs\default\Scripts\python.exe`（**3.13.14** managed venv，源码 3.11+ 兼容；文档中旧写的 3.13.12 已更正）
+- Python：`bi-platform/backend/.venv`（**3.11.6** 项目内虚拟环境，依赖按 `requirements.lock` 精确安装；`scripts/bi.ps1`/`bi.sh` 已指向此解释器。历史备注：早期文档使用 managed venv 3.13.14，2026-10-19 统一切换项目内 .venv）
 - 脚本：`scripts/bi.sh`（Git Bash，已实测）/ `scripts/bi.ps1`（PowerShell，**梁老师 2026-09-10 实测 test 分支通过 17 passed**）
 - 已装依赖：fastapi、uvicorn[standard]、sqlalchemy≥2、pydantic≥2、pydantic-settings、duckdb≥1.0（B2）、**PyJWT≥2.8（B4）**、**pyyaml≥6.0（B5）**、pyarrow、openpyxl、charset-normalizer、pytest、httpx
 - 项目代码根：`bi-platform/`（backend/ + scripts/ + data/，data 已 gitignore）

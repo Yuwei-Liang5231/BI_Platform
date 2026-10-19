@@ -8,8 +8,8 @@
 # 说明：路径由 backend/app/core/config.py 基于文件位置推导，因此在任何目录下执行均可。
 set -euo pipefail
 
-PY="C:/Users/William Y Liang/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/backend/.venv/Scripts/python.exe"
 
 CMD="${1:-run}"
 
